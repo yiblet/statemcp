@@ -25,7 +25,7 @@ pub(crate) fn open(path: &Path, writable: bool) -> Result<Connection> {
     let conn = Connection::open_with_flags(path, flags | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
     conn.busy_timeout(Duration::from_secs(2))?;
     conn.execute_batch(
-        "PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA temp_store=MEMORY;",
+        "PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA temp_store=MEMORY; PRAGMA temp.page_size=4096; PRAGMA temp.max_page_count=4096;",
     )?;
     if writable {
         conn.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA page_size=4096; PRAGMA max_page_count=65536;")?;
@@ -209,14 +209,19 @@ pub(crate) fn batch(conn: &Connection, sql: &str) -> Result<()> {
 }
 
 pub(crate) fn inspect(conn: &Connection) -> Result<Value> {
+    let started = Instant::now();
     let schema = run(
         conn,
         "SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type,name",
         &json!([]),
         true,
     )?;
+    let mut bytes = serde_json::to_vec(&schema)?.len();
     let mut tables = Vec::new();
     for row in schema["rows"].as_array().expect("query rows") {
+        if started.elapsed() > Duration::from_secs(2) {
+            return Err(Error::limit("schema inspection exceeds two seconds"));
+        }
         if row[0] != "table" && row[0] != "view" {
             continue;
         }
@@ -233,9 +238,17 @@ pub(crate) fn inspect(conn: &Connection) -> Result<Value> {
             &json!([name]),
             true,
         )?;
+        bytes += serde_json::to_vec(&columns)?.len();
+        inspection_budget(bytes)?;
         let mut index_details = Vec::new();
         for idx in indexes["rows"].as_array().expect("query rows") {
-            index_details.push(json!({"name":idx[1], "unique":idx[2], "origin":idx[3], "partial":idx[4], "columns":run(conn,"SELECT seqno,cid,name,desc,coll,key FROM pragma_index_xinfo(?)",&json!([idx[1]]),true)?}));
+            if started.elapsed() > Duration::from_secs(2) {
+                return Err(Error::limit("schema inspection exceeds two seconds"));
+            }
+            let detail = json!({"name":idx[1], "unique":idx[2], "origin":idx[3], "partial":idx[4], "columns":run(conn,"SELECT seqno,cid,name,desc,coll,key FROM pragma_index_xinfo(?)",&json!([idx[1]]),true)?});
+            bytes += serde_json::to_vec(&detail)?.len();
+            inspection_budget(bytes)?;
+            index_details.push(detail);
         }
         let foreign_keys = run(
             conn,
@@ -243,6 +256,10 @@ pub(crate) fn inspect(conn: &Connection) -> Result<Value> {
             &json!([name]),
             true,
         )?;
+        // Check incrementally: waiting until the entire schema is assembled can
+        // allocate far beyond the advertised result bound for many wide tables.
+        bytes += serde_json::to_vec(&foreign_keys)?.len() + serde_json::to_vec(&row[3])?.len();
+        inspection_budget(bytes)?;
         tables.push(json!({"name":name,"type":row[0],"sql":row[3],"columns":columns,"indexes":index_details,"foreign_keys":foreign_keys}));
     }
     let fingerprint = crate::identity::hash(&serde_json::to_vec(&schema)?);
@@ -251,6 +268,13 @@ pub(crate) fn inspect(conn: &Connection) -> Result<Value> {
         return Err(Error::limit("schema inspection exceeds 1 MiB"));
     }
     Ok(result)
+}
+
+fn inspection_budget(bytes: usize) -> Result<()> {
+    if bytes > MAX_RESULT {
+        return Err(Error::limit("schema inspection exceeds 1 MiB"));
+    }
+    Ok(())
 }
 
 fn reset_deadline(conn: &Connection) -> Result<()> {

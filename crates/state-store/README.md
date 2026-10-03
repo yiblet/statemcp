@@ -27,6 +27,8 @@ tx.commit()?;
 - `Transaction::commit() -> Result<Value>` publishes every staged change together.
 - `Transaction::set_receipt(principal, key, request_hash, result)` stages a receipt.
 - `Store::receipt(principal, key) -> Result<Option<Receipt>>` retrieves one.
+- `Store::maintenance(retain_receipts) -> Result<MaintenanceReport>` explicitly
+  prunes history and orphan payloads and retains the newest N receipts globally.
 - Errors expose public `code` and `message` fields. Any dispatch error poisons the
   invocation: catching it cannot allow partial publication. Drop rolls back.
 
@@ -95,7 +97,32 @@ and fsyncs that directory **before** a synchronous catalog transaction publishes
 all namespace heads and the receipt. Conservative global generation validation
 rejects conflicting writes, including write skew across read dependencies. A
 read-only transaction can finish against its captured view. Directory fsync is a
-platform requirement. Managed files must not be modified out of band.
+platform requirement. Newly created root directories and their parent entries are
+also flushed. Managed files must not be modified out of band.
+
+Every root invocation acquires a shared advisory filesystem lock before capturing
+its view and holds it through commit or rollback. Explicit maintenance requires an
+exclusive lock across processes and independent Store handles. Both sides return
+`CONFLICT` immediately when incompatible work holds the lock. This prevents GC from
+removing a snapshot or virtual file object that an old reader has not opened yet.
+Locks are released by the operating system after a process exits. The filesystem
+must support advisory locks and directory fsync; all processes must use this API.
+
+Maintenance compacts deleted namespaces into empty tombstones, preserving reserved
+names and UUIDs; live namespace copies keep their shared payloads. It removes every
+non-head historical revision (there is no historical checkout API), unreferenced
+file objects, orphan UUID snapshot files, and abandoned UUID staging directories.
+References are removed in a catalog transaction before files are deleted. A crash
+during cleanup leaves recoverable orphans, never a live reference to a deleted
+snapshot. Catalog free pages are reused and the WAL is checkpointed; maintenance
+does not run a full catalog VACUUM or guarantee a smaller catalog file.
+
+Receipt retention is **count-based**, globally by insertion order, not time-based:
+`maintenance(10000)` retains the latest 10,000 receipts across all principals;
+`maintenance(0)` expires all of them. Reusing an expired key may execute again.
+Receipt replay does not refresh its insertion order. Retention must fit the caller's
+retry window; callers needing permanent deduplication should keep application-level
+unique request IDs. Maintenance is explicit and never runs automatically.
 
 The SQL authorizer denies attachment, transaction/savepoint control, unsafe
 PRAGMAs, extension/file functions, and unrecognized virtual-table modules. It is
@@ -108,17 +135,32 @@ requires a read-only statement. Other transaction control belongs to this librar
 
 - 8 MiB per virtual file.
 - 256 MiB on disk per application database (65,536 4 KiB pages).
+- 16 MiB per connection for explicit in-memory temporary database pages.
+  SQLite intermediate allocations and the aggregate across connections are not
+  subject to a hard allocator quota; use process/container limits when required.
 - 1 MiB per SQL statement, SQL value, SQL result, or receipt; 10,000 result rows.
 - Two-second SQLite progress deadline per statement/migration batch; a core
   invocation deadline and total memory/operation budget must wrap these limits.
 - SQLite expression depth, column count, bytecode size and worker threads capped.
 - Lists are currently unpaginated; the core must bound total output.
-- Historical revisions, tombstones, receipts, and unreachable snapshots are
-  retained. There is no automatic garbage collection or receipt expiration here.
-  Crash leftovers are unreachable and harmless but consume disk until maintenance.
+- History, receipts, and unreachable payloads accumulate until explicit maintenance.
+  Tombstone names/UUIDs remain reserved even after their contents are collected.
+- Schema inspection checks cumulative result size during assembly and enforces
+  an aggregate deadline between its bounded SQLite queries.
 
 The tests cover fork payload counts, staged divergence, connection-state reuse,
 rollback across namespaces, generation conflicts, migration integrity/replay,
 introspection, SQL boundaries, receipts, pinned declarations, result encodings,
-deadlines, and abrupt process exits before and after atomic publication. They do
-not simulate power loss at every individual filesystem operation.
+deadlines, and abrupt process exits before and after atomic publication. Test-only
+failpoints exit after durable snapshot sealing, immediately before catalog COMMIT,
+and immediately after COMMIT; recovery then runs GC and verifies atomic state and
+receipts. Cross-process tests verify that an old reader blocks GC while another
+writer advances heads. These process-exit tests do not simulate power loss or
+storage-controller failures at every individual filesystem operation.
+
+The ignored `copy_benchmark` test measures portable file copy, namespace fork, and
+first-write latency at approximately 1/32/256 MiB, also asserting zero new snapshots
+for a committed fork and one for a first write. Run it explicitly with
+`cargo test -p state-store --test copy_benchmark -- --ignored --nocapture`.
+Measurements depend on filesystem caches and hardware; the test is not a latency
+or physical-I/O guarantee.

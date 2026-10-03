@@ -8,8 +8,8 @@ use std::{collections::BTreeMap, fs, path::Path, sync::Arc, time::Duration};
 
 impl Store {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        fs::create_dir_all(path.as_ref())?;
-        let root = fs::canonicalize(path.as_ref())?;
+        let root = crate::durability::create_root(path.as_ref())?;
+        let _guard = crate::durability::root_lock(&root, false)?;
         fs::create_dir_all(root.join("snapshots"))?;
         fs::create_dir_all(root.join("staging"))?;
         // Verify durable directory flush support before accepting writes.
@@ -36,7 +36,7 @@ impl Store {
         sync_dir(&store.root)?;
         Ok(store)
     }
-    fn catalog(&self) -> Result<Connection> {
+    pub(super) fn catalog(&self) -> Result<Connection> {
         let conn = Connection::open(self.root.join("catalog.sqlite"))?;
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.execute_batch(
@@ -84,6 +84,7 @@ impl Store {
         Ok((generation, namespaces))
     }
     pub fn receipt(&self, principal: &str, key: &str) -> Result<Option<Receipt>> {
+        let _guard = crate::durability::root_lock(self.root(), false)?;
         receipt(&self.catalog()?, principal, key)
     }
     pub(crate) fn object(&self, hash: &str) -> Result<Vec<u8>> {
@@ -181,7 +182,11 @@ impl Store {
             "UPDATE catalog_state SET generation=generation+1 WHERE singleton=1",
             [],
         )?;
+        #[cfg(test)]
+        crate::durability::publication_failpoint("before_catalog_commit");
         tx.commit()?;
+        #[cfg(test)]
+        crate::durability::publication_failpoint("after_catalog_commit");
         Ok(json!({"generation":current+1,"revisions":revisions,"changed":changed}))
     }
 }

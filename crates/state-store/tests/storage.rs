@@ -395,6 +395,15 @@ fn sql_cannot_attach_catalog_write_host_files_or_mutate_pragmas() {
         "PRAGMA journal_mode=WAL".into(),
         "PRAGMA temp_store_directory='/tmp'".into(),
         "PRAGMA user_version=2".into(),
+        "PRAGMA hard_heap_limit=1".into(),
+        "PRAGMA soft_heap_limit=1".into(),
+        "PRAGMA shrink_memory".into(),
+        "PRAGMA locking_mode=EXCLUSIVE".into(),
+        "PRAGMA main.writable_schema=ON".into(),
+        "SELECT readfile('/etc/passwd')".into(),
+        "SELECT writefile('/tmp/state-store-escape', 'bad')".into(),
+        "DETACH DATABASE main".into(),
+        "CREATE VIRTUAL TABLE escape USING csv(filename='/etc/passwd')".into(),
         "SELECT load_extension('/tmp/bad')".into(),
         "BEGIN".into(),
         "SAVEPOINT x".into(),
@@ -722,4 +731,48 @@ fn abrupt_process_exit_publishes_all_or_none_and_receipt_survives() {
             commit
         );
     }
+}
+
+#[test]
+fn large_schema_inspection_stops_at_cumulative_result_budget() {
+    let (_dir, store) = setup();
+    namespace(&store, "a");
+    db(&store, "a");
+    let columns = (0..128)
+        .map(|i| format!("column_{i} TEXT"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let source = (0..180)
+        .map(|i| format!("CREATE TABLE wide_{i}({columns});"))
+        .collect::<String>();
+    run(
+        &store,
+        "state_db",
+        json!({"action":"migrate","namespace":"a","database":"app","migrations":[{"id":"wide","sql":source}]}),
+    );
+    let mut tx = store.begin().unwrap();
+    let error = tx
+        .dispatch(
+            "state_db",
+            json!({"action":"inspect","namespace":"a","database":"app"}),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "LIMIT_EXCEEDED");
+    assert!(error.message.contains("1 MiB"));
+}
+
+#[test]
+fn explicit_temporary_tables_have_a_page_quota() {
+    let (_dir, store) = setup();
+    namespace(&store, "a");
+    db(&store, "a");
+    let mut tx = store.begin().unwrap();
+    txsql(&mut tx, "a", "CREATE TEMP TABLE bounded(bytes BLOB)");
+    let error = tx.dispatch("state_db", json!({"action":"execute","namespace":"a","database":"app","sql":"WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM seq WHERE n<40) INSERT INTO bounded SELECT zeroblob(524288) FROM seq"})).unwrap_err();
+    assert_eq!(error.code, "LIMIT_EXCEEDED");
+    assert_eq!(tx.commit().unwrap_err().code, "TRANSACTION_ABORTED");
+    assert_eq!(
+        sql(&store, "a", "query", "SELECT name FROM sqlite_schema")["rows"],
+        json!([])
+    );
 }

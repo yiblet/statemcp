@@ -15,6 +15,8 @@ use std::{collections::BTreeMap, fs, path::PathBuf};
 /// Dropping it discards all logical changes; unreachable sealed files are retained.
 pub struct Transaction {
     store: Store,
+    // Held through publication and the Drop implementation's staging cleanup.
+    _root_guard: std::fs::File,
     generation: i64,
     namespaces: BTreeMap<String, Namespace>,
     objects: BTreeMap<String, Vec<u8>>,
@@ -35,11 +37,13 @@ impl Transaction {
         store: Store,
         generation: i64,
         namespaces: BTreeMap<String, Namespace>,
+        guard: std::fs::File,
     ) -> Result<Self> {
         let staging = store.root().join("staging").join(id());
         fs::create_dir(&staging)?;
         Ok(Transaction {
             store,
+            _root_guard: guard,
             generation,
             namespaces,
             objects: BTreeMap::new(),

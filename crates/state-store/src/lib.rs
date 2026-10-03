@@ -10,5 +10,5 @@ mod validation;
 
 pub use error::{Error, Result};
 pub use model::Receipt;
-pub use store::Store;
+pub use store::{MaintenanceReport, Store};
 pub use transaction::Transaction;

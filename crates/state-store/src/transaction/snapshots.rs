@@ -41,6 +41,8 @@ impl Transaction {
         let snapshot = id();
         fs::rename(path, self.snapshot_path(&snapshot))?;
         sync_dir(&self.store.root().join("snapshots"))?;
+        #[cfg(test)]
+        crate::durability::publication_failpoint("after_snapshot_seal");
         Ok(snapshot)
     }
     pub(super) fn ensure_working(
