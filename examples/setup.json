@@ -1,0 +1,159 @@
+[
+  {
+    "namespace": "notes",
+    "file": "notes.py",
+    "sql": "CREATE TABLE notes(id INTEGER PRIMARY KEY, text TEXT NOT NULL)",
+    "endpoints": [
+      {
+        "name": "add",
+        "symbol": "add",
+        "databases": {
+          "app": "write"
+        },
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "list",
+        "symbol": "list_notes",
+        "databases": {
+          "app": "read"
+        },
+        "input_schema": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "todos",
+    "file": "todos.py",
+    "sql": "CREATE TABLE todos(id INTEGER PRIMARY KEY, text TEXT NOT NULL, done INTEGER NOT NULL DEFAULT 0)",
+    "endpoints": [
+      {
+        "name": "add",
+        "symbol": "add",
+        "databases": {
+          "app": "write"
+        },
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "complete",
+        "symbol": "complete",
+        "databases": {
+          "app": "write"
+        },
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "list",
+        "symbol": "list_todos",
+        "databases": {
+          "app": "read"
+        },
+        "input_schema": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      }
+    ]
+  },
+  {
+    "namespace": "chat",
+    "file": "chat.py",
+    "sql": "CREATE TABLE messages(id INTEGER PRIMARY KEY, room TEXT NOT NULL, sender TEXT NOT NULL, text TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE)",
+    "endpoints": [
+      {
+        "name": "post",
+        "symbol": "post",
+        "databases": {
+          "app": "write"
+        },
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "room": {
+              "type": "string"
+            },
+            "sender": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "request_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "room",
+            "sender",
+            "text",
+            "request_id"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "poll",
+        "symbol": "poll",
+        "databases": {
+          "app": "read"
+        },
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "room": {
+              "type": "string"
+            },
+            "after": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "room"
+          ],
+          "additionalProperties": false
+        }
+      }
+    ]
+  }
+]

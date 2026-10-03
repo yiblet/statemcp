@@ -131,6 +131,7 @@ impl RuntimeBackend for RacingBackend {
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
+        // TODO(audit): replace unbounded rendezvous with a timeout so early peer failure cannot hang this test.
         self.barrier.wait();
         EmbeddedBackend.execute(source, inputs, limits, host)
     }
