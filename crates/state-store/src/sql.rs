@@ -245,7 +245,7 @@ pub(crate) fn inspect(conn: &Connection) -> Result<Value> {
         )?;
         tables.push(json!({"name":name,"type":row[0],"sql":row[3],"columns":columns,"indexes":index_details,"foreign_keys":foreign_keys}));
     }
-    let fingerprint = crate::store::hash(&serde_json::to_vec(&schema)?);
+    let fingerprint = crate::identity::hash(&serde_json::to_vec(&schema)?);
     let result = json!({"schema":schema,"tables":tables,"schema_fingerprint":fingerprint});
     if serde_json::to_vec(&result)?.len() > MAX_RESULT {
         return Err(Error::limit("schema inspection exceeds 1 MiB"));
