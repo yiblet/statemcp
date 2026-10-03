@@ -246,75 +246,7 @@ fn read_frame(reader: &mut impl BufRead) -> io::Result<Option<Result<Vec<u8>, ()
     }
 }
 
-/// Fixed discovery surface; action-specific validation belongs to the service.
+/// Fixed discovery surface, shared with application validation.
 pub fn tool_definitions() -> Vec<Value> {
-    let string = json!({"type":"string"});
-    let namespace = json!({"type":"string","description":"Namespace ID or name"});
-    let schema = json!({"type":"object"});
-    let make = |name: &str, description: &str, properties: Value, required: &[&str]| {
-        json!({
-            "name":name,"description":description,
-            "inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}
-        })
-    };
-    vec![
-        make(
-            "state_namespace",
-            "Create, inspect, list, rename, copy, or delete namespaces. Copies share immutable state until modified.",
-            json!({
-                "action":{"type":"string","enum":["create","get","list","update","copy","delete"]},"namespace":namespace,"name":string
-            }),
-            &["action"],
-        ),
-        make(
-            "state_fs",
-            "Read and write namespace virtual files. Paths belong to the virtual filesystem.",
-            json!({
-                "action":{"type":"string","enum":["read","write","append","list","move","delete"]},"namespace":namespace,
-                "path":string,"destination":string,"text":string,"base64":string
-            }),
-            &["action", "namespace"],
-        ),
-        make(
-            "state_db",
-            "Manage explicitly named SQLite databases, parameterized SQL, schema introspection, and ordered migrations.",
-            json!({
-                "action":{"type":"string","enum":["create","list","delete","query","execute","inspect","migrate"]},"namespace":namespace,
-                "database":string,"sql":string,"params":{"type":"array"},
-                "migrations":{"type":"array","items":{"type":"object","properties":{"id":string,"sql":string},"required":["id","sql"],"additionalProperties":false}}
-            }),
-            &["action", "namespace"],
-        ),
-        make(
-            "state_function",
-            "Declare a function using pinned source from a virtual file, or get, list, and remove declarations.",
-            json!({
-                "action":{"type":"string","enum":["declare","get","list","remove"]},"namespace":namespace,"name":string,"file":string,"symbol":string,
-                "input_schema":schema,"output_schema":schema,"databases":{"type":"array","items":string}
-            }),
-            &["action", "namespace"],
-        ),
-        make(
-            "state_call",
-            "Invoke a declared endpoint with JSON arguments. Nested calls share the root transaction.",
-            json!({
-                "namespace":namespace,"function":string,"arguments":schema,"idempotency_key":string
-            }),
-            &["namespace", "function"],
-        ),
-        make(
-            "state_execute",
-            "Execute a Python script in embedded Monty with transactional host APIs; inputs is a JSON global.",
-            json!({
-                "namespace":namespace,"script":string,"inputs":{},"idempotency_key":string
-            }),
-            &["script"],
-        ),
-        make(
-            "state_describe",
-            "Discover State MCP operations or inspect a namespace's endpoint contracts.",
-            json!({"namespace":namespace,"function":string}),
-            &[],
-        ),
-    ]
+    state_core::tool_definitions()
 }

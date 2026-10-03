@@ -213,8 +213,15 @@ fn schemas_advertise_exact_fixed_surface_and_required_properties() {
     for tool in &definitions {
         let schema = &tool["inputSchema"];
         assert_eq!(schema["type"], "object");
-        for key in schema["required"].as_array().unwrap() {
-            assert!(schema["properties"].get(key.as_str().unwrap()).is_some());
+        let variants = schema
+            .get("oneOf")
+            .and_then(Value::as_array)
+            .map(|variants| variants.iter().collect::<Vec<_>>())
+            .unwrap_or_else(|| vec![schema]);
+        for variant in variants {
+            for key in variant["required"].as_array().unwrap() {
+                assert!(variant["properties"].get(key.as_str().unwrap()).is_some());
+            }
         }
     }
 }
