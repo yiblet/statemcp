@@ -58,8 +58,7 @@ worker baseline. The hard ceiling includes Monty's 4 MiB exception headroom;
 exceeding it exits with code 65. These settings are **process global**: do not arm
 them per session in a concurrent/shared parent server. Prefer one worker per root
 invocation, let its parent enforce a deadline and interpret exit 65 as
-`LIMIT_EXCEEDED`, and do not attempt further work after a failed run. The runtime
-library does not itself launch a worker or install a global allocator.
+`LIMIT_EXCEEDED`, and do not attempt further work after a failed run. The embedded APIs do not launch a worker or install a global allocator.
 
 Verified against the release Rust source and official documentation:
 - https://pydantic.dev/docs/monty/quickstart/rust/
@@ -73,3 +72,45 @@ exercise actual Monty execution, callback JSON fidelity, pinned-source function
 invocation, effect-free initialization, uncatchable host errors, budgets,
 filesystem denial, fresh scopes, JSON rejection, and an isolated cumulative
 allocator limit probe.
+
+
+## Same-executable isolated execution
+
+`WorkerConfig::new(executable)` supplies `execute`, `invoke`, and
+`validate_module` with the same arguments as the embedded functions. Equivalent
+free functions `execute_isolated`, `invoke_isolated`, and
+`validate_module_isolated` take `&WorkerConfig` first. The executable must install
+`LimitedAllocator` globally and route `--worker MEMORY_BYTES MAX_FRAME_BYTES` to
+`worker_main`. The State MCP binary already does this; its parent server never
+arms the memory ceiling or sets a baseline. Library users choose the executable
+explicitly instead of accidentally launching their own test harness or application.
+
+Each operation creates a fresh child, so recursive host invocations can launch
+another child without a worker pool deadlock. The default aggregate allocator
+budget is 64 MiB plus Monty's 4 MiB exception headroom;
+`Limits::max_memory` overrides the default and `WorkerConfig::default_memory_bytes`
+changes it. This measures live allocator bytes, not operating-system RSS or all
+native stack pages. Monty recursion limits still apply, and a native stack crash
+is confined to the child.
+
+Requests, host calls, host results, completion, and errors use a four-byte
+big-endian length prefix followed by JSON. Both serialized output and incoming
+frame allocation are bounded: the default frame cap is 8 MiB, configurable from
+1 KiB through 64 MiB. Worker stdout carries only frames; Python prints remain in
+`RunResult::stdout`. The child receives no state directory, database handles, or
+filesystem/network adapters; all host callbacks run in the parent. This is crash
+and resource isolation, not an operating-system security sandbox for native code.
+
+An independent parent watchdog kills and reaps the child at the wall deadline,
+even while a host callback is running. Cleanup also kills/reaps on protocol errors,
+callback errors, and Rust panic unwinding. Callback time counts against the same
+deadline. A synchronous borrowed Rust callback cannot itself be preempted: its
+owner must impose deadlines on blocking operations; dispatch returns the timeout
+when that callback returns. Each nested worker gets the limits supplied by its
+caller; the State service must carry root budgets across nested operations.
+
+The actual-binary integration suite covers execute/invoke/validation, recursive
+workers, callback failures and panics, time/memory/recursion/output recovery,
+malformed/oversized frames, and operation with an empty PATH (no Python needed).
+Unit tests additionally verify an uncooperative child is killed and reaped while
+the parent is blocked and that dropping its guard reaps immediately.

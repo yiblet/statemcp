@@ -19,6 +19,11 @@ use std::{
 
 pub use monty_alloc::LimitedAllocator;
 
+mod worker;
+pub use worker::{
+    WorkerConfig, execute_isolated, invoke_isolated, validate_module_isolated, worker_main,
+};
+
 pub const HOST_FUNCTIONS: &[&str] = &[
     "mcp",
     "call",
