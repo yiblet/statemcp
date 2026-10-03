@@ -25,7 +25,9 @@ JSON supports null, booleans, signed 64-bit integers, finite floats, strings,
 arrays, and string-keyed objects. Returned tuples become arrays. Sets, classes,
 bytes, non-finite numbers, larger integers, and cyclic outputs are rejected;
 encode such values explicitly as ordinary JSON before crossing the boundary.
-JSON depth and byte budgets also apply to callback arguments/results. Print
+JSON depth and byte budgets also apply to callback arguments/results. Byte
+checks include JSON string escaping, and explicit globals share one aggregate
+binding budget that includes their names. Print
 output is captured with a byte cap; `stdout` contains both stdout and stderr in
 emission order. No diagnostics are emitted to the server's protocol stdout.
 
@@ -46,7 +48,10 @@ A separate worker and parent-side wall deadline are required for hostile code.
 
 `Limits::max_memory` defaults to `None`: embedded execution does **not** claim an
 aggregate memory cap. `max_allocation_bytes` defaults to 64 MiB and constrains
-Monty's allocation preflight checks, not the sum of small allocations. Requesting
+Monty's allocation preflight checks when `max_memory` is `None`, not the sum of
+small allocations. With aggregate accounting enabled, Monty uses `max_memory`
+for both preflight and cumulative checks; the fallback is not a separate
+per-allocation cap. Requesting
 `max_memory: Some(bytes)` without active allocator tracking returns
 `UNSUPPORTED_FEATURE` before executing code.
 

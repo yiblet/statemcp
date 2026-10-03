@@ -13,6 +13,7 @@ use serde_json::{Map, Value};
 use std::{
     borrow::Cow,
     fmt,
+    io::{self, Write},
     sync::atomic::Ordering,
     time::{Duration, Instant},
 };
@@ -43,8 +44,9 @@ pub struct Limits {
     /// Aggregate memory cap. Requires an installed and armed LimitedAllocator.
     /// None explicitly means aggregate memory is not bounded by this library.
     pub max_memory: Option<usize>,
-    /// Always applied to Monty's allocation preflight checks. Does not bound
-    /// the sum of many small allocations without allocator integration.
+    /// Fallback for Monty's allocation preflight checks when max_memory is None.
+    /// Does not bound the sum of small allocations without allocator integration.
+    /// Isolated workers use their aggregate memory cap instead.
     pub max_allocation_bytes: usize,
     pub max_calls: usize,
     pub max_recursion_depth: usize,
@@ -136,16 +138,19 @@ pub fn execute_with_bindings(
     host: &mut HostCallback<'_>,
 ) -> Result<RunResult, RuntimeError> {
     let mut session = Session::new(source, limits)?;
+    let mut budget = JsonBudget::new(limits);
     let mut inputs = host_inputs();
-    for (name, value) in bindings {
-        if !identifier(&name) || HOST_FUNCTIONS.contains(&name.as_str()) {
+    for (name, value) in &bindings {
+        if !identifier(name) || HOST_FUNCTIONS.contains(&name.as_str()) {
             return Err(RuntimeError::new(
                 "INVALID_ARGUMENT",
                 "invalid or reserved binding name",
             ));
         }
-        inputs.push(name, session.to_monty(&value)?);
+        budget.charge(name.len())?;
+        inputs.push(name.clone(), budget.encode(value, 0)?);
     }
+    check_json_size(&bindings, limits.max_output_bytes)?;
     let repl = session.repl();
     let progress = repl
         .feed_start(source, inputs, session.print())
@@ -364,6 +369,7 @@ impl<'a> Session<'a> {
                             Ok((key.to_owned(), budget.decode(v, 0)?))
                         })
                         .collect::<Result<Map<_, _>, RuntimeError>>()?;
+                    check_json_size(&(&args, &kwargs), self.limits.max_output_bytes)?;
                     // Host errors terminate Rust execution. They are deliberately
                     // never resumed as catchable Python exceptions.
                     let result = host(&call.function_name, args, kwargs)?;
@@ -394,7 +400,9 @@ impl<'a> Session<'a> {
     }
 
     fn to_monty(&self, value: &Value) -> Result<MontyObject, RuntimeError> {
-        JsonBudget::new(self.limits).encode(value, 0)
+        let encoded = JsonBudget::new(self.limits).encode(value, 0)?;
+        check_json_size(value, self.limits.max_output_bytes)?;
+        Ok(encoded)
     }
 
     fn finish(self, value: MontyObject) -> Result<RunResult, RuntimeError> {
@@ -402,10 +410,12 @@ impl<'a> Session<'a> {
         let value = JsonBudget::new(self.limits).decode(value.as_ref(), 0)?;
         // The incremental budget bounds allocations; the final serialized check
         // additionally accounts for escaping of strings and object keys.
-        let bytes = serde_json::to_vec(&value).map_err(|e| invalid_result(e.to_string()))?;
-        if bytes.len().saturating_add(self.stdout.text.len()) > self.limits.max_output_bytes {
-            return Err(limit_error("result and diagnostics byte limit exceeded"));
-        }
+        check_json_size(
+            &value,
+            self.limits
+                .max_output_bytes
+                .saturating_sub(self.stdout.text.len()),
+        )?;
         self.check_deadline()?;
         Ok(RunResult {
             value,
@@ -553,4 +563,24 @@ impl JsonBudget {
             ))),
         }
     }
+}
+
+// Count serialized bytes without allocating a second copy. Escaped strings can
+// require six times their UTF-8 size; the VM conversion budget alone is not a
+// bound on what actually crosses the JSON host boundary.
+fn check_json_size(value: &impl Serialize, max: usize) -> Result<(), RuntimeError> {
+    struct Budget(usize);
+    impl Write for Budget {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_sub(bytes.len())
+                .ok_or_else(|| io::Error::other("JSON byte limit exceeded"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    serde_json::to_writer(Budget(max), value).map_err(|error| limit_error(error.to_string()))
 }

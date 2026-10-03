@@ -500,6 +500,33 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    #[test]
+    fn child_frame_decoder_rejects_malformed_truncated_and_oversized_messages() {
+        for bytes in [
+            vec![0, 0, 0, 0],
+            vec![0, 0, 0, 1, b'{'],
+            vec![0, 0, 0, 2, b'{'],
+            vec![255, 255, 255, 255],
+        ] {
+            assert!(read_frame::<Message>(&mut bytes.as_slice(), 1024).is_err());
+        }
+        for body in [
+            r#"{"type":"unknown"}"#,
+            r#"{"type":"host_call","name":"mcp","args":[],"kwargs":{},"extra":true}"#,
+            r#"{"type":"complete","result":{"value":null,"stdout":""}}trailing"#,
+        ] {
+            let mut frame = (body.len() as u32).to_be_bytes().to_vec();
+            frame.extend_from_slice(body.as_bytes());
+            assert_eq!(
+                read_frame::<Message>(&mut frame.as_slice(), 1024)
+                    .err()
+                    .unwrap()
+                    .code,
+                "WORKER_FAILED"
+            );
+        }
+    }
+
     fn stubborn_child() -> (Child, std::process::ChildStdout) {
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args([
