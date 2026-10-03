@@ -1,0 +1,17 @@
+[package]
+name = "state-store"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Immutable namespace storage with isolated SQLite database snapshots"
+
+[dependencies]
+base64 = "0.22"
+rusqlite = { version = "0.38", features = ["bundled", "hooks", "limits", "extra_check"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
