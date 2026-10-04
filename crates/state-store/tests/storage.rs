@@ -462,7 +462,7 @@ fn endpoint_source_and_database_ids_are_pinned() {
     let declaration = run(
         &store,
         "state_function",
-        json!({"action":"declare","namespace":"a","name":"f","file":"/api.py","symbol":"f","databases":{"app":"read"}}),
+        json!({"action":"declare","namespace":"a","name":"f","file":"/api.py","symbol":"f","databases": [{"database":"app","access":"read"}]}),
     );
     run(
         &store,

@@ -1,10 +1,10 @@
 use crate::{
     CoreLimits, Error, Result, RuntimeBackend, bounded,
-    policy::{Access, EndpointAccess, normalize_path},
+    policy::{Access, EndpointAccess},
     remaining, schemas,
 };
 use serde_json::{Value, json};
-use state_store::Transaction;
+use state_store::{DatabaseAccess, Grants, Transaction};
 use std::{sync::Arc, time::Instant};
 
 pub(crate) struct Root {
@@ -43,7 +43,8 @@ impl Root {
         access: &Access,
         top: bool,
     ) -> Result<Value> {
-        let result = self.dispatch_inner(tool, args, access, top);
+        let result = schemas::normalize_call(tool, args)
+            .and_then(|(tool, args)| self.dispatch_inner(&tool, args, access, top));
         if let Err(error) = &result {
             self.failure.get_or_insert_with(|| error.clone());
         }
@@ -82,6 +83,47 @@ impl Root {
             "state_describe" => self.describe(&args, access)?,
             _ => self.tx.dispatch(tool, args.clone())?,
         };
+        // Keep storage metadata available internally and through explicit inspection.
+        if tool == "state_function" {
+            match args["action"].as_str() {
+                Some("declare" | "update") => {
+                    result =
+                        json!({"name":result["name"],"version":result["version"],"published":true});
+                }
+                Some("list") => {
+                    for function in result["functions"].as_array_mut().expect("function list") {
+                        for field in ["source", "source_hash", "database_ids", "abi_version"] {
+                            function
+                                .as_object_mut()
+                                .expect("function metadata")
+                                .remove(field);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        if tool == "state_db" && args["action"] == "list" {
+            for database in result["databases"].as_array_mut().expect("database list") {
+                database
+                    .as_object_mut()
+                    .expect("database metadata")
+                    .remove("snapshot");
+            }
+        }
+        if tool == "state_db" && args["action"] == "create" {
+            result = json!({"name":result["name"],"created":true});
+        }
+        if tool == "state_fs" && args["action"] != "stat" {
+            if let Some(object) = result.as_object_mut() {
+                object.remove("hash");
+            }
+            if let Some(entries) = result["entries"].as_array_mut() {
+                for entry in entries {
+                    entry.as_object_mut().expect("file entry").remove("hash");
+                }
+            }
+        }
         // A staged namespace has no published revision yet. The root API fills this after commit.
         if tool == "state_namespace"
             && matches!(args["action"].as_str(), Some("create" | "copy" | "update"))
@@ -163,8 +205,8 @@ impl Root {
         let (mode, id) = endpoint.databases.get(name).ok_or_else(Error::denied)?;
         let allowed = match action {
             "query" | "inspect" | "migrations" => true,
-            "execute" => mode == "write" || mode == "migrate",
-            "migrate" => mode == "migrate",
+            "execute" => matches!(mode, DatabaseAccess::Write | DatabaseAccess::Migrate),
+            "migrate" => *mode == DatabaseAccess::Migrate,
             _ => false,
         };
         if !allowed {
@@ -187,8 +229,8 @@ impl Root {
         for (key, default) in [
             ("input_schema", json!({"type":"object"})),
             ("output_schema", json!(true)),
-            ("databases", json!({})),
-            ("files", json!({})),
+            ("databases", json!([])),
+            ("files", json!([])),
             ("calls", json!([])),
         ] {
             if args.get(key).is_none() {
@@ -197,19 +239,15 @@ impl Root {
         }
         schemas::compile(&args["input_schema"])?;
         schemas::compile(&args["output_schema"])?;
-        let files = args["files"].as_object().expect("validated file grants");
-        let mut normalized = serde_json::Map::new();
-        for (path, mode) in files {
-            normalized.insert(normalize_path(path)?, mode.clone());
-        }
-        args["files"] = json!(normalized);
-        for call in args["calls"].as_array_mut().expect("validated call grants") {
-            if call["namespace"] != "self" {
-                call["namespace"] = json!(
-                    self.namespace_id(call["namespace"].as_str().expect("validated namespace"))?
-                );
+        let mut grants = Grants::from_arguments(&args)?;
+        for call in &mut grants.calls {
+            if call.namespace != "self" {
+                call.namespace = self.namespace_id(&call.namespace)?;
             }
         }
+        // Namespace names and UUID aliases must not grant the same call twice.
+        grants.normalize()?;
+        grants.write_to(&mut args);
         let source = self.tx.dispatch(
             "state_fs",
             json!({"action":"read","namespace":args["namespace"],"path":args["file"]}),
@@ -248,6 +286,15 @@ impl Root {
             lookup["expected_version"] = version.clone();
         }
         let declaration = self.tx.dispatch("state_function", lookup)?;
+        if declaration["abi_version"] != 1 {
+            return Err(Error::new(
+                "ABI_MISMATCH",
+                format!(
+                    "runtime ABI mismatch: expected 1, actual {}; redeclare the function for this runtime",
+                    declaration["abi_version"]
+                ),
+            ));
+        }
         let arguments = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
         schemas::compile(&declaration["input_schema"])?
             .validate(&arguments)
@@ -303,9 +350,33 @@ impl Root {
     }
     fn describe(&mut self, args: &Value, access: &Access) -> Result<Value> {
         let Some(selector) = args["namespace"].as_str() else {
-            return Ok(
-                json!({"tools":schemas::tool_definitions(),"runtime":"Pydantic Monty","abi_version":1,"identity":"local owner; dispatch_as scopes receipts only","retention":"history and receipts retained until explicit maintenance; no automatic GC","limits":{"root_calls":self.limits.runtime.max_calls,"root_depth":self.limits.max_depth,"root_milliseconds":self.limits.runtime.max_duration.as_millis(),"runtime_json_bytes":self.limits.runtime.max_output_bytes,"direct_result_bytes":self.limits.max_result_bytes}}),
-            );
+            let mut tools = schemas::tool_definitions();
+            if let Some(name) = args["tool"].as_str() {
+                let tool = tools
+                    .into_iter()
+                    .find(|tool| tool["name"] == name)
+                    .ok_or_else(|| Error::invalid("unknown discovery tool"))?;
+                return Ok(json!({"tool":tool}));
+            }
+            let mode = args["mode"].as_str().unwrap_or("overview");
+            if mode == "readme" {
+                return Ok(
+                    json!({"title":"StateMCP README","format":"markdown","text":include_str!("../../../README.md")}),
+                );
+            }
+            if mode == "runtime" {
+                return Ok(schemas::runtime_guide());
+            }
+            if mode == "overview" {
+                for tool in &mut tools {
+                    tool.as_object_mut().expect("tool").remove("inputSchema");
+                }
+            }
+            let mut result = json!({"tools":tools,"model":"Namespaces contain virtual files, named SQLite databases, and published Python endpoints.","runtime":"Pydantic Monty","abi_version":1,"discovery":{"readme":{"mode":"readme"},"runtime":{"mode":"runtime"},"schemas":{"mode":"full"},"operation":{"tool":"db.create"}},"identity":"local owner; dispatch_as scopes receipts only","retention":"history and receipts retained until explicit maintenance; no automatic GC","limits":{"root_calls":self.limits.runtime.max_calls,"root_depth":self.limits.max_depth,"root_milliseconds":self.limits.runtime.max_duration.as_millis(),"runtime_json_bytes":self.limits.runtime.max_output_bytes,"direct_result_bytes":self.limits.max_result_bytes}});
+            if mode == "full" {
+                result["runtime_guide"] = schemas::runtime_guide();
+            }
+            return Ok(result);
         };
         let namespace = self.namespace_id(selector)?;
         let result = self.tx.dispatch(

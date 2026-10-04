@@ -53,13 +53,14 @@ impl Transaction {
         match action {
             "query" | "inspect" => {
                 let opened;
-                let conn =
-                    if let Some(working) = self.working_databases.get(&(key, db_name.clone())) {
-                        &working.connection
-                    } else {
-                        opened = sql::open(&self.snapshot_path(&db.snapshot), false)?;
-                        &opened
-                    };
+                let conn = if let Some(working) =
+                    self.working_databases.get(&(key.clone(), db_name.clone()))
+                {
+                    &working.connection
+                } else {
+                    opened = sql::open(&self.snapshot_path(&db.snapshot), false)?;
+                    &opened
+                };
                 if action == "query" {
                     sql::run(
                         conn,
@@ -71,6 +72,9 @@ impl Transaction {
                     let mut result = sql::inspect(conn)?;
                     result["name"] = json!(db_name);
                     result["id"] = json!(db.id);
+                    result["snapshot"] = json!(db.snapshot);
+                    result["staged"] =
+                        json!(self.working_databases.contains_key(&(key, db_name.clone())));
                     result["migrations"] = json!(db.migrations);
                     Ok(result)
                 }

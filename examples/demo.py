@@ -9,7 +9,7 @@ import subprocess
 class Client:
     def __init__(self, binary, data_dir):
         self.process = subprocess.Popen(
-            [str(binary), "--data-dir", str(data_dir)],
+            [str(binary), "stdio", str(data_dir)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
         )
         self.next_id = 0
@@ -38,14 +38,13 @@ class Client:
         result = self.request("tools/call", {"name": name, "arguments": arguments})
         if result.get("isError"):
             raise RuntimeError(result)
-        return result["structuredContent"]
+        return result["content"]
 
     def call(self, namespace, function, arguments=None):
-        result = self.tool("state_call", {
+        result = self.tool("call", {
             "namespace": namespace, "function": function, "arguments": arguments or {},
         })
-        # MCP structuredContent must be an object, so non-object tool values are wrapped.
-        return result.get("value", result)
+        return result
 
     def close(self):
         self.process.stdin.close()
@@ -57,31 +56,31 @@ class Client:
 
 def setup(client):
     directory = Path(__file__).resolve().parent
-    existing = {item["name"] for item in client.tool("state_namespace", {"action": "list"})["namespaces"]}
+    existing = {item["name"] for item in client.tool("namespace.list", {})["namespaces"]}
     for fixture in json.loads((directory / "setup.json").read_text()):
         namespace = fixture["namespace"]
         if namespace in existing:
             continue
         # TODO(setup): make installation one atomic script and support fixture upgrades.
-        client.tool("state_namespace", {"action": "create", "name": namespace})
-        client.tool("state_db", {"action": "create", "namespace": namespace, "database": "app"})
-        client.tool("state_db", {"action": "migrate", "namespace": namespace, "database": "app", "migrations": [{"id": "initial", "sql": fixture["sql"]}]})
-        client.tool("state_fs", {"action": "write", "namespace": namespace, "path": "/api.py", "text": (directory / fixture["file"]).read_text()})
+        client.tool("namespace.create", {"name": namespace})
+        client.tool("db.create", {"namespace": namespace, "database": "app"})
+        client.tool("db.migrate", {"namespace": namespace, "database": "app", "migrations": [{"id": "initial", "sql": fixture["sql"]}]})
+        client.tool("fs.write", {"namespace": namespace, "path": "/api.py", "text": (directory / fixture["file"]).read_text()})
         for endpoint in fixture["endpoints"]:
-            client.tool("state_function", dict(endpoint, action="declare", namespace=namespace, file="/api.py"))
+            client.tool("function.declare", dict(endpoint, namespace=namespace, file="/api.py"))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--binary", type=Path, default=Path("target/debug/state-mcp"))
-    parser.add_argument("--data-dir", type=Path, default=Path(".state-mcp-demo"))
+    parser.add_argument("--binary", type=Path, default=Path("target/debug/statemcp"))
+    parser.add_argument("--data-dir", type=Path, default=Path(".statemcp-demo"))
     args = parser.parse_args()
     first = Client(args.binary.resolve(), args.data_dir.resolve())
     second = None
     try:
         setup(first)
         print("note:", first.call("notes", "add", {"text": "A persistent note"}))
-        todo = first.call("todos", "add", {"text": "Try State MCP"})
+        todo = first.call("todos", "add", {"text": "Try statemcp"})
         print("completed todo:", first.call("todos", "complete", {"id": todo[0]}))
         second = Client(args.binary.resolve(), args.data_dir.resolve())
         message = first.call("chat", "post", {"room": "demo", "sender": "model-a", "text": "Hello model-b", "request_id": "demo-first-message"})

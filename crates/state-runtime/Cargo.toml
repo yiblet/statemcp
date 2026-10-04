@@ -3,7 +3,7 @@ name = "state-runtime"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
-description = "Embedded Monty execution and JSON host boundary for State MCP"
+description = "Embedded Monty execution and JSON host boundary for statemcp"
 license = "MIT"
 
 [dependencies]

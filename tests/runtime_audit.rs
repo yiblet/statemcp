@@ -1,4 +1,4 @@
-//! Adversarial tests across the actual State MCP executable's worker boundary.
+//! Adversarial tests across the actual statemcp executable's worker boundary.
 use serde_json::{Map, Value, json};
 use state_runtime::{Limits, RuntimeError, WorkerConfig};
 use std::{
@@ -7,7 +7,7 @@ use std::{
 };
 
 fn worker() -> WorkerConfig {
-    WorkerConfig::new(env!("CARGO_BIN_EXE_state-mcp"))
+    WorkerConfig::new(env!("CARGO_BIN_EXE_statemcp"))
 }
 fn deny(_: &str, _: Vec<Value>, _: Map<String, Value>) -> Result<Value, RuntimeError> {
     panic!("unexpected host effect")
@@ -117,7 +117,7 @@ fn malformed_host_reply_ends_worker_without_a_second_callback() {
         json!({"type": "host_result", "value": null, "extra": true}),
         json!({"type": "complete", "result": {"value": null, "stdout": ""}}),
     ] {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_state-mcp"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_statemcp"))
             .args(["--worker", "67108864", "1024"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -149,7 +149,7 @@ fn malformed_host_reply_ends_worker_without_a_second_callback() {
 #[test]
 fn source_limits_apply_before_spawning_and_nested_values_before_host_dispatch() {
     // A missing executable proves this rejection happens in the parent first.
-    let error = WorkerConfig::new("/nonexistent/state-mcp-runtime-audit")
+    let error = WorkerConfig::new("/nonexistent/statemcp-runtime-audit")
         .execute(
             "12345",
             Value::Null,

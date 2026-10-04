@@ -68,7 +68,7 @@ mcp('state_namespace', {'action': 'create', 'name': 'notes'})
 mcp('state_db', {'action': 'create', 'namespace': 'notes', 'database': 'app'})
 mcp('state_db', {'action': 'migrate', 'namespace': 'notes', 'database': 'app', 'migrations': [{'id': 'initial', 'sql': 'CREATE TABLE items(id INTEGER PRIMARY KEY, text TEXT)'}]})
 mcp('state_fs', {'action': 'write', 'namespace': 'notes', 'path': '/api.py', 'text': inputs['source']})
-mcp('state_function', {'action': 'declare', 'namespace': 'notes', 'name': 'add', 'file': '/api.py', 'symbol': 'add', 'databases': {'app': 'write'}})
+mcp('state_function', {'action': 'declare', 'namespace': 'notes', 'name': 'add', 'file': '/api.py', 'symbol': 'add', 'databases': [{'database':'app','access':'write'}]})
 call('notes', 'add', {'text': 'bound; DROP TABLE items'})
 "#}),
     );
@@ -96,14 +96,14 @@ fn code_is_pinned_and_shared_db_bindings_follow_clones_and_renames() {
         "a",
         "add",
         "def endpoint(text):\n    return db_execute('app', 'INSERT INTO items(text) VALUES (?)', [text])\n",
-        json!({"databases":{"app":"write"}}),
+        json!({"databases": [{"database":"app","access":"write"}]}),
     );
     publish(
         &state,
         "a",
         "list",
         "def endpoint():\n    return db_query('app', 'SELECT text FROM items ORDER BY id')['rows']\n",
-        json!({"databases":{"app":"read"}}),
+        json!({"databases": [{"database":"app","access":"read"}]}),
     );
     call(&state, "a", "add", json!({"text":"original"}));
     write(
@@ -153,7 +153,7 @@ fn input_and_output_contracts_are_authoritative_before_publication() {
         "n",
         "bad",
         "def endpoint(text):\n    db_execute('app', 'INSERT INTO items(text) VALUES (?)', [text])\n    return 123\n",
-        json!({"databases":{"app":"write"},"input_schema":{"type":"object","required":["text"],"properties":{"text":{"type":"string"}},"additionalProperties":false},"output_schema":{"type":"string"}}),
+        json!({"databases": [{"database":"app","access":"write"}],"input_schema":{"type":"object","required":["text"],"properties":{"text":{"type":"string"}},"additionalProperties":false},"output_schema":{"type":"string"}}),
     );
     for arguments in [json!({"text":3}), json!({"text":"writes then fails"})] {
         let error = state
@@ -177,7 +177,7 @@ fn module_initialization_is_effect_free_at_declare_and_every_invoke() {
         "/bad.py",
         "write_text('/evil', 'x')\ndef endpoint():\n    return 1\n",
     );
-    let error=state.dispatch("state_function",json!({"action":"declare","namespace":"n","name":"bad","file":"/bad.py","symbol":"endpoint","files":{"/":"write"}})).unwrap_err();
+    let error=state.dispatch("state_function",json!({"action":"declare","namespace":"n","name":"bad","file":"/bad.py","symbol":"endpoint","files": [{"path":"/","access":"write"}]})).unwrap_err();
     assert_eq!(error.code, "PERMISSION_DENIED");
     assert!(
         state
@@ -207,14 +207,14 @@ fn cross_namespace_nested_failure_rolls_back_every_staged_effect() {
         "b",
         "bad",
         "def endpoint():\n    db_execute('app', \"INSERT INTO items(text) VALUES ('b')\")\n    return 1 / 0\n",
-        json!({"databases":{"app":"write"}}),
+        json!({"databases": [{"database":"app","access":"write"}]}),
     );
     publish(
         &state,
         "a",
         "outer",
         "def endpoint():\n    db_execute('app', \"INSERT INTO items(text) VALUES ('a')\")\n    return call('b', 'bad')\n",
-        json!({"databases":{"app":"write"},"calls":[{"namespace":"b","function":"bad"}]}),
+        json!({"databases": [{"database":"app","access":"write"}],"calls":[{"namespace":"b","function":"bad"}]}),
     );
     assert!(
         state
@@ -257,7 +257,7 @@ fn invoke_does_not_grant_raw_access_and_mcp_cannot_bypass_helper_policy() {
         "n",
         "writer",
         "def endpoint():\n    return db_execute('app', \"INSERT INTO items(text) VALUES ('x')\")\n",
-        json!({"databases":{"app":"write"}}),
+        json!({"databases": [{"database":"app","access":"write"}]}),
     );
     publish(
         &state,
@@ -282,7 +282,7 @@ fn invoke_does_not_grant_raw_access_and_mcp_cannot_bypass_helper_policy() {
         "n",
         "reader",
         "def endpoint():\n    return db_execute('app', \"INSERT INTO items(text) VALUES ('x')\")\n",
-        json!({"databases":{"app":"read"}}),
+        json!({"databases": [{"database":"app","access":"read"}]}),
     );
     assert_eq!(
         state
@@ -316,7 +316,7 @@ fn file_grants_normalize_paths_and_respect_component_boundaries() {
         "n",
         "files",
         "def endpoint(path):\n    write_text(path, 'ok')\n    return read_text(path)\n",
-        json!({"files":{"/allowed/./":"write"}}),
+        json!({"files": [{"path":"/allowed/./","access":"write"}]}),
     );
     assert_eq!(
         call(&state, "n", "files", json!({"path":"/allowed//child"})),
@@ -467,8 +467,8 @@ fn strict_tool_and_host_validation_and_discovery_share_the_same_surface() {
         "state_execute",
         json!({"script":"mcp('state_describe')['tools']"}),
     );
-    assert_eq!(result["value"].as_array().unwrap().len(), 7);
-    assert_eq!(state_core::tool_definitions().len(), 7);
+    assert_eq!(result["value"].as_array().unwrap().len(), 30);
+    assert_eq!(state_core::tool_definitions().len(), 30);
 }
 
 #[test]
@@ -480,7 +480,7 @@ fn shared_depth_and_operation_budgets_abort_recursion_and_loops() {
         "n",
         "recursive",
         "def endpoint():\n    write_text('/staged', 'x')\n    return call('self', 'recursive')\n",
-        json!({"files":{"/staged":"write"},"calls":[{"namespace":"self","function":"recursive"}]}),
+        json!({"files": [{"path":"/staged","access":"write"}],"calls":[{"namespace":"self","function":"recursive"}]}),
     );
     let limited = state.clone().with_limits(CoreLimits {
         max_depth: 3,
@@ -608,7 +608,7 @@ fn migration_grants_introspection_and_version_checks_are_enforced() {
     mcp('state_db', {'action':'migrate', 'namespace':'self', 'database':'app', 'migrations':[{'id':'extend','sql':'CREATE TABLE more(value TEXT)'}]})
     return db_inspect('app')
 "#,
-        json!({"databases":{"app":"migrate"}}),
+        json!({"databases": [{"database":"app","access":"migrate"}]}),
     );
     let schema = call(&state, "n", "migration", json!({}));
     assert_eq!(schema["tables"].as_array().unwrap().len(), 2);
@@ -632,7 +632,7 @@ fn migration_grants_introspection_and_version_checks_are_enforced() {
         r#"def endpoint():
     return mcp('state_db', {'action':'migrate', 'namespace':'self', 'database':'app', 'migrations':[]})
 "#,
-        json!({"databases":{"app":"write"}}),
+        json!({"databases": [{"database":"app","access":"write"}]}),
     );
     assert_eq!(
         state
@@ -656,4 +656,208 @@ fn schema_instance_data_and_property_names_are_not_reference_keywords() {
     );
     let literal = json!({"$ref":"https://example.invalid/", "$id":"literal"});
     assert_eq!(call(&state, "n", "echo", json!({"value":literal})), literal);
+}
+
+#[test]
+fn discovery_guide_runs_and_acknowledgments_keep_actionable_tokens() {
+    let (_dir, state) = service();
+    let overview = run(&state, "state_describe", json!({}));
+    assert_eq!(overview["tools"].as_array().unwrap().len(), 30);
+    assert!(overview["tools"][0].get("inputSchema").is_none());
+    let full = run(&state, "state_describe", json!({"mode":"full"}));
+    assert!(full["tools"][0]["inputSchema"].is_object());
+    let focused = run(&state, "state_describe", json!({"tool":"db.create"}));
+    assert_eq!(focused["tool"]["name"], "db.create");
+    for args in [
+        json!({"mode":"unknown"}),
+        json!({"action":"create"}),
+        json!({"tool":"unknown"}),
+        json!({"tool":"state_db","action":"unknown"}),
+        json!({"function":"add"}),
+    ] {
+        assert_eq!(
+            state.dispatch("state_describe", args).unwrap_err().code,
+            "INVALID_ARGUMENT"
+        );
+    }
+    let guide = run(&state, "state_describe", json!({"mode":"runtime"}));
+    let mut version = Value::Null;
+    for step in guide["example"].as_array().unwrap() {
+        let tool = step["tool"].as_str().unwrap();
+        let result = run(&state, tool, step["arguments"].clone());
+        if tool == "db.create" {
+            assert!(result.get("snapshot").is_none());
+            assert!(result.get("id").is_none());
+            assert!(result["revision"].is_string());
+        }
+        if tool == "function.declare" {
+            assert!(result.get("source").is_none());
+            assert!(result.get("abi_version").is_none());
+            assert!(result["revision"].is_string());
+            version = result["version"].clone();
+        }
+        if tool == "call" {
+            assert_eq!(result, json!([1, "hello"]));
+        }
+    }
+    let detail = run(
+        &state,
+        "state_function",
+        json!({"action":"get","namespace":"demo","name":"add","expected_version":version}),
+    );
+    assert!(detail["source"].is_string());
+    assert!(detail["source_hash"].is_string());
+    assert_eq!(detail["abi_version"], 1);
+    let listing = run(
+        &state,
+        "state_function",
+        json!({"action":"list","namespace":"demo"}),
+    );
+    assert!(listing["functions"][0].get("source").is_none());
+    let inspection = run(
+        &state,
+        "state_db",
+        json!({"action":"inspect","namespace":"demo","database":"app"}),
+    );
+    assert!(inspection["snapshot"].is_string());
+    assert_eq!(inspection["staged"], false);
+    let staged = run(
+        &state,
+        "state_execute",
+        json!({"namespace":"demo","script":"db_execute('app', \"INSERT INTO notes(text) VALUES ('pending')\")\ndb_inspect('app')"}),
+    );
+    assert_eq!(staged["value"]["staged"], true);
+    assert_eq!(staged["value"]["snapshot"], inspection["snapshot"]);
+}
+
+#[test]
+fn dotted_tools_imply_actions_and_preserve_endpoint_permissions() {
+    let (_dir, state) = service();
+    run(&state, "namespace.create", json!({"name":"n"}));
+    run(
+        &state,
+        "db.create",
+        json!({"namespace":"n","database":"app"}),
+    );
+    assert_eq!(
+        state
+            .dispatch(
+                "db.query",
+                json!({"namespace":"n","database":"app","sql":"SELECT 1","action":"execute"})
+            )
+            .unwrap_err()
+            .code,
+        "INVALID_ARGUMENT"
+    );
+    let result = run(
+        &state,
+        "execute",
+        json!({"namespace":"n","script":"mcp('db.query', {'namespace':'n', 'database':'app', 'sql':'SELECT 42'})"}),
+    );
+    assert_eq!(result["value"]["rows"], json!([[42]]));
+    publish(
+        &state,
+        "n",
+        "denied",
+        "def endpoint():\n    return mcp('db.query', {'namespace':'self', 'database':'app', 'sql':'SELECT 1'})\n",
+        json!({}),
+    );
+    assert_eq!(
+        state
+            .dispatch("call", json!({"namespace":"n","function":"denied"}))
+            .unwrap_err()
+            .code,
+        "PERMISSION_DENIED"
+    );
+}
+
+#[test]
+fn discovery_includes_bundled_readme_and_public_validation_errors() {
+    let (_dir, state) = service();
+    let overview = run(&state, "describe", json!({}));
+    assert_eq!(overview["discovery"]["readme"], json!({"mode":"readme"}));
+    let readme = run(&state, "describe", json!({"mode":"readme"}));
+    assert_eq!(readme["format"], "markdown");
+    assert_eq!(readme["text"], include_str!("../../../README.md"));
+    let error = state
+        .dispatch("db.query", json!({"namespace":"n"}))
+        .unwrap_err();
+    assert_eq!(error.code, "INVALID_ARGUMENT");
+    assert!(error.message.starts_with("db.query:"));
+    assert!(!error.message.contains("state_db"));
+    assert!(!error.message.contains("oneOf"));
+    namespace(&state, "n");
+    let written = run(
+        &state,
+        "fs.write",
+        json!({"namespace":"n","path":"/text","text":"hello"}),
+    );
+    assert!(written.get("hash").is_none());
+    let stat = run(&state, "fs.stat", json!({"namespace":"n","path":"/text"}));
+    assert!(stat["hash"].is_string());
+}
+
+#[test]
+fn rename_invalidates_namespace_revision() {
+    let (_dir, state) = service();
+    let created = run(&state, "namespace.create", json!({"name":"original"}));
+    let renamed = run(
+        &state,
+        "namespace.update",
+        json!({"namespace":created["id"],"name":"renamed","expected_revision":created["revision"]}),
+    );
+    assert_eq!(created["id"], renamed["id"]);
+    assert_ne!(created["revision"], renamed["revision"]);
+    assert_eq!(state.dispatch("namespace.update", json!({"namespace":created["id"],"name":"stale","expected_revision":created["revision"]})).unwrap_err().code, "CONFLICT");
+}
+
+#[test]
+fn typed_grants_reject_invalid_and_duplicate_entries_before_publication() {
+    let (_dir, state) = service();
+    namespace(&state, "n");
+    database(&state, "n");
+    write(&state, "n", "/api.py", "def endpoint():\n    return 1\n");
+    for grants in [
+        json!({"databases":{"app":"read"}}),
+        json!({"databases":[{"database":"app"}]}),
+        json!({"databases":[{"database":"app","access":"admin"}]}),
+        json!({"databases":[{"database":"app","access":"read","extra":true}]}),
+        json!({"databases":[{"database":"app","access":"read"},{"database":"app","access":"write"}]}),
+        json!({"files":[{"path":"/x","access":"migrate"}]}),
+        json!({"files":[{"path":"relative","access":"read"}]}),
+        json!({"files":[{"path":"/x/./","access":"read"},{"path":"/x","access":"write"}]}),
+        json!({"calls":[{"namespace":"self"}]}),
+        json!({"calls":[{"namespace":"self","function":"f","access":"write"}]}),
+        json!({"calls":[{"namespace":"self","function":"f"},{"namespace":"self","function":"f"}]}),
+    ] {
+        let mut args =
+            json!({"namespace":"n","name":"invalid","file":"/api.py","symbol":"endpoint"});
+        args.as_object_mut()
+            .unwrap()
+            .extend(grants.as_object().unwrap().clone());
+        let error = state.dispatch("function.declare", args).unwrap_err();
+        assert_eq!(error.code, "INVALID_ARGUMENT", "{grants}: {error}");
+    }
+    assert_eq!(
+        run(&state, "function.list", json!({"namespace":"n"}))["functions"],
+        json!([])
+    );
+    let declaration = publish(
+        &state,
+        "n",
+        "valid",
+        "def endpoint():\n    return db_query('app', 'SELECT count(*) FROM items')['rows']\n",
+        json!({"databases":[{"database":"app","access":"read"}],"files":[{"path":"/x/./","access":"read"}]}),
+    );
+    let detail = run(
+        &state,
+        "function.get",
+        json!({"namespace":"n","name":"valid","expected_version":declaration["version"]}),
+    );
+    assert_eq!(
+        detail["databases"],
+        json!([{"database":"app","access":"read"}])
+    );
+    assert_eq!(detail["files"], json!([{"path":"/x","access":"read"}]));
+    assert_eq!(call(&state, "n", "valid", json!({})), json!([[0]]));
 }

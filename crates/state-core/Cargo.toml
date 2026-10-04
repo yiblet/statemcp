@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT"
-description = "Transactional State MCP service and Monty host APIs"
+description = "Transactional statemcp service and Monty host APIs"
 
 [dependencies]
 state-store = { path = "../state-store" }

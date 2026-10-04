@@ -146,7 +146,18 @@ impl Store {
                 )
                 .optional()?
             };
-            let revision = if previous.as_deref() == Some(&manifest) {
+            let metadata: Option<(String, bool)> = tx
+                .query_row(
+                    "SELECT name,deleted FROM namespaces WHERE id=?",
+                    [&ns.id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            // Copies may share content revisions, but renames/deletions must
+            // invalidate optimistic concurrency tokens for an existing namespace.
+            let metadata_changed =
+                metadata.is_some_and(|(name, deleted)| name != ns.name || deleted != ns.deleted);
+            let revision = if previous.as_deref() == Some(&manifest) && !metadata_changed {
                 ns.revision.clone()
             } else {
                 let revision = id();

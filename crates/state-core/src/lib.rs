@@ -119,6 +119,8 @@ impl State {
         if principal.is_empty() || principal.len() > 256 {
             return Err(Error::invalid("principal must contain 1..256 bytes"));
         }
+        let (tool, args) = schemas::normalize_call(tool, args)?;
+        let tool = tool.as_str();
         schemas::validate_operation(tool, &args)?;
         let key = args.get("idempotency_key").and_then(Value::as_str);
         let hash = format!(
@@ -154,6 +156,36 @@ impl State {
         if let Some(key) = key {
             root.tx.set_receipt(principal, key, &hash, result.clone())?;
         }
+        let mutation_namespace = if matches!(tool, "state_function" | "state_db" | "state_fs")
+            && matches!(
+                args["action"].as_str(),
+                Some(
+                    "declare"
+                        | "update"
+                        | "remove"
+                        | "create"
+                        | "drop"
+                        | "execute"
+                        | "migrate"
+                        | "write"
+                        | "append"
+                        | "move"
+                        | "copy"
+                        | "delete"
+                )
+            ) {
+            Some(
+                root.tx.dispatch(
+                    "state_namespace",
+                    json!({"action":"get","namespace":args["namespace"]}),
+                )?["id"]
+                    .as_str()
+                    .expect("namespace id")
+                    .to_owned(),
+            )
+        } else {
+            None
+        };
         let committed = root.tx.commit()?;
         if committed["replayed"] == true {
             return Ok(committed["result"].clone());
@@ -164,6 +196,11 @@ impl State {
             && let Some(id) = result["id"].as_str().map(str::to_owned)
         {
             result["revision"] = committed["revisions"][id].clone();
+        }
+        if let Some(id) = mutation_namespace
+            && let Some(revision) = committed["revisions"].get(&id)
+        {
+            result["revision"] = revision.clone();
         }
         Ok(result)
     }

@@ -7,7 +7,7 @@ use std::{
 };
 
 fn worker() -> WorkerConfig {
-    WorkerConfig::new(env!("CARGO_BIN_EXE_state-mcp"))
+    WorkerConfig::new(env!("CARGO_BIN_EXE_statemcp"))
 }
 fn deny(_: &str, _: Vec<Value>, _: serde_json::Map<String, Value>) -> Result<Value, RuntimeError> {
     panic!("unexpected host callback")
@@ -217,7 +217,7 @@ fn frames_are_bounded_and_malformed_workers_fail_closed() {
         vec![0, 0, 0, 1, b'{'],
         vec![0, 0, 0, 100, b'{'],
     ] {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_state-mcp"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_statemcp"))
             .args(["--worker", "67108864", "1024"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -235,7 +235,7 @@ fn worker_does_not_need_python_or_modify_parent_allocator() {
     healthy(&worker());
     assert!(!state_runtime::memory_tracking_active());
     // The child executable is absolute; a completely empty PATH still works.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_state-mcp"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_statemcp"))
         .args(["--worker", "67108864", "8388608"])
         .env("PATH", "")
         .stdin(Stdio::piped())

@@ -1,0 +1,7 @@
+/.build/
+/statemcp
+/data/
+*.log
+/.statemcp.*
+
+/curl-results.jsonl

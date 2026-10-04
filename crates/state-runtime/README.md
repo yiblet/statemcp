@@ -86,7 +86,7 @@ allocator limit probe.
 free functions `execute_isolated`, `invoke_isolated`, and
 `validate_module_isolated` take `&WorkerConfig` first. The executable must install
 `LimitedAllocator` globally and route `--worker MEMORY_BYTES MAX_FRAME_BYTES` to
-`worker_main`. The State MCP binary already does this; its parent server never
+`worker_main`. The statemcp binary already does this; its parent server never
 arms the memory ceiling or sets a baseline. Library users choose the executable
 explicitly instead of accidentally launching their own test harness or application.
 

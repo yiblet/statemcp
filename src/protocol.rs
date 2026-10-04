@@ -5,6 +5,8 @@ use std::io::{self, BufRead, Write};
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
+const SERVER_INSTRUCTIONS: &str = "Namespaces contain virtual files, named SQLite databases, and published Python functions. Namespace selectors accept names or stable UUIDs. Use tools/list for tool names and argument schemas; function.list and function.get require a namespace. To publish an endpoint, create its namespace and databases, write a Python source file with fs.write, then use function.declare and call. Published functions have only their declared grants; root execute scripts have owner access. Use expected_revision and expected_version for optimistic concurrency. Tool results are returned directly in content, with isError indicating failure; this server uses a custom JSON-RPC result shape.";
+
 /// Application errors are successful JSON-RPC responses with MCP `isError: true`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolError {
@@ -63,6 +65,7 @@ enum Phase {
 }
 
 /// One synchronous MCP session. Input closes to shut down; stdout contains only JSON.
+#[derive(Clone)]
 pub struct Server<D> {
     dispatcher: D,
     phase: Phase,
@@ -134,7 +137,7 @@ impl<D: Dispatcher> Server<D> {
                 }
                 self.phase = Phase::Initializing;
                 json!({"protocolVersion":PROTOCOL_VERSION,"capabilities":{"tools":{"listChanged":false}},
-                    "serverInfo":{"name":"state-mcp","version":env!("CARGO_PKG_VERSION")}})
+                    "serverInfo":{"name":"statemcp","version":env!("CARGO_PKG_VERSION")},"instructions":SERVER_INSTRUCTIONS})
             }
             "tools/list" | "tools/call" if self.phase != Phase::Ready => {
                 return Some(rpc_error(
@@ -203,17 +206,11 @@ impl<D: Dispatcher> Server<D> {
     }
 }
 
-fn rpc_error(id: Value, code: i32, message: &str) -> Value {
+pub(crate) fn rpc_error(id: Value, code: i32, message: &str) -> Value {
     json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
 }
-fn tool_result(value: Value, is_error: bool) -> Value {
-    // MCP structuredContent is an object; preserve scalar/array service values under value.
-    let structured = if value.is_object() {
-        value
-    } else {
-        json!({"value":value})
-    };
-    json!({"content":[{"type":"text","text":structured.to_string()}],"structuredContent":structured,"isError":is_error})
+pub(crate) fn tool_result(value: Value, is_error: bool) -> Value {
+    json!({"content":value,"isError":is_error})
 }
 fn read_frame(reader: &mut impl BufRead) -> io::Result<Option<Result<Vec<u8>, ()>>> {
     let mut frame = Vec::new();

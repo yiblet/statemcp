@@ -1,6 +1,6 @@
 # state-core
 
-The library service behind State MCP's seven fixed tools. It composes immutable
+The library service behind statemcp's seven fixed tools. It composes immutable
 storage and Monty through one dispatcher, with the same validation and permission
 checks for direct calls and Python host calls. No Python installation is needed.
 
@@ -75,8 +75,8 @@ A declaration takes `action: declare|update`, `namespace`, `name`, `file`, and
     "additionalProperties": false
   },
   "output_schema": {"type": "integer"},
-  "databases": {"app": "write"},
-  "files": {"/attachments": "read"},
+  "databases": [{"database":"app","access":"write"}],
+  "files": [{"path":"/attachments","access":"read"}],
   "calls": [{"namespace": "self", "function": "validate"}]
 }
 ```
@@ -98,11 +98,11 @@ schema-related file or network IO is available.
 
 All grants default to empty:
 
-- `databases: {alias: "read"|"write"|"migrate"}` pins each database's stable local
+- `databases: [{database, access: "read"|"write"|"migrate"}]` pins each database's stable local
   ID. Read permits query/inspect/migration-history reads; write additionally
   permits execute; migrate additionally permits migrations. No mode grants
   database creation or dropping. Application DDL is available through execute.
-- `files: {absolute_path_prefix: "read"|"write"}` uses normalized, component-aware
+- `files: [{path, access: "read"|"write"}]` uses normalized, component-aware
   virtual paths. `/foo` includes `/foo/bar`, not `/foobar`. Write includes read;
   copy requires source read and destination write, move requires both writes.
   Traversal, NULs, and backslashes are rejected.
@@ -117,6 +117,15 @@ A function can only directly access granted databases/files in its own namespace
 Cross-namespace state access happens through explicitly granted endpoint calls.
 Discovery from an endpoint lists only permitted callee contracts and never
 returns another endpoint's source. Root callers can inspect all declarations.
+
+Discovery defaults to a compact overview. `describe({"mode":"runtime"})`
+returns host signatures, result shapes, grant rules, ABI policy, and a runnable
+endpoint example. `mode:"full"` returns full schemas; `tool:"db.create"` focuses discovery on one operation.
+
+Declaration/update responses contain `name`, `published`, and `version`;
+explicit `state_function get` retains source and diagnostic metadata. Database
+creation omits UUID/snapshot metadata, which remains available through inspect.
+Direct mutations include their committed namespace revision when one is created.
 
 ## Monty helpers
 

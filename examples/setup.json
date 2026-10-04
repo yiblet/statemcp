@@ -7,9 +7,12 @@
       {
         "name": "add",
         "symbol": "add",
-        "databases": {
-          "app": "write"
-        },
+        "databases": [
+          {
+            "database": "app",
+            "access": "write"
+          }
+        ],
         "input_schema": {
           "type": "object",
           "properties": {
@@ -26,9 +29,12 @@
       {
         "name": "list",
         "symbol": "list_notes",
-        "databases": {
-          "app": "read"
-        },
+        "databases": [
+          {
+            "database": "app",
+            "access": "read"
+          }
+        ],
         "input_schema": {
           "type": "object",
           "properties": {},
@@ -46,9 +52,12 @@
       {
         "name": "add",
         "symbol": "add",
-        "databases": {
-          "app": "write"
-        },
+        "databases": [
+          {
+            "database": "app",
+            "access": "write"
+          }
+        ],
         "input_schema": {
           "type": "object",
           "properties": {
@@ -65,9 +74,12 @@
       {
         "name": "complete",
         "symbol": "complete",
-        "databases": {
-          "app": "write"
-        },
+        "databases": [
+          {
+            "database": "app",
+            "access": "write"
+          }
+        ],
         "input_schema": {
           "type": "object",
           "properties": {
@@ -84,9 +96,12 @@
       {
         "name": "list",
         "symbol": "list_todos",
-        "databases": {
-          "app": "read"
-        },
+        "databases": [
+          {
+            "database": "app",
+            "access": "read"
+          }
+        ],
         "input_schema": {
           "type": "object",
           "properties": {},
@@ -104,9 +119,12 @@
       {
         "name": "post",
         "symbol": "post",
-        "databases": {
-          "app": "write"
-        },
+        "databases": [
+          {
+            "database": "app",
+            "access": "write"
+          }
+        ],
         "input_schema": {
           "type": "object",
           "properties": {
@@ -135,9 +153,12 @@
       {
         "name": "poll",
         "symbol": "poll",
-        "databases": {
-          "app": "read"
-        },
+        "databases": [
+          {
+            "database": "app",
+            "access": "read"
+          }
+        ],
         "input_schema": {
           "type": "object",
           "properties": {

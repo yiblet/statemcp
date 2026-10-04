@@ -1,4 +1,9 @@
 use serde_json::{Value, json};
+fn tool_value(result: &Value) -> Value {
+    assert!(result.get("structuredContent").is_none());
+    result["content"].clone()
+}
+
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
@@ -15,7 +20,7 @@ impl Directory {
             .unwrap()
             .as_nanos();
         let path =
-            std::env::temp_dir().join(format!("state-mcp-demo-{}-{suffix}", std::process::id()));
+            std::env::temp_dir().join(format!("statemcp-demo-{}-{suffix}", std::process::id()));
         fs::create_dir(&path).unwrap();
         Self(path)
     }
@@ -33,8 +38,8 @@ struct Client {
 }
 impl Client {
     fn open(path: &Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_state-mcp"))
-            .arg("--data-dir")
+        let mut child = Command::new(env!("CARGO_BIN_EXE_statemcp"))
+            .arg("stdio")
             .arg(path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -74,14 +79,14 @@ impl Client {
     fn tool(&mut self, tool: &str, arguments: Value) -> Value {
         let result = self.request("tools/call", json!({"name":tool,"arguments":arguments}));
         assert_ne!(result["isError"], true, "{result}");
-        result["structuredContent"].clone()
+        tool_value(&result).clone()
     }
     fn call(&mut self, namespace: &str, function: &str, arguments: Value) -> Value {
         let result = self.tool(
-            "state_call",
+            "call",
             json!({"namespace":namespace,"function":function,"arguments":arguments}),
         );
-        result.get("value").cloned().unwrap_or(result)
+        result
     }
 }
 impl Drop for Client {
@@ -101,15 +106,9 @@ fn install(client: &mut Client) {
     let fixtures: Value = serde_json::from_str(include_str!("../examples/setup.json")).unwrap();
     for fixture in fixtures.as_array().unwrap() {
         let namespace = &fixture["namespace"];
-        client.tool(
-            "state_namespace",
-            json!({"action":"create","name":namespace}),
-        );
-        client.tool(
-            "state_db",
-            json!({"action":"create","namespace":namespace,"database":"app"}),
-        );
-        client.tool("state_db", json!({"action":"migrate","namespace":namespace,"database":"app","migrations":[{"id":"initial","sql":fixture["sql"]}]}));
+        client.tool("namespace.create", json!({"name":namespace}));
+        client.tool("db.create", json!({"namespace":namespace,"database":"app"}));
+        client.tool("db.migrate", json!({"namespace":namespace,"database":"app","migrations":[{"id":"initial","sql":fixture["sql"]}]}));
         let source = match fixture["file"].as_str().unwrap() {
             "notes.py" => include_str!("../examples/notes.py"),
             "todos.py" => include_str!("../examples/todos.py"),
@@ -117,15 +116,14 @@ fn install(client: &mut Client) {
             other => panic!("unknown example {other}"),
         };
         client.tool(
-            "state_fs",
-            json!({"action":"write","namespace":namespace,"path":"/api.py","text":source}),
+            "fs.write",
+            json!({"namespace":namespace,"path":"/api.py","text":source}),
         );
         for endpoint in fixture["endpoints"].as_array().unwrap() {
             let mut declaration = endpoint.clone();
-            declaration["action"] = json!("declare");
             declaration["namespace"] = namespace.clone();
             declaration["file"] = json!("/api.py");
-            client.tool("state_function", declaration);
+            client.tool("function.declare", declaration);
         }
     }
 }
@@ -147,10 +145,7 @@ fn real_stdio_notes_todos_chat_persist_and_compose() {
         first.call("todos", "complete", json!({"id":1})),
         json!([[1, "ship MVP", 1]])
     );
-    let schema = first.tool(
-        "state_db",
-        json!({"action":"inspect","namespace":"chat","database":"app"}),
-    );
+    let schema = first.tool("db.inspect", json!({"namespace":"chat","database":"app"}));
     assert_eq!(schema["tables"][0]["name"], "messages");
     let mut second = Client::open(&directory.0);
     let arguments =
@@ -171,7 +166,7 @@ fn real_stdio_notes_todos_chat_persist_and_compose() {
         second.call("chat", "poll", json!({"room":"shared","after":1})),
         json!([])
     );
-    let composed = first.tool("state_execute", json!({"script":"call('notes', 'add', {'text': inputs})\ncall('notes', 'list')","inputs":"composed note","idempotency_key":"compose-once"}));
+    let composed = first.tool("execute", json!({"script":"call('notes', 'add', {'text': inputs})\ncall('notes', 'list')","inputs":"composed note","idempotency_key":"compose-once"}));
     assert_eq!(
         composed["value"],
         json!([[1, "persistent note"], [2, "composed note"]])

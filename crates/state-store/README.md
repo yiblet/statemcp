@@ -1,6 +1,6 @@
 # state-store
 
-The storage layer for State MCP: an immutable catalog plus separate SQLite files
+The storage layer for statemcp: an immutable catalog plus separate SQLite files
 for application databases. It does not execute Python or validate endpoint schemas;
 the core must validate declarations before handing them to storage.
 
@@ -48,12 +48,14 @@ Namespace names remain reserved after deletion.
 | `state_namespace` | `create {name}`, `list`, `get {namespace}`, `update {namespace,name}`, `copy {namespace,name}`, `delete {namespace}` |
 | `state_fs` | `read`, `stat`, `write`, `append`, `list`, `delete`, `move`, `copy`; `path` is an absolute virtual POSIX path; writes take exactly one of `text` or `base64`; moves/copies take `destination`; directory deletion requires `recursive:true` |
 | `state_db` | `create`, `list`, `drop`, `query`, `execute`, `inspect`, `migrate`, `migrations`; database operations take `database`; SQL takes `sql` and optional array `params`; migrations take `migrations:[{id,sql}]` |
-| `state_function` | `declare`/`update`, `get`, `list`, `remove`; each endpoint has `name`; declaration includes `file`, `symbol`, schemas and `databases:{name:"read"|"write"|"migrate"}`; optional `expected_version` |
+| `state_function` | `declare`/`update`, `get`, `list`, `remove`; each endpoint has `name`; declaration includes `file`, `symbol`, schemas and `databases:[{database,access:"read"|"write"|"migrate"}]`; optional `expected_version` |
 
 Namespace/file/database/function lists are wrapped in `namespaces`, `entries`,
 `databases`, or `functions` respectively. Function get/declare returns metadata
 **directly**, including pinned `source`, `source_hash`, `version`, `abi_version`,
 and `database_ids:{alias:stable_local_id}`. Source edits do not change declarations.
+The public `state-core` API compacts declaration acknowledgments; these full
+metadata responses describe the lower-level storage API.
 Removing a database referenced by a declaration returns `CONFLICT`.
 
 SQL query/execute takes one statement and returns
@@ -69,7 +71,7 @@ migration. IDs are opaque strings: lexical ordering is not assumed. Exact replay
 writes nothing. A migration batch and its external catalog ledger publish together.
 Application SQL sees no internal migration tables.
 
-`inspect` returns `name`, `id`, `schema_fingerprint`, `migrations`, the raw ordered
+`inspect` returns `name`, `id`, `snapshot`, `staged`, `schema_fingerprint`, `migrations`, the raw ordered
 `schema` query, and `tables`. Table entries include `name`, `type`, `sql`, `columns`
 (query result), `indexes` (objects with detailed index-column query results), and
 `foreign_keys` (query result). Views and triggers also appear in `schema`.
