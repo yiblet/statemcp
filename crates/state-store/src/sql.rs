@@ -16,6 +16,80 @@ use std::{
 pub(crate) const MAX_RESULT: usize = 1024 * 1024;
 pub(crate) const MAX_DB: u64 = 256 * 1024 * 1024;
 
+// Classify SQLite names at the authorizer boundary without allocating lowercase copies.
+#[derive(Clone, Copy)]
+enum PragmaPolicy {
+    Inspection,
+    ScalarRead,
+}
+impl PragmaPolicy {
+    fn parse(name: &str) -> Option<Self> {
+        const NAMES: &[(&str, PragmaPolicy)] = &[
+            ("table_info", PragmaPolicy::Inspection),
+            ("table_xinfo", PragmaPolicy::Inspection),
+            ("index_list", PragmaPolicy::Inspection),
+            ("index_info", PragmaPolicy::Inspection),
+            ("index_xinfo", PragmaPolicy::Inspection),
+            ("foreign_key_list", PragmaPolicy::Inspection),
+            ("table_list", PragmaPolicy::ScalarRead),
+            ("database_list", PragmaPolicy::ScalarRead),
+            ("user_version", PragmaPolicy::ScalarRead),
+            ("application_id", PragmaPolicy::ScalarRead),
+            ("schema_version", PragmaPolicy::ScalarRead),
+            ("encoding", PragmaPolicy::ScalarRead),
+            ("page_count", PragmaPolicy::ScalarRead),
+            ("page_size", PragmaPolicy::ScalarRead),
+            ("freelist_count", PragmaPolicy::ScalarRead),
+            ("foreign_keys", PragmaPolicy::ScalarRead),
+            ("compile_options", PragmaPolicy::ScalarRead),
+            ("integrity_check", PragmaPolicy::ScalarRead),
+            ("quick_check", PragmaPolicy::ScalarRead),
+            ("foreign_key_check", PragmaPolicy::ScalarRead),
+        ];
+        NAMES
+            .iter()
+            .find_map(|(wire, policy)| name.eq_ignore_ascii_case(wire).then_some(*policy))
+    }
+}
+#[derive(Clone, Copy)]
+enum RestrictedFunction {
+    LoadExtension,
+    ReadFile,
+    WriteFile,
+    Fts3Tokenizer,
+}
+impl RestrictedFunction {
+    fn parse(name: &str) -> Option<Self> {
+        const NAMES: &[(&str, RestrictedFunction)] = &[
+            ("load_extension", RestrictedFunction::LoadExtension),
+            ("readfile", RestrictedFunction::ReadFile),
+            ("writefile", RestrictedFunction::WriteFile),
+            ("fts3_tokenizer", RestrictedFunction::Fts3Tokenizer),
+        ];
+        NAMES
+            .iter()
+            .find_map(|(wire, kind)| name.eq_ignore_ascii_case(wire).then_some(*kind))
+    }
+}
+#[derive(Clone, Copy)]
+enum VirtualTableModule {
+    Fts5,
+    Rtree,
+    RtreeI32,
+}
+impl VirtualTableModule {
+    fn parse(name: &str) -> Option<Self> {
+        const NAMES: &[(&str, VirtualTableModule)] = &[
+            ("fts5", VirtualTableModule::Fts5),
+            ("rtree", VirtualTableModule::Rtree),
+            ("rtree_i32", VirtualTableModule::RtreeI32),
+        ];
+        NAMES
+            .iter()
+            .find_map(|(wire, kind)| (name == *wire).then_some(*kind))
+    }
+}
+
 pub(crate) fn open(path: &Path, writable: bool) -> Result<Connection> {
     let flags = if writable {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
@@ -49,51 +123,25 @@ pub(crate) fn open(path: &Path, writable: bool) -> Result<Connection> {
             pragma_name,
             pragma_value,
         } => {
-            let name = pragma_name.to_ascii_lowercase();
-            let inspection = matches!(
-                name.as_str(),
-                "table_info"
-                    | "table_xinfo"
-                    | "index_list"
-                    | "index_info"
-                    | "index_xinfo"
-                    | "foreign_key_list"
-            );
-            let scalar_read = pragma_value.is_none()
-                && matches!(
-                    name.as_str(),
-                    "table_list"
-                        | "database_list"
-                        | "user_version"
-                        | "application_id"
-                        | "schema_version"
-                        | "encoding"
-                        | "page_count"
-                        | "page_size"
-                        | "freelist_count"
-                        | "foreign_keys"
-                        | "compile_options"
-                        | "integrity_check"
-                        | "quick_check"
-                        | "foreign_key_check"
-                );
-            if inspection || scalar_read {
+            let allowed = match PragmaPolicy::parse(pragma_name) {
+                Some(PragmaPolicy::Inspection) => true,
+                Some(PragmaPolicy::ScalarRead) => pragma_value.is_none(),
+                None => false,
+            };
+            if allowed {
                 Authorization::Allow
             } else {
                 Authorization::Deny
             }
         }
         AuthAction::Function { function_name }
-            if matches!(
-                function_name.to_ascii_lowercase().as_str(),
-                "load_extension" | "readfile" | "writefile" | "fts3_tokenizer"
-            ) =>
+            if RestrictedFunction::parse(function_name).is_some() =>
         {
             Authorization::Deny
         }
         AuthAction::CreateVtable { module_name, .. }
         | AuthAction::DropVtable { module_name, .. }
-            if !matches!(module_name, "fts5" | "rtree" | "rtree_i32") =>
+            if VirtualTableModule::parse(module_name).is_none() =>
         {
             Authorization::Deny
         }
@@ -162,17 +210,17 @@ fn output(value: ValueRef<'_>) -> Result<Value> {
     })
 }
 
-pub(crate) fn run(conn: &Connection, sql: &str, params: &Value, read_only: bool) -> Result<Value> {
+pub(crate) fn run(
+    conn: &Connection,
+    sql: &str,
+    params: &[Value],
+    read_only: bool,
+) -> Result<Value> {
     reset_deadline(conn)?;
     if sql.len() > MAX_RESULT {
         return Err(Error::limit("SQL exceeds 1 MiB"));
     }
-    let params: Vec<SqlValue> = params
-        .as_array()
-        .ok_or_else(|| Error::invalid("params must be an array"))?
-        .iter()
-        .map(parameter)
-        .collect::<Result<_>>()?;
+    let params: Vec<SqlValue> = params.iter().map(parameter).collect::<Result<_>>()?;
     let mut stmt = conn.prepare(sql)?;
     if read_only && !stmt.readonly() {
         return Err(Error::new(
@@ -213,7 +261,7 @@ pub(crate) fn inspect(conn: &Connection) -> Result<Value> {
     let schema = run(
         conn,
         "SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type,name",
-        &json!([]),
+        &[],
         true,
     )?;
     let mut bytes = serde_json::to_vec(&schema)?.len();
@@ -229,13 +277,13 @@ pub(crate) fn inspect(conn: &Connection) -> Result<Value> {
         let columns = run(
             conn,
             "SELECT cid,name,type,\"notnull\",dflt_value,pk,hidden FROM pragma_table_xinfo(?)",
-            &json!([name]),
+            std::slice::from_ref(name),
             true,
         )?;
         let indexes = run(
             conn,
             "SELECT seq,name,\"unique\",origin,partial FROM pragma_index_list(?)",
-            &json!([name]),
+            std::slice::from_ref(name),
             true,
         )?;
         bytes += serde_json::to_vec(&columns)?.len();
@@ -245,7 +293,7 @@ pub(crate) fn inspect(conn: &Connection) -> Result<Value> {
             if started.elapsed() > Duration::from_secs(2) {
                 return Err(Error::limit("schema inspection exceeds two seconds"));
             }
-            let detail = json!({"name":idx[1], "unique":idx[2], "origin":idx[3], "partial":idx[4], "columns":run(conn,"SELECT seqno,cid,name,desc,coll,key FROM pragma_index_xinfo(?)",&json!([idx[1]]),true)?});
+            let detail = json!({"name":idx[1], "unique":idx[2], "origin":idx[3], "partial":idx[4], "columns":run(conn,"SELECT seqno,cid,name,desc,coll,key FROM pragma_index_xinfo(?)",std::slice::from_ref(&idx[1]),true)?});
             bytes += serde_json::to_vec(&detail)?.len();
             inspection_budget(bytes)?;
             index_details.push(detail);
@@ -253,7 +301,7 @@ pub(crate) fn inspect(conn: &Connection) -> Result<Value> {
         let foreign_keys = run(
             conn,
             "SELECT id,seq,\"table\",\"from\",\"to\",on_update,on_delete,\"match\" FROM pragma_foreign_key_list(?)",
-            &json!([name]),
+            std::slice::from_ref(name),
             true,
         )?;
         // Check incrementally: waiting until the entire schema is assembled can

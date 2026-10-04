@@ -1,9 +1,11 @@
 //! CLI arguments and translation to the canonical service operations.
 mod input;
+use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
-use input::{json_value, merge, operation, source};
+use input::{json_value, operation, request, source};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::Value;
+use statemcp::{Request, Tool};
 use std::{net::SocketAddr, path::PathBuf};
 
 #[derive(Parser)]
@@ -24,21 +26,29 @@ pub struct Storage {
     pub data_dir: PathBuf,
 }
 
+// Parsed once at startup; keep the subcommand arguments inline.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub enum Command {
+    /// Internal isolated Monty worker
+    #[command(hide = true, long_flag = "worker")]
+    Worker {
+        memory_bytes: usize,
+        max_frame_bytes: usize,
+    },
     /// Serve MCP over standard input/output
     Stdio {
         #[command(flatten)]
         storage: Storage,
     },
-    /// Serve the JSON-RPC tool API over HTTP at /mcp
+    /// Serve MCP over Streamable HTTP at /mcp
     Http {
         #[command(flatten)]
         storage: Storage,
         #[arg(long, default_value = "127.0.0.1:8000")]
         bind: SocketAddr,
         /// Require Authorization: Bearer <value> on every HTTP request
-        #[arg(long, value_name = "X")]
+        #[arg(long, value_name = "X", value_parser = bearer_token)]
         auth_bearer: Option<String>,
     },
     /// Run explicit storage cleanup and exit
@@ -51,7 +61,7 @@ pub enum Command {
     /// Invoke a state tool directly without running an MCP transport
     Cli {
         #[command(subcommand)]
-        tool: Box<ToolCommand>,
+        tool: ToolCommand,
     },
 }
 
@@ -265,26 +275,13 @@ pub struct Describe {
     function: Option<String>,
 }
 
-impl Command {
-    pub fn storage(&self) -> &Storage {
-        match self {
-            Self::Stdio { storage }
-            | Self::Http { storage, .. }
-            | Self::Maintenance { storage, .. } => storage,
-            Self::Cli { tool } => tool.storage(),
-        }
-    }
-    /// Prepare input before opening state. Core validation remains authoritative.
-    pub fn request(&self) -> Result<Option<(String, Value)>, String> {
-        match self {
-            Self::Cli { tool } => tool.request().map(Some),
-            _ => Ok(None),
-        }
-    }
+fn bearer_token(value: &str) -> Result<String> {
+    statemcp::http::validate_bearer(Some(value))?;
+    Ok(value.to_owned())
 }
 
 impl ToolCommand {
-    fn storage(&self) -> &Storage {
+    pub fn storage(&self) -> &Storage {
         match self {
             Self::Namespace(args) => &args.operation.storage,
             Self::Fs(args) => &args.operation.storage,
@@ -295,31 +292,34 @@ impl ToolCommand {
             Self::Describe(args) => &args.storage,
         }
     }
-    fn request(&self) -> Result<(String, Value), String> {
-        let (tool, arguments) = match self {
-            Self::Namespace(args) => ("state_namespace", operation(&args.operation, args, true)?),
-            Self::Fs(args) => ("state_fs", operation(&args.operation, args, false)?),
-            Self::Db(args) => ("state_db", operation(&args.operation, args, false)?),
-            Self::Function(args) => ("state_function", operation(&args.operation, args, false)?),
-            Self::Call(args) => ("state_call", merge(args.json.as_deref(), args)?),
+    pub fn request(&self) -> Result<Request> {
+        match self {
+            Self::Namespace(args) => operation(&args.operation, args, Tool::Namespace),
+            Self::Fs(args) => operation(&args.operation, args, Tool::File),
+            Self::Db(args) => operation(&args.operation, args, Tool::Database),
+            Self::Function(args) => operation(&args.operation, args, Tool::Function),
+            Self::Call(args) => request(Tool::Call, args.json.as_deref(), args),
             Self::Execute(args) => {
-                let mut value = json!({});
-                if let Some(script) = &args.script {
-                    value["script"] = json!(source(script)?);
+                #[derive(Serialize)]
+                struct Fields<'a> {
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    script: Option<String>,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    namespace: Option<&'a str>,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    inputs: Option<&'a Value>,
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    idempotency_key: Option<&'a str>,
                 }
-                if let Some(namespace) = &args.namespace {
-                    value["namespace"] = json!(namespace);
-                }
-                if let Some(inputs) = &args.inputs {
-                    value["inputs"] = inputs.clone();
-                }
-                if let Some(key) = &args.idempotency_key {
-                    value["idempotency_key"] = json!(key);
-                }
-                ("state_execute", merge(args.json.as_deref(), &value)?)
+                let fields = Fields {
+                    script: args.script.as_deref().map(source).transpose()?,
+                    namespace: args.namespace.as_deref(),
+                    inputs: args.inputs.as_ref(),
+                    idempotency_key: args.idempotency_key.as_deref(),
+                };
+                request(Tool::Execute, args.json.as_deref(), &fields)
             }
-            Self::Describe(args) => ("state_describe", merge(args.json.as_deref(), args)?),
-        };
-        Ok((tool.to_owned(), arguments))
+            Self::Describe(args) => request(Tool::Describe, args.json.as_deref(), args),
+        }
     }
 }

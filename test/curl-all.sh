@@ -32,7 +32,7 @@ trap 'exit 143' TERM
 server_pid=$!
 url=''
 for ((attempt=0; attempt<100; attempt++)); do
-    url=$(sed -n 's/^statemcp: listening on //p' "$work/server.log" | head -n 1)
+    url=$(sed -n 's/.*url=\(http[^ ]*\).*/\1/p' "$work/server.log" | head -n 1)
     [[ -z $url ]] || break
     if ! kill -0 "$server_pid" 2>/dev/null; then cat "$work/server.log" >&2; exit 1; fi
     sleep 0.1
@@ -46,7 +46,7 @@ response=null
 # expected is success, notification, a tool error code, or rpc:<JSON-RPC code>.
 request() {
     local label=$1 payload=$2 expected=${3:-success} status curl_exit=0 passed=false
-    local -a headers=(-H 'Content-Type: application/json' -H 'Accept: application/json' -H 'MCP-Protocol-Version: 2025-06-18')
+    local -a headers=(-H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -H 'MCP-Protocol-Version: 2025-06-18')
     [[ -z $session ]] || headers+=(-H "Mcp-Session-Id: $session")
     : > "$work/body"
     : > "$work/headers"
@@ -55,13 +55,15 @@ request() {
         -D "$work/headers" -o "$work/body" -w '%{http_code}' \
         "${headers[@]}" --data-binary "$payload" "$url" 2>"$work/curl-error") || curl_exit=$?
     # Decode the JSON-RPC response.
-    response=$(jq -Rs 'if length == 0 then null else try fromjson catch null end' "$work/body")
+    response=$(jq -Rs 'if length == 0 then null else
+        try fromjson catch (split("\n") | map(select(startswith("data:")) | ltrimstr("data:") | try fromjson catch empty) | map(select(has("id"))) | first // null)
+        end' "$work/body")
     if [[ $curl_exit == 0 ]]; then
         case "$expected" in
             notification) [[ $status == 202 ]] && passed=true ;;
             success) if [[ $status == 200 ]] && jq -e '.result != null and .error == null and (.result.isError != true)' <<<"$response" >/dev/null; then passed=true; fi ;;
-            rpc:*) if [[ $status == 200 ]] && jq -e --arg code "${expected#rpc:}" '.error.code == ($code|tonumber)' <<<"$response" >/dev/null; then passed=true; fi ;;
-            *) if [[ $status == 200 ]] && jq -e --arg code "$expected" '.result.isError == true and .result.content.error.code == $code' <<<"$response" >/dev/null; then passed=true; fi ;;
+            rpc:*) if [[ $status == 200 || $status == 400 ]] && jq -e --arg code "${expected#rpc:}" '.error.code == ($code|tonumber)' <<<"$response" >/dev/null; then passed=true; fi ;;
+            *) if [[ $status == 200 ]] && jq -e --arg code "$expected" '.result.isError == true and (.result.content[0].text | fromjson).error.code == $code' <<<"$response" >/dev/null; then passed=true; fi ;;
         esac
     fi
     if [[ $expected != notification ]] && ! jq -e --argjson request "$payload" ' .jsonrpc == "2.0" and .id == $request.id' <<<"$response" >/dev/null; then
@@ -93,7 +95,7 @@ tool() {
     rpc "$label" tools/call "$(jq -cn --arg name "$name" --argjson arguments "$arguments" '{name:$name,arguments:$arguments}')" "$expected"
 }
 # Validate returned data as well as transport status, without adding log metadata.
-result() { jq -c '.result.content' <<<"$response"; }
+result() { jq -c '.result.content[0].text | fromjson' <<<"$response"; }
 assert_result() {
     local label=$1 predicate=$2
     if ! result | jq -e "$predicate" >/dev/null; then
@@ -113,7 +115,7 @@ tool describe.overview describe '{}'
 tool describe.full describe '{"mode":"full"}'
 tool describe.runtime describe '{"mode":"runtime"}'
 tool describe.readme describe '{"mode":"readme"}'
-assert_result readme '.format == "markdown" and (.text | contains("db.query"))'
+assert_result readme '.format == "markdown" and (.text | startswith("# StateMCP")) and (.text | contains("reference.md"))'
 tool describe.tool describe '{"tool":"execute"}'
 tool describe.action describe '{"tool":"db.create"}'
 
@@ -121,7 +123,7 @@ tool describe.action describe '{"tool":"db.create"}'
 tool namespace.create namespace.create '{"name":"curl-demo"}'
 tool namespace.list namespace.list '{}'
 tool namespace.get namespace.get '{"namespace":"curl-demo"}'
-revision=$(jq -r '.result.content.revision' <<<"$response")
+revision=$(jq -r '.result.content[0].text | fromjson | .revision' <<<"$response")
 tool namespace.update namespace.update "$(jq -cn --arg revision "$revision" '{namespace:"curl-demo",name:"curl-renamed",expected_revision:$revision}')"
 assert_result namespace.rename ".revision != \"$revision\""
 tool fs.write fs.write '{"namespace":"curl-renamed","path":"/notes/message.txt","text":"hello"}'
@@ -153,7 +155,7 @@ source=$'def add(text):\n    return db_execute("app", "INSERT INTO notes(text) V
 tool function.source fs.write "$(jq -cn --arg source "$source" '{namespace:"curl-renamed",path:"/api.py",text:$source}')"
 declaration='{"namespace":"curl-renamed","name":"add","file":"/api.py","symbol":"add","databases": [{"database":"app","access":"write"}],"input_schema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false},"output_schema":{"type":"array"}}'
 tool function.declare function.declare "$declaration"
-version=$(jq -r '.result.content.version' <<<"$response")
+version=$(jq -r '.result.content[0].text | fromjson | .version' <<<"$response")
 tool function.get function.get "$(jq -cn --arg version "$version" '{namespace:"curl-renamed",name:"add",expected_version:$version}')"
 tool function.list function.list '{"namespace":"curl-renamed"}'
 tool describe.namespace describe '{"namespace":"curl-renamed"}'

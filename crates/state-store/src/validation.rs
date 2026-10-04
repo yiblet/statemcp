@@ -1,11 +1,29 @@
 //! Shared JSON argument and virtual path validation.
 use crate::{Error, Result};
-use serde_json::Value;
 
-pub(crate) fn required<'a>(args: &'a Value, field: &str) -> Result<&'a str> {
-    args.get(field)
-        .and_then(Value::as_str)
-        .ok_or_else(|| Error::invalid(format!("{field} must be a string")))
+/// A normalized absolute virtual path with no parent traversal.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct VirtualPath(String);
+impl VirtualPath {
+    pub fn parse(value: &str) -> Result<Self> {
+        virtual_path(value).map(Self)
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    /// True for this path and its descendants, respecting component boundaries.
+    pub fn contains(&self, path: &Self) -> bool {
+        self.0 == "/"
+            || self == path
+            || path
+                .0
+                .strip_prefix(&self.0)
+                .is_some_and(|tail| tail.starts_with('/'))
+    }
+}
+
+pub(crate) fn required<'a>(value: Option<&'a str>, field: &str) -> Result<&'a str> {
+    value.ok_or_else(|| Error::invalid(format!("{field} must be a string")))
 }
 pub(crate) fn name(value: &str) -> Result<String> {
     if value.is_empty()
@@ -31,11 +49,30 @@ pub(crate) fn virtual_path(value: &str) -> Result<String> {
     }
     let mut parts = Vec::new();
     for part in value.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => return Err(Error::invalid("parent traversal is forbidden")),
-            _ => parts.push(part),
+        match PathComponent::from(part) {
+            PathComponent::Current => {}
+            PathComponent::Parent => return Err(Error::invalid("parent traversal is forbidden")),
+            PathComponent::Name(name) => parts.push(name),
         }
     }
     Ok(format!("/{}", parts.join("/")))
+}
+
+/// A borrowed component of a virtual POSIX path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PathComponent<'a> {
+    Current,
+    Parent,
+    Name(&'a str),
+}
+impl<'a> From<&'a str> for PathComponent<'a> {
+    fn from(value: &'a str) -> Self {
+        if value.is_empty() || value == "." {
+            Self::Current
+        } else if value == ".." {
+            Self::Parent
+        } else {
+            Self::Name(value)
+        }
+    }
 }

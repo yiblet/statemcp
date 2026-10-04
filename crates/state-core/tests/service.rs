@@ -536,6 +536,8 @@ fn receipt_replays_exact_result_and_scopes_keys_by_trusted_principal() {
     let args = json!({"namespace":"n","idempotency_key":"k","script":"db_execute('app', \"INSERT INTO items(text) VALUES ('once') RETURNING id\")"});
     let result = run(&state, "state_execute", args.clone());
     assert_eq!(run(&state, "state_execute", args.clone()), result);
+    let parsed = state_core::Request::parse("execute", args.clone()).unwrap();
+    assert_eq!(state.dispatch_request(parsed).unwrap(), result);
     assert_eq!(rows(&state, "n"), json!([["once"]]));
     let mut changed = args.clone();
     changed["script"] = json!("42");
@@ -543,7 +545,8 @@ fn receipt_replays_exact_result_and_scopes_keys_by_trusted_principal() {
         state.dispatch("state_execute", changed).unwrap_err().code,
         "IDEMPOTENCY_MISMATCH"
     );
-    state.dispatch_as("other", "state_execute", args).unwrap();
+    let parsed = state_core::Request::parse("execute", args).unwrap();
+    state.dispatch_request_as("other", parsed).unwrap();
     assert_eq!(rows(&state, "n"), json!([["once"], ["once"]]));
     assert_eq!(state.dispatch("state_execute",json!({"script":"mcp('state_execute', {'script':'42', 'idempotency_key':'nested'})"})).unwrap_err().code,"INVALID_ARGUMENT");
 }

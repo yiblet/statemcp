@@ -1,17 +1,18 @@
+mod common;
 use serde_json::{Value, json};
 fn tool_value(result: &Value) -> Value {
     assert!(result.get("structuredContent").is_none());
-    result["content"].clone()
+    serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
 }
 
-use statemcp::{Server, State};
+use statemcp::State;
 use std::{
     fs,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[test]
-fn embedded_service_dispatches_through_mcp_and_rolls_back_failed_scripts() {
+#[tokio::test]
+async fn embedded_service_dispatches_through_mcp_and_rolls_back_failed_scripts() {
     let path = std::env::temp_dir().join(format!(
         "statemcp-wire-{}-{}",
         std::process::id(),
@@ -21,14 +22,20 @@ fn embedded_service_dispatches_through_mcp_and_rolls_back_failed_scripts() {
             .as_nanos()
     ));
     let state = State::open(&path).unwrap();
-    let mut server = Server::new(state.clone());
-    server.handle(json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"integration","version":"1"}}}));
-    server.handle(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
-    let response = server.handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"namespace.create","arguments":{"name":"app"}}})).unwrap();
-    assert_eq!(response["result"]["isError"], false);
-    assert_eq!(tool_value(&response["result"])["name"], "app");
-    let response = server.handle(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"execute","arguments":{"namespace":"app","script":"write_text('/failed.txt', 'rollback')\n1 / 0"}}})).unwrap();
-    assert_eq!(response["result"]["isError"], true);
+    let client = common::connect(state.clone()).await;
+    let response = client
+        .call_tool(common::request("namespace.create", json!({"name":"app"})))
+        .await
+        .unwrap();
+    assert_eq!(common::value(&response)["name"], "app");
+    let response = client
+        .call_tool(common::request(
+            "execute",
+            json!({"namespace":"app","script":"write_text('/failed.txt', 'rollback')\n1 / 0"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.is_error, Some(true));
     assert!(
         state
             .dispatch("fs.read", json!({"namespace":"app","path":"/failed.txt"}))
@@ -36,7 +43,7 @@ fn embedded_service_dispatches_through_mcp_and_rolls_back_failed_scripts() {
     );
     let result = state.dispatch("execute", json!({"namespace":"app","script":"write_text('/ok.txt', 'saved')\nread_text('/ok.txt')"})).unwrap();
     assert_eq!(result["value"], "saved");
-    drop(server);
+    client.cancel().await.unwrap();
     drop(state);
     let reopened = State::open(&path).unwrap();
     let file: Value = reopened
@@ -50,7 +57,7 @@ fn embedded_service_dispatches_through_mcp_and_rolls_back_failed_scripts() {
 #[test]
 fn executable_runs_real_worker_callbacks_and_explicit_maintenance() {
     use std::{
-        io::Write,
+        io::{BufRead, BufReader, Write},
         process::{Command, Stdio},
     };
     let path = std::env::temp_dir().join(format!(
@@ -62,6 +69,7 @@ fn executable_runs_real_worker_callbacks_and_explicit_maintenance() {
             .as_nanos()
     ));
     let mut child = Command::new(env!("CARGO_BIN_EXE_statemcp"))
+        .env("RUST_LOG", "debug")
         .arg("stdio")
         .arg(&path)
         .stdin(Stdio::piped())
@@ -78,6 +86,13 @@ fn executable_runs_real_worker_callbacks_and_explicit_maintenance() {
     for request in requests {
         writeln!(input, "{request}").unwrap();
     }
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut replies = Vec::new();
+    for _ in 0..2 {
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        replies.push(serde_json::from_str::<Value>(&line).unwrap());
+    }
     drop(input);
     let output = child.wait_with_output().unwrap();
     assert!(
@@ -85,11 +100,8 @@ fn executable_runs_real_worker_callbacks_and_explicit_maintenance() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let responses: Vec<Value> = String::from_utf8(output.stdout)
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
+    assert!(String::from_utf8_lossy(&output.stderr).contains("rmcp::service"));
+    let responses = replies;
     assert_eq!(responses[1]["result"]["isError"], false, "{}", responses[1]);
     assert_eq!(tool_value(&responses[1]["result"])["value"], 42);
     let state = State::open(&path).unwrap();

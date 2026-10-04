@@ -161,6 +161,9 @@ fn active_invocations_block_maintenance_and_exclusive_lock_blocks_begin() {
     lock.try_lock().unwrap();
     assert_eq!(store.begin().err().unwrap().code, "CONFLICT");
     assert_eq!(Store::open(dir.path()).err().unwrap().code, "CONFLICT");
+    // Parallel process tests can briefly inherit this descriptor between fork
+    // and exec. Unlock the shared file description before asserting availability.
+    lock.unlock().unwrap();
     drop(lock);
     store.maintenance(0).unwrap();
 }

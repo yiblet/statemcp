@@ -7,7 +7,9 @@ mod objects;
 mod snapshots;
 
 use self::snapshots::WorkingDatabase;
-use crate::{Error, Receipt, Result, Store, identity::id, model::Namespace, sql};
+use crate::{
+    Arguments, Error, Operation, Receipt, Result, Store, Tool, identity::id, model::Namespace, sql,
+};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
@@ -87,14 +89,62 @@ impl Transaction {
                 "a prior operation failed",
             ));
         }
-        let result = match tool {
-            "state_namespace" => self.namespace(&args),
-            "state_fs" => self.file(&args),
-            "state_db" => self.database(&args),
-            "state_function" => self.function(&args),
-            _ => Err(Error::new(
+        let result = tool
+            .parse::<Tool>()
+            .map_err(|_| {
+                Error::new(
+                    "UNSUPPORTED_FEATURE",
+                    format!("storage does not handle {tool}"),
+                )
+            })
+            .and_then(|tool| tool.operation(&args))
+            .and_then(|operation| self.dispatch_operation(operation, args));
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+    pub fn dispatch_operation(&mut self, operation: Operation, args: Value) -> Result<Value> {
+        if self.poisoned {
+            return Err(Error::new(
+                "TRANSACTION_ABORTED",
+                "a prior operation failed",
+            ));
+        }
+        let result = (|| {
+            let mut args = args;
+            if let Some(action) = operation.action_name() {
+                args.as_object_mut()
+                    .ok_or_else(|| Error::invalid("arguments must be an object"))?
+                    .insert("action".into(), json!(action));
+            }
+            let request = Arguments::parse(operation.tool(), args)?;
+            self.dispatch_request(&request)
+        })();
+
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+    pub fn dispatch_request(&mut self, request: &Arguments) -> Result<Value> {
+        if self.poisoned {
+            return Err(Error::new(
+                "TRANSACTION_ABORTED",
+                "a prior operation failed",
+            ));
+        }
+        let result = match request {
+            Arguments::Namespace(args) => self.namespace(args),
+            Arguments::File(args) => self.file(args),
+            Arguments::Database(args) => self.database(args),
+            Arguments::Function(args) => self.function(args),
+            Arguments::Call(_) | Arguments::Execute(_) | Arguments::Describe(_) => Err(Error::new(
                 "UNSUPPORTED_FEATURE",
-                format!("storage does not handle {tool}"),
+                format!(
+                    "storage does not handle {}",
+                    request.operation().tool().as_str()
+                ),
             )),
         };
         if result.is_err() {

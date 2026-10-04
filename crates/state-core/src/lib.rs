@@ -1,18 +1,24 @@
 //! One transactional service behind all fixed MCP tools and Monty host callbacks.
+mod declaration;
 mod dispatch;
 mod hosts;
 mod policy;
+mod presentation;
+mod request;
 mod runtime;
 mod schemas;
+mod selectors;
 
+pub use request::Request;
 pub use runtime::{EmbeddedBackend, RuntimeBackend};
 pub use schemas::tool_definitions;
 pub use state_runtime::{Limits, WorkerConfig};
-pub use state_store::Store;
+pub use state_store::{
+    DatabaseAction, FileAction, FunctionAction, NamespaceAction, Operation, Store, Tool,
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{fmt, path::Path, sync::Arc, time::Instant};
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -119,20 +125,27 @@ impl State {
         if principal.is_empty() || principal.len() > 256 {
             return Err(Error::invalid("principal must contain 1..256 bytes"));
         }
-        let (tool, args) = schemas::normalize_call(tool, args)?;
-        let tool = tool.as_str();
-        schemas::validate_operation(tool, &args)?;
-        let key = args.get("idempotency_key").and_then(Value::as_str);
-        let hash = format!(
-            "{:x}",
-            Sha256::digest(json!({"tool":tool,"arguments":canonical(&args)}).to_string())
-        );
+        self.dispatch_request_as(principal, Request::parse(tool, args)?)
+    }
+    /// Execute an already parsed request without serializing or parsing it again.
+    pub fn dispatch_request(&self, request: Request) -> Result<Value> {
+        self.dispatch_request_as("owner", request)
+    }
+    /// Scope an already parsed request's receipts to a trusted embedding identity.
+    pub fn dispatch_request_as(&self, principal: &str, request: Request) -> Result<Value> {
+        if principal.is_empty() || principal.len() > 256 {
+            return Err(Error::invalid("principal must contain 1..256 bytes"));
+        }
+        let operation = request.operation();
+        let args = request.arguments();
+        let key = args.idempotency_key();
+        let hash = request.receipt_hash();
         if let Some(key) = key {
             if key.is_empty() || key.len() > 256 {
                 return Err(Error::invalid("idempotency_key must contain 1..256 bytes"));
             }
             if let Some(receipt) = self.store.receipt(principal, key)? {
-                return if receipt.request_hash == hash {
+                return if Some(receipt.request_hash.as_str()) == hash {
                     Ok(receipt.result)
                 } else {
                     Err(Error::new(
@@ -147,40 +160,24 @@ impl State {
             self.backend.clone(),
             self.limits.clone(),
         );
-        let mut result = root.dispatch(tool, args.clone(), &policy::Access::Owner, true)?;
+        let mut result = root.dispatch_request(request.clone(), &policy::Access::Owner, true)?;
         root.check()?;
         bounded(&result, self.limits.max_result_bytes)?;
         if let Some(error) = root.failure {
             return Err(error);
         }
         if let Some(key) = key {
-            root.tx.set_receipt(principal, key, &hash, result.clone())?;
+            root.tx.set_receipt(
+                principal,
+                key,
+                hash.expect("receipted request"),
+                result.clone(),
+            )?;
         }
-        let mutation_namespace = if matches!(tool, "state_function" | "state_db" | "state_fs")
-            && matches!(
-                args["action"].as_str(),
-                Some(
-                    "declare"
-                        | "update"
-                        | "remove"
-                        | "create"
-                        | "drop"
-                        | "execute"
-                        | "migrate"
-                        | "write"
-                        | "append"
-                        | "move"
-                        | "copy"
-                        | "delete"
-                )
-            ) {
+        let mutation_namespace = if operation.mutates_resource() {
             Some(
-                root.tx.dispatch(
-                    "state_namespace",
-                    json!({"action":"get","namespace":args["namespace"]}),
-                )?["id"]
-                    .as_str()
-                    .expect("namespace id")
+                root.tx
+                    .namespace_identity(args.namespace().expect("parsed namespace"))?
                     .to_owned(),
             )
         } else {
@@ -191,8 +188,7 @@ impl State {
             return Ok(committed["result"].clone());
         }
         // Storage mutations return staged revisions. Only advertise the actual committed head.
-        if tool == "state_namespace"
-            && matches!(args["action"].as_str(), Some("create" | "copy" | "update"))
+        if operation.publishes_namespace()
             && let Some(id) = result["id"].as_str().map(str::to_owned)
         {
             result["revision"] = committed["revisions"][id].clone();

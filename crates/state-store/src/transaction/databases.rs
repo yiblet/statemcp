@@ -1,6 +1,7 @@
 //! Named application databases, SQL routing, and ordered migration history.
 use super::Transaction;
 use crate::identity::hash;
+use crate::{DatabaseAction, DatabaseRequest};
 use crate::{
     Error, Result,
     identity::id,
@@ -12,22 +13,31 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 impl Transaction {
-    pub(super) fn database(&mut self, args: &Value) -> Result<Value> {
-        let key = self.selected(args)?;
-        self.check_revision(&key, args)?;
-        let action = required(args, "action")?;
-        if action == "list" {
+    /// Fetch the identity used to pin an endpoint's database grant.
+    pub fn database_identity(&self, namespace: &str, name: &str) -> Result<Option<&str>> {
+        let id = self.namespace_identity(namespace)?;
+        Ok(self.namespaces[id]
+            .manifest
+            .databases
+            .get(name)
+            .map(|db| db.id.as_str()))
+    }
+    pub(super) fn database(&mut self, args: &DatabaseRequest) -> Result<Value> {
+        let action = args.action;
+        let key = self.selected(&args.namespace)?;
+        self.check_revision(&key, args.expected_revision.as_deref())?;
+        if action == DatabaseAction::List {
             return Ok(
                 json!({"databases":self.namespaces[&key].manifest.databases.iter().map(|(name,db)|json!({"name":name,"id":db.id,"snapshot":db.snapshot,"migrations":db.migrations})).collect::<Vec<_>>()}),
             );
         }
-        let db_name = name(required(args, "database")?)?;
+        let db_name = name(required(args.database.as_deref(), "database")?)?;
         let existing = self.namespaces[&key]
             .manifest
             .databases
             .get(&db_name)
             .cloned();
-        if action == "create" {
+        if action == DatabaseAction::Create {
             if existing.is_some() {
                 return Err(Error::new("ALREADY_EXISTS", "database already exists"));
             }
@@ -51,7 +61,7 @@ impl Transaction {
         let mut db = existing
             .ok_or_else(|| Error::new("NOT_FOUND", format!("database {db_name} does not exist")))?;
         match action {
-            "query" | "inspect" => {
+            DatabaseAction::Query | DatabaseAction::Inspect => {
                 let opened;
                 let conn = if let Some(working) =
                     self.working_databases.get(&(key.clone(), db_name.clone()))
@@ -61,11 +71,11 @@ impl Transaction {
                     opened = sql::open(&self.snapshot_path(&db.snapshot), false)?;
                     &opened
                 };
-                if action == "query" {
+                if action == DatabaseAction::Query {
                     sql::run(
                         conn,
-                        required(args, "sql")?,
-                        args.get("params").unwrap_or(&json!([])),
+                        required(args.sql.as_deref(), "sql")?,
+                        &args.params,
                         true,
                     )
                 } else {
@@ -79,13 +89,14 @@ impl Transaction {
                     Ok(result)
                 }
             }
-            "migrations" => Ok(json!({"migrations":db.migrations})),
-            "drop" => {
-                if self.namespaces[&key].manifest.functions.values().any(|f| {
-                    f.get("database_ids")
-                        .and_then(Value::as_object)
-                        .is_some_and(|m| m.values().any(|v| v.as_str() == Some(&db.id)))
-                }) {
+            DatabaseAction::Migrations => Ok(json!({"migrations":db.migrations})),
+            DatabaseAction::Drop => {
+                if self.namespaces[&key]
+                    .manifest
+                    .functions
+                    .values()
+                    .any(|f| f.database_ids.values().any(|id| id == &db.id))
+                {
                     return Err(Error::new(
                         "CONFLICT",
                         "database is referenced by a declared function",
@@ -98,36 +109,35 @@ impl Transaction {
                 ns.dirty = true;
                 Ok(json!({"dropped":true}))
             }
-            "execute" => {
+            DatabaseAction::Execute => {
                 let conn = self.ensure_working(&key, &db_name, &db)?;
                 let result = sql::run(
                     conn,
-                    required(args, "sql")?,
-                    args.get("params").unwrap_or(&json!([])),
+                    required(args.sql.as_deref(), "sql")?,
+                    &args.params,
                     false,
                 )?;
                 self.namespaces.get_mut(&key).expect("selected").dirty = true;
                 Ok(result)
             }
-            "migrate" => {
+            DatabaseAction::Migrate => {
                 let migrations = args
-                    .get("migrations")
-                    .and_then(Value::as_array)
+                    .migrations
+                    .as_ref()
                     .ok_or_else(|| Error::invalid("migrations must be an array"))?;
                 let mut seen = BTreeSet::new();
                 let mut pending = Vec::new();
                 let mut prefix_position = 0;
                 let prefix_mode = migrations
                     .first()
-                    .and_then(|m| m.get("id"))
-                    .and_then(Value::as_str)
+                    .map(|m| m.id.as_str())
                     .is_some_and(|first| db.migrations.iter().any(|m| m.id == first));
                 for migration in migrations {
-                    let migration_id = name(required(migration, "id")?)?;
+                    let migration_id = name(&migration.id)?;
                     if !seen.insert(migration_id.clone()) {
                         return Err(Error::new("MIGRATION_MISMATCH", "duplicate migration ID"));
                     }
-                    let source = required(migration, "sql")?;
+                    let source = migration.sql.as_str();
                     let checksum = hash(source.as_bytes());
                     if let Some(old) = db.migrations.iter().find(|m| m.id == migration_id) {
                         if !prefix_mode
@@ -167,7 +177,7 @@ impl Transaction {
                 }
                 Ok(json!({"applied":pending.len(),"migrations":db.migrations}))
             }
-            _ => Err(Error::invalid("unknown database action")),
+            DatabaseAction::List | DatabaseAction::Create => unreachable!("handled above"),
         }
     }
 }

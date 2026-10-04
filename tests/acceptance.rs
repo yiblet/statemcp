@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 fn tool_value(result: &Value) -> Value {
     assert!(result.get("structuredContent").is_none());
-    result["content"].clone()
+    serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
 }
 
 use std::{
@@ -82,11 +82,10 @@ impl Client {
         tool_value(&result).clone()
     }
     fn call(&mut self, namespace: &str, function: &str, arguments: Value) -> Value {
-        let result = self.tool(
+        self.tool(
             "call",
             json!({"namespace":namespace,"function":function,"arguments":arguments}),
-        );
-        result
+        )
     }
 }
 impl Drop for Client {

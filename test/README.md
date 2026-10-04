@@ -7,9 +7,9 @@ Run from this folder:
 ./curl-all.sh
 ```
 
-The server uses a custom JSON-RPC result shape: `content` is the returned JSON
-value directly. Standard MCP clients, including Codex, require an adapter for
-this format. Use the curl script or CLI to exercise the API directly.
+The server uses the official Rust MCP SDK over stdio and Streamable HTTP.
+Tool results contain one text block with JSON in `content[0].text`.
+Use the curl script or CLI to exercise the API directly.
 
 Build outputs, the local executable, and persistent `data/` are ignored here.
 Re-run `./build.sh` after changing statemcp source.
@@ -55,7 +55,7 @@ Notifications have a request entry and no response. Responses are decoded into J
 excluded. Unexpected errors are reported on stderr and produce a nonzero exit
 status. Coverage checks still require successful calls for every advertised tool.
 The script also checks matching JSON-RPC IDs, text/binary reads, replay equality,
-and independent namespace copies. Tool results are in `message.result.content`, with objects, arrays, and scalars
+and independent namespace copies. Tool results are JSON encoded in `message.result.content[0].text`, with objects, arrays, and scalars
 returned directly.
 
 ```sh

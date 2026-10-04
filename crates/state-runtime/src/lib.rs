@@ -5,8 +5,8 @@
 
 use monty::{MontyRepl, ReplProgress};
 use monty_types::{
-    CompileOptions, ExcType, MontyException, MontyObject, NamedValues, ObjectRef, PrintWriter,
-    PrintWriterCallback, ResourceLimits, ResourceTracker,
+    CompileOptions, ExcType, MontyException, MontyObject, MontyType, NamedValues, ObjectRef,
+    PrintWriter, PrintWriterCallback, ResourceLimits, ResourceTracker,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -506,20 +506,20 @@ impl JsonBudget {
     }
     fn decode(&mut self, value: ObjectRef<'_>, depth: usize) -> Result<Value, RuntimeError> {
         self.node(depth)?;
-        match value.type_name() {
-            "NoneType" => Ok(Value::Null),
-            "bool" => Ok(Value::Bool(
+        match MontyType::from_type_name(value.type_name()) {
+            Some(MontyType::NoneType) => Ok(Value::Null),
+            Some(MontyType::Bool) => Ok(Value::Bool(
                 value
                     .as_bool()
                     .ok_or_else(|| invalid_result("invalid bool"))?,
             )),
-            "int" => {
+            Some(MontyType::Int) => {
                 self.charge(20)?;
                 Ok(Value::from(value.as_int().ok_or_else(|| {
                     invalid_result("integers outside i64 must be represented as strings")
                 })?))
             }
-            "float" => {
+            Some(MontyType::Float) => {
                 self.charge(24)?;
                 let number = serde_json::Number::from_f64(
                     value
@@ -529,14 +529,14 @@ impl JsonBudget {
                 .ok_or_else(|| invalid_result("non-finite results are not JSON"))?;
                 Ok(Value::Number(number))
             }
-            "str" => {
+            Some(MontyType::Str) => {
                 let string = value
                     .as_str()
                     .ok_or_else(|| invalid_result("invalid string"))?;
                 self.charge(string.len())?;
                 Ok(Value::String(string.to_owned()))
             }
-            "list" | "tuple" => Ok(Value::Array(
+            Some(MontyType::List | MontyType::Tuple) => Ok(Value::Array(
                 value
                     .items()
                     .ok_or_else(|| invalid_result("invalid sequence"))?
@@ -544,7 +544,7 @@ impl JsonBudget {
                     .map(|v| self.decode(v, depth + 1))
                     .collect::<Result<Vec<_>, _>>()?,
             )),
-            "dict" => {
+            Some(MontyType::Dict) => {
                 let mut result = Map::new();
                 for (k, v) in value
                     .pairs()
@@ -558,8 +558,9 @@ impl JsonBudget {
                 }
                 Ok(Value::Object(result))
             }
-            kind => Err(invalid_result(format!(
-                "unsupported JSON result type: {kind}"
+            _ => Err(invalid_result(format!(
+                "unsupported JSON result type: {}",
+                value.type_name()
             ))),
         }
     }

@@ -1,3 +1,4 @@
+mod common;
 use axum::{
     Router,
     body::{Body, to_bytes},
@@ -60,7 +61,14 @@ async fn response_json(response: axum::response::Response) -> Value {
     .await
     .unwrap()
     .unwrap();
-    serde_json::from_slice(&bytes).expect("JSON-RPC response")
+    serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+        String::from_utf8_lossy(&bytes)
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .filter_map(|data| serde_json::from_str::<Value>(data.trim()).ok())
+            .find(|message| message.get("id").is_some())
+            .expect("JSON-RPC response in SSE stream")
+    })
 }
 async fn initialize(app: &Router, token: Option<&str>) -> String {
     let response = app.clone().oneshot(request(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}), None, token)).await.unwrap();
@@ -85,7 +93,9 @@ async fn initialize(app: &Router, token: Option<&str>) -> String {
     session
 }
 async fn tool(app: &Router, session: &str, name: &str, args: Value, token: Option<&str>) -> Value {
-    let response = app.clone().oneshot(request(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":args}}), Some(session), token)).await.unwrap();
+    static REQUEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(100);
+    let id = REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let response = app.clone().oneshot(request(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":name,"arguments":args}}), Some(session), token)).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     response_json(response).await["result"].clone()
 }
@@ -330,7 +340,7 @@ async fn synchronous_invocation_does_not_block_async_http_requests() {
 
 fn tool_value(result: &Value) -> Value {
     assert!(result.get("structuredContent").is_none());
-    result["content"].clone()
+    serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
 }
 
 #[tokio::test]
@@ -347,12 +357,12 @@ async fn json_transport_preserves_lifecycle_and_request_limits() {
         .await
         .unwrap();
     assert!(invalid.headers().get("mcp-session-id").is_none());
-    assert_eq!(response_json(invalid).await["error"]["code"], -32602);
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let session = initialize(&app, None).await;
     let notification = app.clone().oneshot(request(json!({"jsonrpc":"2.0","method":"tools/call","params":{"name":"namespace.create","arguments":{"name":"must-not-exist"}}}), Some(&session), None)).await.unwrap();
     assert_eq!(notification.status(), StatusCode::ACCEPTED);
     let namespaces = tool(&app, &session, "namespace.list", json!({}), None).await;
-    assert_eq!(namespaces["content"]["namespaces"], json!([]));
+    assert_eq!(tool_value(&namespaces)["namespaces"], json!([]));
     assert!(namespaces.get("structuredContent").is_none());
     let mut large = request(json!({}), Some(&session), None);
     *large.body_mut() = Body::from(vec![b'x'; statemcp::protocol::MAX_FRAME_BYTES + 1]);
@@ -363,8 +373,8 @@ async fn json_transport_preserves_lifecycle_and_request_limits() {
     let mut malformed = request(json!({}), Some(&session), None);
     *malformed.body_mut() = Body::from("not json");
     assert_eq!(
-        response_json(app.clone().oneshot(malformed).await.unwrap()).await["error"]["code"],
-        -32700
+        app.clone().oneshot(malformed).await.unwrap().status(),
+        StatusCode::UNSUPPORTED_MEDIA_TYPE
     );
     let mut wrong_type = request(json!({}), Some(&session), None);
     wrong_type
@@ -373,5 +383,168 @@ async fn json_transport_preserves_lifecycle_and_request_limits() {
     assert_eq!(
         app.oneshot(wrong_type).await.unwrap().status(),
         StatusCode::UNSUPPORTED_MEDIA_TYPE
+    );
+}
+
+#[tokio::test]
+async fn official_http_clients_share_state_across_protocol_versions() {
+    use rmcp::{
+        ServiceExt,
+        model::ClientConfig,
+        transport::{
+            StreamableHttpClientTransport,
+            streamable_http_client::StreamableHttpClientTransportConfig,
+        },
+    };
+    let directory = Directory::new();
+    let state = State::open(&directory.0).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let options = HttpOptions::new(address, Some("sdk-token".into())).unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router(state, options)).await.unwrap();
+    });
+    let transport = || {
+        StreamableHttpClientTransport::from_config(
+            StreamableHttpClientTransportConfig::with_uri(format!("http://{address}/mcp"))
+                .auth_header("sdk-token"),
+        )
+    };
+    let first = common::config().serve(transport()).await.unwrap();
+    let second = ClientConfig::default().serve(transport()).await.unwrap();
+    assert_eq!(first.list_all_tools().await.unwrap().len(), 30);
+    assert_eq!(second.list_all_tools().await.unwrap().len(), 30);
+    common::tool(&first, "namespace.create", json!({"name":"shared"})).await;
+    common::tool(
+        &first,
+        "db.create",
+        json!({"namespace":"shared","database":"app"}),
+    )
+    .await;
+    common::tool(
+        &first,
+        "db.execute",
+        json!({"namespace":"shared","database":"app","sql":"CREATE TABLE notes(text TEXT)"}),
+    )
+    .await;
+    common::tool(&first, "fs.write", json!({"namespace":"shared","path":"/api.py","text":"def add(text):\n    return db_execute('app', 'INSERT INTO notes VALUES (?)', [text])"})).await;
+    common::tool(&first, "function.declare", json!({"namespace":"shared","name":"add","file":"/api.py","symbol":"add","databases":[{"database":"app","access":"write"}]})).await;
+    common::tool(
+        &second,
+        "call",
+        json!({"namespace":"shared","function":"add","arguments":{"text":"from another session"}}),
+    )
+    .await;
+    assert_eq!(
+        common::tool(
+            &first,
+            "db.query",
+            json!({"namespace":"shared","database":"app","sql":"SELECT text FROM notes"})
+        )
+        .await["rows"],
+        json!([["from another session"]])
+    );
+    first.cancel().await.unwrap();
+    second.cancel().await.unwrap();
+    server.abort();
+}
+
+#[derive(Default)]
+struct GatedBackend {
+    entered: std::sync::atomic::AtomicUsize,
+    started: tokio::sync::Notify,
+    released: std::sync::Mutex<bool>,
+    gate: std::sync::Condvar,
+}
+impl GatedBackend {
+    fn release(&self) {
+        *self.released.lock().unwrap() = true;
+        self.gate.notify_all();
+    }
+}
+impl statemcp::RuntimeBackend for GatedBackend {
+    fn execute(
+        &self,
+        _: &str,
+        _: Value,
+        _: &statemcp::Limits,
+        _: &mut state_runtime::HostCallback<'_>,
+    ) -> Result<state_runtime::RunResult, state_runtime::RuntimeError> {
+        self.entered
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.started.notify_one();
+        let mut released = self.released.lock().unwrap();
+        while !*released {
+            released = self.gate.wait(released).unwrap();
+        }
+        Ok(state_runtime::RunResult {
+            value: json!(42),
+            stdout: String::new(),
+        })
+    }
+    fn invoke(
+        &self,
+        _: &str,
+        _: &str,
+        _: Value,
+        _: &statemcp::Limits,
+        _: &mut state_runtime::HostCallback<'_>,
+    ) -> Result<state_runtime::RunResult, state_runtime::RuntimeError> {
+        unreachable!()
+    }
+    fn validate_module(
+        &self,
+        _: &str,
+        _: &str,
+        _: &statemcp::Limits,
+    ) -> Result<(), state_runtime::RuntimeError> {
+        unreachable!()
+    }
+}
+
+struct ReleaseGate(std::sync::Arc<GatedBackend>);
+impl Drop for ReleaseGate {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invocation_limit_is_shared_across_sessions_and_recovers() {
+    let directory = Directory::new();
+    let backend = std::sync::Arc::new(GatedBackend::default());
+    let guard = ReleaseGate(backend.clone());
+    let state = State::with_backend(
+        statemcp::Store::open(&directory.0).unwrap(),
+        backend.clone(),
+    );
+    let app = app(state, None);
+    let session = initialize(&app, None).await;
+    let other = initialize(&app, None).await;
+    let mut calls = Vec::new();
+    for _ in 0..16 {
+        let app = app.clone();
+        let session = session.clone();
+        calls.push(tokio::spawn(async move {
+            tool(&app, &session, "execute", json!({"script":"wait"}), None).await
+        }));
+    }
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while backend.entered.load(std::sync::atomic::Ordering::SeqCst) < 16 {
+            backend.started.notified().await;
+        }
+    })
+    .await
+    .expect("all blocking jobs started");
+    let busy = tool(&app, &other, "execute", json!({"script":"wait"}), None).await;
+    assert_eq!(busy["isError"], true);
+    assert_eq!(tool_value(&busy)["error"]["code"], "BUSY");
+    drop(guard);
+    for call in calls {
+        assert_eq!(tool_value(&call.await.unwrap())["value"], 42);
+    }
+    assert_eq!(
+        tool_value(&tool(&app, &other, "execute", json!({"script":"next"}), None).await)["value"],
+        42
     );
 }

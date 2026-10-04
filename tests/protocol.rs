@@ -1,203 +1,140 @@
+mod common;
+use common::{Directory, connect, request, tool, value};
+use rmcp::{ServiceExt, transport::TokioChildProcess};
 use serde_json::{Value, json};
-fn tool_value(result: &Value) -> Value {
-    assert!(result.get("structuredContent").is_none());
-    result["content"].clone()
-}
+use statemcp::{State, tool_definitions};
+use std::process::Command;
 
-use statemcp::{
-    Server, ToolError, UnsupportedDispatcher, protocol::MAX_FRAME_BYTES, tool_definitions,
-};
-use std::io::{Cursor, Write};
-use std::process::{Command, Stdio};
-
-fn request(id: impl Into<Value>, method: &str, params: Value) -> Value {
-    json!({"jsonrpc":"2.0","id":id.into(),"method":method,"params":params})
-}
-fn initialize<D: statemcp::Dispatcher>(server: &mut Server<D>) {
-    let response = server.handle(request(1, "initialize", json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"tests","version":"1"}}))).unwrap();
-    assert_eq!(response["result"]["protocolVersion"], "2025-06-18");
-    assert!(
-        server
-            .handle(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
-            .is_none()
-    );
-}
-
-#[test]
-fn lifecycle_negotiates_supported_version_and_exact_capabilities() {
-    let mut server = Server::new(UnsupportedDispatcher);
+#[tokio::test]
+async fn official_sdk_client_discovers_and_calls_tools() {
+    let directory = Directory::new();
+    let client = connect(State::open(&directory.0).unwrap()).await;
     assert_eq!(
-        server.handle(request(0, "tools/list", json!({}))).unwrap()["error"]["code"],
-        -32002
-    );
-    assert_eq!(
-        server.handle(request(0, "ping", json!({}))).unwrap()["result"],
-        json!({})
-    );
-    let response = server.handle(request("init","initialize",json!({"protocolVersion":"future-version","capabilities":{},"clientInfo":{"name":"tests","version":"1"}}))).unwrap();
-    assert_eq!(response["id"], "init");
-    assert_eq!(response["result"]["protocolVersion"], "2025-06-18");
-    assert_eq!(
-        response["result"]["capabilities"],
-        json!({"tools":{"listChanged":false}})
-    );
-    assert_eq!(
-        server.handle(request(2, "tools/list", json!({}))).unwrap()["error"]["code"],
-        -32002
-    );
-    server.handle(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
-    assert_eq!(
-        server.handle(request(3, "tools/list", json!({}))).unwrap()["result"]["tools"]
-            .as_array()
+        client
+            .peer_info()
             .unwrap()
-            .len(),
-        30
+            .server_info
+            .as_ref()
+            .unwrap()
+            .name,
+        "statemcp"
     );
-    assert_eq!(
-        server.handle(request(4, "initialize", json!({}))).unwrap()["error"]["code"],
-        -32600
-    );
-}
-
-#[test]
-fn malformed_initialization_does_not_advance_session() {
-    let mut server = Server::new(UnsupportedDispatcher);
-    assert_eq!(
-        server
-            .handle(request(
-                1,
-                "initialize",
-                json!({"protocolVersion":"2025-06-18"})
-            ))
-            .unwrap()["error"]["code"],
-        -32602
-    );
-    initialize(&mut server);
-}
-
-#[test]
-fn tool_result_preserves_structure_text_and_service_errors() {
-    let mut observed = Vec::new();
-    let mut server = Server::new(|tool: &str, args: Value| {
-        observed.push((tool.to_owned(), args.clone()));
-        if tool == "namespace.delete" {
-            Err(ToolError::new("NOT_FOUND", "namespace does not exist"))
-        } else {
-            Ok(json!({"name":"notes","revision":42}))
-        }
-    });
-    initialize(&mut server);
-    let result = server
-        .handle(request(
-            "call",
-            "tools/call",
-            json!({"name":"namespace.create","arguments":{"name":"notes"}}),
-        ))
-        .unwrap();
-    assert_eq!(result["result"]["isError"], false);
-    assert_eq!(tool_value(&result["result"])["revision"], 42);
-    assert_eq!(
-        result["result"]["content"],
-        json!({"name":"notes","revision":42})
-    );
-    let error = server
-        .handle(request(
-            3,
-            "tools/call",
-            json!({"name":"namespace.delete","arguments":{}}),
-        ))
-        .unwrap();
-    assert_eq!(error["result"]["isError"], true);
-    assert_eq!(tool_value(&error["result"])["error"]["code"], "NOT_FOUND");
-    assert!(error.get("error").is_none());
-    assert_eq!(observed.len(), 2);
-    assert_eq!(observed[0].0, "namespace.create");
-    assert_eq!(observed[0].1["name"], "notes");
-}
-
-#[test]
-fn content_preserves_all_json_values() {
-    for expected in [
-        json!([1, 2]),
-        json!(42),
-        json!(false),
-        json!(null),
-        json!({"value":"user data"}),
-    ] {
-        let mut server = Server::new(|_: &str, _: Value| Ok(expected.clone()));
-        initialize(&mut server);
-        let response = server
-            .handle(request(1, "tools/call", json!({"name":"describe"})))
-            .unwrap();
-        assert_eq!(tool_value(&response["result"]), expected);
-    }
-}
-
-#[test]
-fn notifications_and_invalid_calls_never_dispatch() {
-    let mut server = Server::new(|_: &str, _: Value| -> Result<Value, ToolError> {
-        panic!("must not dispatch")
-    });
-    initialize(&mut server);
-    assert!(
-        server
-            .handle(
-                json!({"jsonrpc":"2.0","method":"tools/call","params":{"name":"state_namespace"}})
-            )
-            .is_none()
-    );
-    assert!(
-        server
-            .handle(
-                json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}})
-            )
-            .is_none()
-    );
-    for params in [
-        json!({"name":"unknown"}),
-        json!({"name":"state_db","arguments":{"action":"query"}}),
-        json!({"name":"execute","arguments":[]}),
-        json!({}),
-        json!([]),
-    ] {
+    let tools = client.list_all_tools().await.unwrap();
+    assert_eq!(tools.len(), 30);
+    for (actual, expected) in tools.iter().zip(tool_definitions()) {
+        assert_eq!(actual.name, expected["name"].as_str().unwrap());
         assert_eq!(
-            server.handle(request(2, "tools/call", params)).unwrap()["error"]["code"],
-            -32602
+            serde_json::to_value(&actual.input_schema).unwrap(),
+            expected["inputSchema"]
         );
     }
     assert_eq!(
-        server
-            .handle(request(3, "not-a-method", json!({})))
-            .unwrap()["error"]["code"],
-        -32601
+        tool(
+            &client,
+            "execute",
+            json!({"script":"inputs + 1", "inputs":41})
+        )
+        .await["value"],
+        42
     );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn wire_results_preserve_json_values_and_application_errors() {
+    let directory = Directory::new();
+    let client = connect(State::open(&directory.0).unwrap()).await;
+    tool(&client, "namespace.create", json!({"name":"values"})).await;
+    tool(
+        &client,
+        "fs.write",
+        json!({"namespace":"values","path":"/api.py","text":"def echo(value):\n    return value"}),
+    )
+    .await;
+    tool(
+        &client,
+        "function.declare",
+        json!({"namespace":"values","name":"echo","file":"/api.py","symbol":"echo"}),
+    )
+    .await;
+    for expected in [
+        json!({"nested":[true,null,"quoted text\n"]}),
+        json!([1, 2]),
+        json!(42),
+        json!("text"),
+        json!(false),
+        Value::Null,
+    ] {
+        assert_eq!(
+            tool(
+                &client,
+                "call",
+                json!({"namespace":"values","function":"echo","arguments":{"value":expected}})
+            )
+            .await,
+            expected
+        );
+    }
+    let failure = client
+        .call_tool(request(
+            "fs.read",
+            json!({"namespace":"values","path":"/missing"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(failure.is_error, Some(true));
+    assert_eq!(value(&failure)["error"]["code"], "NOT_FOUND");
+    let invalid = client
+        .call_tool(request(
+            "namespace.create",
+            json!({"name":"invalid","unexpected":true}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(invalid.is_error, Some(true));
+    assert_eq!(value(&invalid)["error"]["code"], "INVALID_ARGUMENT");
+    assert!(
+        client
+            .call_tool(request("unknown", json!({})))
+            .await
+            .is_err()
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn official_sdk_client_launches_binary_over_stdio() {
+    let directory = Directory::new();
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_statemcp"));
+    command.arg("stdio").arg(&directory.0);
+    let transport = TokioChildProcess::new(command).unwrap();
+    let client = common::config().serve(transport).await.unwrap();
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 30);
     assert_eq!(
-        server
-            .handle(request(4, "tools/list", json!({"cursor":"bogus"})))
-            .unwrap()["error"]["code"],
-        -32602
+        tool(&client, "execute", json!({"script":"40 + 2"})).await["value"],
+        42
     );
+    client.cancel().await.unwrap();
 }
 
 #[test]
-fn invalid_envelopes_have_stable_errors() {
-    let mut server = Server::new(UnsupportedDispatcher);
-    for invalid in [
-        json!([]),
-        json!(42),
-        json!({}),
-        json!({"jsonrpc":"1.0","id":1,"method":"ping"}),
-        json!({"jsonrpc":"2.0","id":false,"method":"ping"}),
-        json!({"jsonrpc":"2.0","id":null,"method":"ping"}),
-        json!({"jsonrpc":"2.0","id":1}),
-    ] {
-        assert_eq!(server.handle(invalid).unwrap()["error"]["code"], -32600);
+fn reference_schemas_match_the_advertised_tools() {
+    let reference = include_str!("../reference.md");
+    for tool in tool_definitions() {
+        let heading = format!("### `{}`\n", tool["name"].as_str().unwrap());
+        let section = reference.split_once(&heading).expect("documented tool").1;
+        let schema = section
+            .split_once("```json\n")
+            .unwrap()
+            .1
+            .split_once("\n```")
+            .unwrap()
+            .0;
+        assert_eq!(
+            serde_json::from_str::<Value>(schema).unwrap(),
+            tool["inputSchema"]
+        );
     }
-    assert!(
-        server
-            .handle(json!({"jsonrpc":"2.0","id":1,"result":{}}))
-            .is_none()
-    );
 }
 
 #[test]
@@ -231,67 +168,6 @@ fn schemas_advertise_exact_fixed_surface_and_required_properties() {
 }
 
 #[test]
-fn transport_recovers_after_malformed_json_and_oversize_frames() {
-    let mut input = b"not-json\n".to_vec();
-    input.extend(std::iter::repeat_n(b'x', MAX_FRAME_BYTES + 64));
-    input.extend_from_slice(b"\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/unknown\"}\n{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"ping\"}\n");
-    let mut output = Vec::new();
-    Server::new(UnsupportedDispatcher)
-        .serve(Cursor::new(input), &mut output)
-        .unwrap();
-    let messages: Vec<Value> = String::from_utf8(output)
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    assert_eq!(messages.len(), 3);
-    assert_eq!(messages[0]["error"]["code"], -32700);
-    assert_eq!(messages[1]["error"]["code"], -32600);
-    assert_eq!(messages[2]["id"], 99);
-    assert_eq!(messages[2]["result"], json!({}));
-}
-
-#[test]
-fn binary_stdio_handshake_and_shutdown() {
-    let data_dir =
-        std::env::temp_dir().join(format!("statemcp-protocol-test-{}", std::process::id()));
-    let mut child = Command::new(env!("CARGO_BIN_EXE_statemcp"))
-        .arg("stdio")
-        .arg(&data_dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let mut input = child.stdin.take().unwrap();
-    for message in [
-        request(
-            1,
-            "initialize",
-            json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"integration","version":"1"}}),
-        ),
-        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-        request(2, "tools/list", json!({})),
-    ] {
-        writeln!(input, "{message}").unwrap();
-    }
-    drop(input);
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-    assert!(output.stderr.is_empty());
-    let messages: Vec<Value> = String::from_utf8(output.stdout)
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    if data_dir.exists() {
-        std::fs::remove_dir_all(data_dir).unwrap();
-    }
-    assert_eq!(messages.len(), 2);
-    assert_eq!(messages[1]["result"]["tools"].as_array().unwrap().len(), 30);
-}
-
-#[test]
 fn binary_cli_help_version_and_argument_errors() {
     let binary = env!("CARGO_BIN_EXE_statemcp");
     for argument in ["--help", "--version"] {
@@ -312,6 +188,10 @@ fn binary_cli_help_version_and_argument_errors() {
         vec!["stdio", "/unused", "--auth-bearer", "x"],
         vec!["http", "/unused", "--auth-key", "x"],
         vec!["http", "/unused", "--auth-bearer", ""],
+        vec!["--worker"],
+        vec!["--worker", "invalid", "1024"],
+        vec!["--worker", "1024", "-1"],
+        vec!["--worker", "1024", "1024", "unexpected"],
     ] {
         let output = Command::new(binary).args(arguments).output().unwrap();
         assert!(!output.status.success());

@@ -4,19 +4,32 @@ use crate::{
     Error, Result,
     validation::{required, virtual_path},
 };
+use crate::{FileAction, FileRequest};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 impl Transaction {
-    pub(super) fn file(&mut self, args: &Value) -> Result<Value> {
-        let key = self.selected(args)?;
-        self.check_revision(&key, args)?;
-        let action = required(args, "action")?;
-        let path = virtual_path(args.get("path").and_then(Value::as_str).unwrap_or("/"))?;
+    /// Read pinned Python source without constructing a JSON file response.
+    pub fn file_text(&self, namespace: &str, path: &str) -> Result<String> {
+        let namespace = self.namespace_identity(namespace)?;
+        let path = virtual_path(path)?;
+        let hash = self.namespaces[namespace]
+            .manifest
+            .files
+            .get(&path)
+            .ok_or_else(|| Error::new("NOT_FOUND", "file does not exist"))?;
+        String::from_utf8(self.bytes(hash)?)
+            .map_err(|_| Error::invalid("function source must be UTF-8"))
+    }
+    pub(super) fn file(&mut self, args: &FileRequest) -> Result<Value> {
+        let action = args.action;
+        let key = self.selected(&args.namespace)?;
+        self.check_revision(&key, args.expected_revision.as_deref())?;
+        let path = virtual_path(&args.path)?;
         let files = &self.namespaces[&key].manifest.files;
         match action {
-            "list" => {
+            FileAction::List => {
                 let prefix = if path == "/" {
                     "/".into()
                 } else {
@@ -35,18 +48,18 @@ impl Transaction {
                 }
                 Ok(json!({"entries":entries.into_values().collect::<Vec<_>>()}))
             }
-            "read" | "stat" => {
+            FileAction::Read | FileAction::Stat => {
                 if let Some(h) = files.get(&path) {
                     let bytes = self.bytes(h)?;
                     let mut result = json!({"path":path,"kind":"file","hash":h,"size":bytes.len()});
-                    if action == "read" {
+                    if action == FileAction::Read {
                         match String::from_utf8(bytes.clone()) {
                             Ok(text) => result["text"] = json!(text),
                             Err(_) => result["base64"] = json!(STANDARD.encode(bytes)),
                         }
                     }
                     Ok(result)
-                } else if action == "stat"
+                } else if action == FileAction::Stat
                     && (path == "/" || files.keys().any(|p| p.starts_with(&format!("{path}/"))))
                 {
                     Ok(json!({"path":path,"kind":"directory"}))
@@ -54,7 +67,7 @@ impl Transaction {
                     Err(Error::new("NOT_FOUND", "file does not exist"))
                 }
             }
-            "write" | "append" => {
+            FileAction::Write | FileAction::Append => {
                 if path == "/"
                     || files.keys().any(|p| {
                         p.starts_with(&format!("{path}/")) || path.starts_with(&format!("{p}/"))
@@ -62,10 +75,10 @@ impl Transaction {
                 {
                     return Err(Error::invalid("file collides with a directory"));
                 }
-                if args.get("text").is_some() && args.get("base64").is_some() {
+                if args.text.is_some() && args.base64.is_some() {
                     return Err(Error::invalid("provide text or base64, not both"));
                 }
-                let mut bytes = if action == "append" {
+                let mut bytes = if action == FileAction::Append {
                     if let Some(h) = files.get(&path) {
                         self.bytes(h)?
                     } else {
@@ -74,16 +87,12 @@ impl Transaction {
                 } else {
                     Vec::new()
                 };
-                if let Some(text) = args.get("text") {
-                    bytes.extend_from_slice(
-                        text.as_str()
-                            .ok_or_else(|| Error::invalid("text must be a string"))?
-                            .as_bytes(),
-                    );
+                if let Some(text) = &args.text {
+                    bytes.extend_from_slice(text.as_bytes());
                 } else {
                     bytes.extend(
                         STANDARD
-                            .decode(required(args, "base64")?)
+                            .decode(required(args.base64.as_deref(), "base64")?)
                             .map_err(|_| Error::invalid("invalid base64"))?,
                     );
                 }
@@ -94,11 +103,11 @@ impl Transaction {
                 ns.dirty = true;
                 Ok(json!({"path":path,"hash":hash,"size":size}))
             }
-            "delete" => {
+            FileAction::Delete => {
                 let mut removed = Vec::new();
                 if files.contains_key(&path) {
                     removed.push(path.clone());
-                } else if args.get("recursive").and_then(Value::as_bool) == Some(true) {
+                } else if args.recursive {
                     let prefix = if path == "/" {
                         "/".into()
                     } else {
@@ -119,8 +128,9 @@ impl Transaction {
                 ns.dirty = true;
                 Ok(json!({"deleted":removed.len()}))
             }
-            "move" | "copy" => {
-                let destination = virtual_path(required(args, "destination")?)?;
+            FileAction::Move | FileAction::Copy => {
+                let destination =
+                    virtual_path(required(args.destination.as_deref(), "destination")?)?;
                 let hash = files
                     .get(&path)
                     .cloned()
@@ -139,13 +149,12 @@ impl Transaction {
                 }
                 let ns = self.namespaces.get_mut(&key).expect("selected");
                 ns.manifest.files.insert(destination.clone(), hash.clone());
-                if action == "move" {
+                if action == FileAction::Move {
                     ns.manifest.files.remove(&path);
                 }
                 ns.dirty = true;
                 Ok(json!({"path":destination,"hash":hash}))
             }
-            _ => Err(Error::invalid("unknown file action")),
         }
     }
 }

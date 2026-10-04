@@ -1,244 +1,115 @@
-use serde::{Deserialize, Serialize};
+//! MCP handlers served by the official Rust SDK (`rmcp`).
+use crate::State;
+use rmcp::{
+    ErrorData, RoleServer, ServerHandler,
+    model::{
+        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
+        ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    },
+    service::RequestContext,
+};
 use serde_json::{Value, json};
-use std::io::{self, BufRead, Write};
+use std::sync::{Arc, OnceLock};
+use tokio::sync::Semaphore;
 
-pub const PROTOCOL_VERSION: &str = "2025-06-18";
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
-const SERVER_INSTRUCTIONS: &str = "Namespaces contain virtual files, named SQLite databases, and published Python functions. Namespace selectors accept names or stable UUIDs. Use tools/list for tool names and argument schemas; function.list and function.get require a namespace. To publish an endpoint, create its namespace and databases, write a Python source file with fs.write, then use function.declare and call. Published functions have only their declared grants; root execute scripts have owner access. Use expected_revision and expected_version for optimistic concurrency. Tool results are returned directly in content, with isError indicating failure; this server uses a custom JSON-RPC result shape.";
+const SERVER_INSTRUCTIONS: &str = "StateMCP lets you create SQLite databases and publish Python tools that use them. Create a namespace and databases, write Python source with fs.write, then publish with function.declare and invoke with call. Use describe with mode=runtime for Python helpers and mode=full for exact schemas. Namespace selectors accept names or stable UUIDs. Published functions have only their declared grants; root execute scripts have owner access. Use expected_revision and expected_version for optimistic concurrency. Tool content contains a JSON-encoded text block; isError indicates an application failure.";
 
-/// Application errors are successful JSON-RPC responses with MCP `isError: true`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ToolError {
-    pub code: String,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub details: Option<Value>,
-}
-
-impl ToolError {
-    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            code: code.into(),
-            message: message.into(),
-            details: None,
-        }
-    }
-}
-
-impl std::fmt::Display for ToolError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.code, self.message)
-    }
-}
-impl std::error::Error for ToolError {}
-
-/// Both MCP calls and embedded callers can use the same application dispatcher.
-pub trait Dispatcher {
-    fn dispatch(&mut self, tool: &str, args: Value) -> Result<Value, ToolError>;
-}
-impl<F> Dispatcher for F
-where
-    F: FnMut(&str, Value) -> Result<Value, ToolError>,
-{
-    fn dispatch(&mut self, tool: &str, args: Value) -> Result<Value, ToolError> {
-        self(tool, args)
-    }
-}
-
-/// Scaffold dispatcher; replace with the storage/runtime service when embedding.
-pub struct UnsupportedDispatcher;
-impl Dispatcher for UnsupportedDispatcher {
-    fn dispatch(&mut self, tool: &str, _: Value) -> Result<Value, ToolError> {
-        Err(ToolError::new(
-            "NOT_IMPLEMENTED",
-            format!("{tool} is not connected to a service"),
-        ))
-    }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Phase {
-    New,
-    Initializing,
-    Ready,
-}
-
-/// One synchronous MCP session. Input closes to shut down; stdout contains only JSON.
+/// Clones share the store and invocation budget across all transports and clients.
 #[derive(Clone)]
-pub struct Server<D> {
-    dispatcher: D,
-    phase: Phase,
+pub struct Server {
+    state: State,
+    slots: Arc<Semaphore>,
 }
-impl<D: Dispatcher> Server<D> {
-    pub fn new(dispatcher: D) -> Self {
+
+impl Server {
+    pub fn new(state: State) -> Self {
         Self {
-            dispatcher,
-            phase: Phase::New,
+            state,
+            slots: Arc::new(Semaphore::new(16)),
         }
     }
+}
 
-    /// Handle one parsed message. Notifications never execute tools or get responses.
-    pub fn handle(&mut self, request: Value) -> Option<Value> {
-        let Some(object) = request.as_object() else {
-            return Some(rpc_error(Value::Null, -32600, "Expected a JSON-RPC object"));
-        };
-        let id = object.get("id").cloned();
-        if object.get("jsonrpc") != Some(&json!("2.0")) {
-            return Some(rpc_error(Value::Null, -32600, "Expected jsonrpc 2.0"));
-        }
-        if id
-            .as_ref()
-            .is_some_and(|v| !v.is_string() && !v.is_i64() && !v.is_u64())
-        {
-            return Some(rpc_error(
-                Value::Null,
-                -32600,
-                "Request id must be a string or integer",
+fn tools() -> &'static [Tool] {
+    static TOOLS: OnceLock<Vec<Tool>> = OnceLock::new();
+    TOOLS.get_or_init(|| {
+        tool_definitions()
+            .into_iter()
+            .map(|definition| serde_json::from_value(definition).expect("canonical tool schema"))
+            .collect()
+    })
+}
+
+fn tool_error(code: &str, message: &str) -> CallToolResponse {
+    CallToolResult::error(vec![ContentBlock::text(
+        json!({"error":{"code":code,"message":message}}).to_string(),
+    )])
+    .into()
+}
+
+impl ServerHandler for Server {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("statemcp", env!("CARGO_PKG_VERSION")))
+            .with_instructions(SERVER_INSTRUCTIONS)
+    }
+
+    async fn list_tools(
+        &self,
+        request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        if request.is_some_and(|request| request.cursor.is_some()) {
+            return Err(ErrorData::invalid_params(
+                "This server does not issue pagination cursors",
+                None,
             ));
         }
-        let Some(method) = object.get("method").and_then(Value::as_str) else {
-            // This server sends no requests. Ignore response envelopes to avoid loops.
-            if id.is_some() && (object.contains_key("result") || object.contains_key("error")) {
-                return None;
-            }
-            return Some(rpc_error(
-                id.unwrap_or(Value::Null),
-                -32600,
-                "Missing method",
-            ));
-        };
-        let Some(id) = id else {
-            if method == "notifications/initialized" && self.phase == Phase::Initializing {
-                self.phase = Phase::Ready;
-            }
-            return None;
-        };
-        let params = object.get("params").cloned().unwrap_or_else(|| json!({}));
-        if !params.is_object() {
-            return Some(rpc_error(id, -32602, "params must be an object"));
+        Ok(ListToolsResult::with_all_items(tools().to_vec()))
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        if !tools().iter().any(|tool| tool.name == request.name) {
+            return Err(ErrorData::invalid_params("Unknown tool", None));
         }
-        let result = match method {
-            "ping" => json!({}),
-            "initialize" => {
-                if self.phase != Phase::New {
-                    return Some(rpc_error(id, -32600, "Session is already initialized"));
-                }
-                if !params["protocolVersion"].is_string()
-                    || !params["capabilities"].is_object()
-                    || !params["clientInfo"]["name"].is_string()
-                    || !params["clientInfo"]["version"].is_string()
-                {
-                    return Some(rpc_error(
-                        id,
-                        -32602,
-                        "initialize requires protocolVersion, capabilities, and clientInfo",
-                    ));
-                }
-                self.phase = Phase::Initializing;
-                json!({"protocolVersion":PROTOCOL_VERSION,"capabilities":{"tools":{"listChanged":false}},
-                    "serverInfo":{"name":"statemcp","version":env!("CARGO_PKG_VERSION")},"instructions":SERVER_INSTRUCTIONS})
-            }
-            "tools/list" | "tools/call" if self.phase != Phase::Ready => {
-                return Some(rpc_error(
-                    id,
-                    -32002,
-                    "Complete initialize and notifications/initialized first",
+        let permit = match self.slots.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                return Ok(tool_error(
+                    "BUSY",
+                    "Too many active invocations; retry later",
                 ));
             }
-            "tools/list" => {
-                if params.get("cursor").is_some() {
-                    return Some(rpc_error(
-                        id,
-                        -32602,
-                        "This server does not issue pagination cursors",
-                    ));
-                }
-                json!({"tools":tool_definitions()})
-            }
-            "tools/call" => {
-                let Some(name) = params["name"].as_str() else {
-                    return Some(rpc_error(id, -32602, "tools/call requires name"));
-                };
-                if !tool_definitions().iter().any(|tool| tool["name"] == name) {
-                    return Some(rpc_error(id, -32602, "Unknown tool"));
-                }
-                let args = params
-                    .get("arguments")
-                    .cloned()
-                    .unwrap_or_else(|| json!({}));
-                if !args.is_object() {
-                    return Some(rpc_error(id, -32602, "arguments must be an object"));
-                }
-                match self.dispatcher.dispatch(name, args) {
-                    Ok(value) => tool_result(value, false),
-                    Err(error) => tool_result(json!({"error":error}), true),
-                }
-            }
-            _ => return Some(rpc_error(id, -32601, "Method not found")),
         };
-        Some(json!({"jsonrpc":"2.0","id":id,"result":result}))
-    }
-
-    /// Read bounded newline-delimited frames, recover from bad frames, flush each reply.
-    pub fn serve(&mut self, mut reader: impl BufRead, mut writer: impl Write) -> io::Result<()> {
-        loop {
-            let Some(frame) = read_frame(&mut reader)? else {
-                return Ok(());
-            };
-            let response = match frame {
-                Err(()) => Some(rpc_error(
-                    Value::Null,
-                    -32600,
-                    "Request exceeds 8 MiB frame limit",
-                )),
-                Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
-                    Ok(request) => self.handle(request),
-                    Err(_) => Some(rpc_error(Value::Null, -32700, "Parse error")),
-                },
-            };
-            if let Some(response) = response {
-                serde_json::to_writer(&mut writer, &response)?;
-                writer.write_all(b"\n")?;
-                writer.flush()?;
+        let state = self.state.clone();
+        let name = request.name.into_owned();
+        let arguments = Value::Object(request.arguments.unwrap_or_default());
+        let span = tracing::info_span!("tool_call", tool = %name);
+        let result = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let _span = span.enter();
+            // Keep SQLite and Monty callbacks off the async network workers.
+            state.dispatch(&name, arguments)
+        })
+        .await;
+        match result {
+            Ok(Ok(value)) => {
+                Ok(CallToolResult::success(vec![ContentBlock::text(value.to_string())]).into())
             }
-        }
-    }
-}
-
-pub(crate) fn rpc_error(id: Value, code: i32, message: &str) -> Value {
-    json!({"jsonrpc":"2.0","id":id,"error":{"code":code,"message":message}})
-}
-pub(crate) fn tool_result(value: Value, is_error: bool) -> Value {
-    json!({"content":value,"isError":is_error})
-}
-fn read_frame(reader: &mut impl BufRead) -> io::Result<Option<Result<Vec<u8>, ()>>> {
-    let mut frame = Vec::new();
-    let mut too_large = false;
-    loop {
-        let bytes = reader.fill_buf()?;
-        if bytes.is_empty() {
-            return Ok(if too_large {
-                Some(Err(()))
-            } else if frame.is_empty() {
-                None
-            } else {
-                Some(Ok(frame))
-            });
-        }
-        let newline = bytes.iter().position(|byte| *byte == b'\n');
-        let count = newline.map_or(bytes.len(), |index| index + 1);
-        if !too_large {
-            if frame.len() + count > MAX_FRAME_BYTES {
-                too_large = true;
-                frame.clear();
-            } else {
-                frame.extend_from_slice(&bytes[..count]);
+            Ok(Err(error)) => {
+                tracing::debug!(code = %error.code, "Tool invocation failed");
+                Ok(tool_error(&error.code, &error.message))
             }
-        }
-        reader.consume(count);
-        if newline.is_some() {
-            return Ok(Some(if too_large { Err(()) } else { Ok(frame) }));
+            Err(error) => {
+                tracing::error!(%error, "Invocation worker failed");
+                Err(ErrorData::internal_error("Invocation worker failed", None))
+            }
         }
     }
 }

@@ -6,10 +6,12 @@ use crate::{
     model::{Manifest, Namespace},
     validation::{name, required},
 };
+use crate::{NamespaceAction, NamespaceRequest};
 use serde_json::{Value, json};
 
 impl Transaction {
-    fn namespace_id(&self, selector: &str) -> Result<String> {
+    /// Resolve a namespace selector against this transaction's current facts.
+    pub fn namespace_identity(&self, selector: &str) -> Result<&str> {
         self.namespaces
             .get(selector)
             .filter(|n| !n.deleted)
@@ -18,15 +20,15 @@ impl Transaction {
                     .values()
                     .find(|n| !n.deleted && n.name == selector)
             })
-            .map(|n| n.id.clone())
+            .map(|n| n.id.as_str())
             .ok_or_else(|| Error::new("NOT_FOUND", format!("namespace {selector} does not exist")))
     }
-    pub(super) fn selected(&self, args: &Value) -> Result<String> {
-        self.namespace_id(required(args, "namespace")?)
+    pub(super) fn selected(&self, namespace: &str) -> Result<String> {
+        self.namespace_identity(namespace).map(str::to_owned)
     }
-    pub(super) fn check_revision(&self, ns: &str, args: &Value) -> Result<()> {
-        if let Some(expected) = args.get("expected_revision")
-            && expected.as_str() != Some(&self.namespaces[ns].revision)
+    pub(super) fn check_revision(&self, ns: &str, expected: Option<&str>) -> Result<()> {
+        if let Some(expected) = expected
+            && expected != self.namespaces[ns].revision
         {
             return Err(Error::new("CONFLICT", "namespace revision does not match"));
         }
@@ -35,13 +37,13 @@ impl Transaction {
     fn namespace_info(ns: &Namespace) -> Value {
         json!({"id":ns.id,"name":ns.name,"revision":ns.revision,"files":ns.manifest.files.len(),"databases":ns.manifest.databases.len(),"functions":ns.manifest.functions.len()})
     }
-    pub(super) fn namespace(&mut self, args: &Value) -> Result<Value> {
-        match required(args, "action")? {
-            "list" => Ok(
+    pub(super) fn namespace(&mut self, args: &NamespaceRequest) -> Result<Value> {
+        match args.action {
+            NamespaceAction::List => Ok(
                 json!({"namespaces":self.namespaces.values().filter(|n|!n.deleted).map(Self::namespace_info).collect::<Vec<_>>()}),
             ),
-            "create" => {
-                let name = name(required(args, "name")?)?;
+            NamespaceAction::Create => {
+                let name = name(required(args.name.as_deref(), "name")?)?;
                 self.available(&name)?;
                 let ns = Namespace {
                     id: id(),
@@ -56,12 +58,12 @@ impl Transaction {
                 Ok(result)
             }
             action => {
-                let key = self.selected(args)?;
-                self.check_revision(&key, args)?;
+                let key = self.selected(required(args.namespace.as_deref(), "namespace")?)?;
+                self.check_revision(&key, args.expected_revision.as_deref())?;
                 match action {
-                    "get" => Ok(Self::namespace_info(&self.namespaces[&key])),
-                    "update" | "rename" => {
-                        let new_name = name(required(args, "name")?)?;
+                    NamespaceAction::Get => Ok(Self::namespace_info(&self.namespaces[&key])),
+                    NamespaceAction::Update => {
+                        let new_name = name(required(args.name.as_deref(), "name")?)?;
                         if self.namespaces[&key].name != new_name {
                             self.available(&new_name)?;
                         }
@@ -70,8 +72,8 @@ impl Transaction {
                         ns.dirty = true;
                         Ok(Self::namespace_info(ns))
                     }
-                    "copy" => {
-                        let new_name = name(required(args, "name")?)?;
+                    NamespaceAction::Copy => {
+                        let new_name = name(required(args.name.as_deref(), "name")?)?;
                         self.available(&new_name)?;
                         let mut ns = self.namespaces[&key].clone();
                         self.freeze_databases(&key, &mut ns.manifest)?;
@@ -83,13 +85,15 @@ impl Transaction {
                         self.namespaces.insert(ns.id.clone(), ns);
                         Ok(result)
                     }
-                    "delete" => {
+                    NamespaceAction::Delete => {
                         let ns = self.namespaces.get_mut(&key).expect("selected");
                         ns.deleted = true;
                         ns.dirty = true;
                         Ok(json!({"deleted":true,"id":key}))
                     }
-                    _ => Err(Error::invalid("unknown namespace action")),
+                    NamespaceAction::Create | NamespaceAction::List => {
+                        unreachable!("handled above")
+                    }
                 }
             }
         }

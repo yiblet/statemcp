@@ -1,4 +1,5 @@
 //! Persisted manifests and the mutable namespace view of a root invocation.
+use crate::FunctionDeclaration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -15,7 +16,7 @@ pub(crate) struct Manifest {
     #[serde(default)]
     pub(crate) databases: BTreeMap<String, Database>,
     #[serde(default)]
-    pub(crate) functions: BTreeMap<String, Value>,
+    pub(crate) functions: BTreeMap<String, FunctionDeclaration>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Database {

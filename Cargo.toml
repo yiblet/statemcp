@@ -11,15 +11,19 @@ axum = "0.8"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "time", "macros"] }
 subtle = "2"
-uuid = { version = "1", features = ["v4"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 state-core = { path = "crates/state-core" }
 state-runtime = { path = "crates/state-runtime" }
+rmcp = { version = "3.5.0", default-features = false, features = ["server", "transport-io", "transport-streamable-http-server"] }
+anyhow = "1.0.104"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [workspace]
 members = ["crates/*"]
 resolver = "3"
 
 [dev-dependencies]
+rmcp = { version = "3.5.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 tower = { version = "0.5", features = ["util"] }

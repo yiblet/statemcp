@@ -1,4 +1,7 @@
-use crate::{Error, Result, bounded, dispatch::Root, policy::Access};
+use crate::{
+    DatabaseAction, Error, FileAction, Result, Tool, bounded, dispatch::Root, policy::Access,
+    selectors::HostFunction,
+};
 use serde_json::{Map, Value, json};
 
 impl Root {
@@ -29,20 +32,22 @@ impl Root {
             &json!({"args":positional,"kwargs":keywords}),
             self.limits.runtime.max_output_bytes,
         )?;
-        let (tool, arguments, text_only) = match name {
-            "mcp" => {
+        let function =
+            HostFunction::parse(name).ok_or_else(|| Error::invalid("unknown host function"))?;
+        let (tool, arguments, text_only) = match function {
+            HostFunction::Mcp => {
                 let args = bind(positional, keywords, &["name", "arguments"], 1)?;
                 let tool = args["name"]
                     .as_str()
-                    .ok_or_else(|| Error::invalid("mcp name must be a string"))?
-                    .to_owned();
-                (
+                    .ok_or_else(|| Error::invalid("mcp name must be a string"))?;
+                return self.dispatch(
                     tool,
                     args.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                    access,
                     false,
-                )
+                );
             }
-            "call" => {
+            HostFunction::Call => {
                 let mut args = bind(
                     positional,
                     keywords,
@@ -50,10 +55,10 @@ impl Root {
                     2,
                 )?;
                 args.entry("arguments").or_insert_with(|| json!({}));
-                ("state_call".into(), json!(args), false)
+                (Tool::Call, json!(args), false)
             }
-            "db_query" | "db_execute" | "db_inspect" => {
-                let inspect = name == "db_inspect";
+            HostFunction::Database(action) => {
+                let inspect = action == DatabaseAction::Inspect;
                 let mut args = bind(
                     positional,
                     keywords,
@@ -70,18 +75,11 @@ impl Root {
                         "database helper requires a default namespace"
                     ))?),
                 );
-                args.insert(
-                    "action".into(),
-                    json!(match name {
-                        "db_query" => "query",
-                        "db_execute" => "execute",
-                        _ => "inspect",
-                    }),
-                );
-                ("state_db".into(), json!(args), false)
+                args.insert("action".into(), json!(action));
+                (Tool::Database, json!(args), false)
             }
-            "read_text" | "write_text" => {
-                let read = name == "read_text";
+            HostFunction::File(action) => {
+                let read = action == FileAction::Read;
                 let mut args = bind(
                     positional,
                     keywords,
@@ -94,12 +92,11 @@ impl Root {
                         "file helper requires a default namespace"
                     ))?),
                 );
-                args.insert("action".into(), json!(if read { "read" } else { "write" }));
-                ("state_fs".into(), json!(args), read)
+                args.insert("action".into(), json!(action));
+                (Tool::File, json!(args), read)
             }
-            _ => return Err(Error::invalid("unknown host function")),
         };
-        let result = self.dispatch(&tool, arguments, access, false)?;
+        let result = self.dispatch_typed(tool, arguments, access, false)?;
         if text_only {
             return result
                 .get("text")

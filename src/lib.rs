@@ -1,21 +1,11 @@
-//! Embeddable statemcp services and a synchronous, newline-delimited JSON-RPC adapter.
+//! StateMCP services and official Rust MCP SDK transports.
 pub mod http;
 pub mod protocol;
 
-pub use protocol::{Dispatcher, Server, ToolError, UnsupportedDispatcher, tool_definitions};
+pub use protocol::{Server, tool_definitions};
 
 /// Transactional State service and runtime configuration for Rust embedding.
 pub use state_core::{
-    CoreLimits, EmbeddedBackend, Error as CoreError, Limits, RuntimeBackend, State, Store,
-    WorkerConfig,
+    CoreLimits, EmbeddedBackend, Error as CoreError, Limits, Request, RuntimeBackend, State, Store,
+    Tool, WorkerConfig,
 };
-
-impl Dispatcher for State {
-    fn dispatch(
-        &mut self,
-        tool: &str,
-        args: serde_json::Value,
-    ) -> Result<serde_json::Value, ToolError> {
-        State::dispatch(self, tool, args).map_err(|error| ToolError::new(error.code, error.message))
-    }
-}

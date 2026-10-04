@@ -38,7 +38,7 @@ class Client:
         result = self.request("tools/call", {"name": name, "arguments": arguments})
         if result.get("isError"):
             raise RuntimeError(result)
-        return result["content"]
+        return json.loads(result["content"][0]["text"])
 
     def call(self, namespace, function, arguments=None):
         result = self.tool("call", {

@@ -59,12 +59,10 @@ impl Store {
             // Source text is embedded, but retain its object too for consistency
             // with pinned declarations after editing or deleting the source file.
             for function in manifest.functions.values() {
-                if let Some(hash) = function
-                    .get("source_hash")
-                    .and_then(serde_json::Value::as_str)
-                {
-                    tx.execute("INSERT OR IGNORE INTO live_objects VALUES(?)", [hash])?;
-                }
+                tx.execute(
+                    "INSERT OR IGNORE INTO live_objects VALUES(?)",
+                    [&function.source_hash],
+                )?;
             }
             snapshots.extend(manifest.databases.into_values().map(|db| db.snapshot));
         }
