@@ -12,7 +12,7 @@ pub(crate) fn tool_result(operation: Operation, mut result: Value) -> Value {
             }
             FunctionAction::List => {
                 for function in result["functions"].as_array_mut().expect("function list") {
-                    for field in ["source", "source_hash", "database_ids", "abi_version"] {
+                    for field in ["source", "modules", "source_hash", "abi_version"] {
                         function
                             .as_object_mut()
                             .expect("function metadata")

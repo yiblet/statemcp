@@ -108,8 +108,6 @@ fn all_seven_cli_tools_publish_invoke_and_manipulate_state() {
             "/api.py",
             "--symbol",
             "add",
-            "--databases",
-            r#"[{"database":"app","access":"write"}]"#,
             "--input-schema",
             &schema_arg,
         ],

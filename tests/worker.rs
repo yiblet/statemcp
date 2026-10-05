@@ -243,7 +243,7 @@ fn worker_does_not_need_python_or_modify_parent_allocator() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let message = serde_json::to_vec(&json!({"operation": {"operation": "execute", "source": "21 * 2", "inputs": null}, "limits": Limits::default()})).unwrap();
+    let message = serde_json::to_vec(&json!({"operation": {"operation": "execute", "modules": {"entry_path":"/state.py", "files":{}}, "source": "21 * 2", "inputs": null}, "limits": Limits::default()})).unwrap();
     let mut input = child.stdin.take().unwrap();
     input
         .write_all(&(message.len() as u32).to_be_bytes())
@@ -280,4 +280,50 @@ fn fatal_allocator_exit_during_frame_decode_recovers() {
     assert_eq!(error.code, "LIMIT_EXCEEDED", "{error}");
     assert!(error.message.contains("memory"), "{error}");
     healthy(&config);
+}
+
+#[test]
+fn workers_preserve_namespace_modules_and_shared_globals() {
+    let config = worker();
+    let modules = state_runtime::ModuleSources {
+        entry_path: "/api.py".into(),
+        files: std::collections::BTreeMap::from([(
+            "/helpers.py".into(),
+            "value = 40\ndef answer():\n    global value\n    value += 1\n    return value\n"
+                .into(),
+        )]),
+    };
+    let source = "import helpers\nfrom helpers import answer\ndef endpoint():\n    return [answer(), helpers.answer(), helpers.value]\n";
+    config
+        .validate_module_with_modules(source, "endpoint", &modules, &Limits::default())
+        .unwrap();
+    for _ in 0..2 {
+        assert_eq!(
+            config
+                .invoke_with_modules(
+                    source,
+                    "endpoint",
+                    json!({}),
+                    &modules,
+                    &Limits::default(),
+                    &mut deny
+                )
+                .unwrap()
+                .value,
+            json!([41, 42, 42])
+        );
+    }
+    assert_eq!(
+        config
+            .execute_with_modules(
+                "import helpers\nhelpers.answer()",
+                Value::Null,
+                &modules,
+                &Limits::default(),
+                &mut deny
+            )
+            .unwrap()
+            .value,
+        41
+    );
 }

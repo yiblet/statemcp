@@ -11,6 +11,7 @@ impl RuntimeBackend for ObservingBackend {
     fn execute(
         &self,
         _: &str,
+        _: &state_runtime::ModuleSources,
         _: Value,
         limits: &Limits,
         host: &mut HostCallback<'_>,
@@ -34,6 +35,7 @@ impl RuntimeBackend for ObservingBackend {
     fn invoke(
         &self,
         _: &str,
+        _: &state_runtime::ModuleSources,
         _: &str,
         _: Value,
         _: &Limits,
@@ -41,7 +43,13 @@ impl RuntimeBackend for ObservingBackend {
     ) -> Result<RunResult, RuntimeError> {
         unreachable!()
     }
-    fn validate_module(&self, _: &str, _: &str, _: &Limits) -> Result<(), RuntimeError> {
+    fn validate_module(
+        &self,
+        _: &str,
+        _: &state_runtime::ModuleSources,
+        _: &str,
+        _: &Limits,
+    ) -> Result<(), RuntimeError> {
         unreachable!()
     }
 }
@@ -69,6 +77,7 @@ impl RuntimeBackend for CatchingBackend {
     fn execute(
         &self,
         _: &str,
+        _: &state_runtime::ModuleSources,
         _: Value,
         _: &Limits,
         host: &mut HostCallback<'_>,
@@ -90,6 +99,7 @@ impl RuntimeBackend for CatchingBackend {
     fn invoke(
         &self,
         _: &str,
+        _: &state_runtime::ModuleSources,
         _: &str,
         _: Value,
         _: &Limits,
@@ -97,7 +107,13 @@ impl RuntimeBackend for CatchingBackend {
     ) -> Result<RunResult, RuntimeError> {
         unreachable!()
     }
-    fn validate_module(&self, _: &str, _: &str, _: &Limits) -> Result<(), RuntimeError> {
+    fn validate_module(
+        &self,
+        _: &str,
+        _: &state_runtime::ModuleSources,
+        _: &str,
+        _: &Limits,
+    ) -> Result<(), RuntimeError> {
         unreachable!()
     }
 }
@@ -127,31 +143,34 @@ impl RuntimeBackend for RacingBackend {
     fn execute(
         &self,
         source: &str,
+        modules: &state_runtime::ModuleSources,
         inputs: Value,
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
         // TODO(audit): replace unbounded rendezvous with a timeout so early peer failure cannot hang this test.
         self.barrier.wait();
-        EmbeddedBackend.execute(source, inputs, limits, host)
+        EmbeddedBackend.execute(source, modules, inputs, limits, host)
     }
     fn invoke(
         &self,
         source: &str,
+        modules: &state_runtime::ModuleSources,
         symbol: &str,
         args: Value,
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
-        EmbeddedBackend.invoke(source, symbol, args, limits, host)
+        EmbeddedBackend.invoke(source, modules, symbol, args, limits, host)
     }
     fn validate_module(
         &self,
         source: &str,
+        modules: &state_runtime::ModuleSources,
         symbol: &str,
         limits: &Limits,
     ) -> Result<(), RuntimeError> {
-        EmbeddedBackend.validate_module(source, symbol, limits)
+        EmbeddedBackend.validate_module(source, modules, symbol, limits)
     }
 }
 #[test]

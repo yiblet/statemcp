@@ -19,9 +19,6 @@ selector!(Field {
     Schema => "input_schema" | "output_schema",
     Recursive => "recursive",
     Params => "params",
-    Databases => "databases",
-    Files => "files",
-    Calls => "calls",
     Migrations => "migrations",
 });
 selector!(SchemaKeyword {

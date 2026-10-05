@@ -1,5 +1,5 @@
 use serde_json::Value;
-use state_runtime::{HostCallback, Limits, RunResult, RuntimeError, WorkerConfig};
+use state_runtime::{HostCallback, Limits, ModuleSources, RunResult, RuntimeError, WorkerConfig};
 
 /// Backends must terminate on callback errors; callbacks are the only state access.
 /// Shared references permit nested invocation using the same backend configuration.
@@ -7,6 +7,7 @@ pub trait RuntimeBackend: Send + Sync {
     fn execute(
         &self,
         source: &str,
+        modules: &ModuleSources,
         inputs: Value,
         limits: &Limits,
         host: &mut HostCallback<'_>,
@@ -14,6 +15,7 @@ pub trait RuntimeBackend: Send + Sync {
     fn invoke(
         &self,
         source: &str,
+        modules: &ModuleSources,
         symbol: &str,
         arguments: Value,
         limits: &Limits,
@@ -22,6 +24,7 @@ pub trait RuntimeBackend: Send + Sync {
     fn validate_module(
         &self,
         source: &str,
+        modules: &ModuleSources,
         symbol: &str,
         limits: &Limits,
     ) -> Result<(), RuntimeError>;
@@ -33,57 +36,63 @@ impl RuntimeBackend for EmbeddedBackend {
     fn execute(
         &self,
         source: &str,
+        modules: &ModuleSources,
         inputs: Value,
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
-        state_runtime::execute(source, inputs, limits, host)
+        state_runtime::execute_with_modules(source, inputs, modules, limits, host)
     }
     fn invoke(
         &self,
         source: &str,
+        modules: &ModuleSources,
         symbol: &str,
         arguments: Value,
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
-        state_runtime::invoke(source, symbol, arguments, limits, host)
+        state_runtime::invoke_with_modules(source, symbol, arguments, modules, limits, host)
     }
     fn validate_module(
         &self,
         source: &str,
+        modules: &ModuleSources,
         symbol: &str,
         limits: &Limits,
     ) -> Result<(), RuntimeError> {
-        state_runtime::validate_module(source, symbol, limits)
+        state_runtime::validate_module_with_modules(source, symbol, modules, limits)
     }
 }
 impl RuntimeBackend for WorkerConfig {
     fn execute(
         &self,
         source: &str,
+        modules: &ModuleSources,
         inputs: Value,
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
-        WorkerConfig::execute(self, source, inputs, limits, host)
+        WorkerConfig::execute_with_modules(self, source, inputs, modules, limits, host)
     }
     fn invoke(
         &self,
         source: &str,
+        modules: &ModuleSources,
         symbol: &str,
         arguments: Value,
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
-        WorkerConfig::invoke(self, source, symbol, arguments, limits, host)
+        WorkerConfig::invoke_with_modules(self, source, symbol, arguments, modules, limits, host)
     }
     fn validate_module(
         &self,
         source: &str,
+        modules: &ModuleSources,
         symbol: &str,
         limits: &Limits,
     ) -> Result<(), RuntimeError> {
-        WorkerConfig::validate_module(self, source, symbol, limits)
+        WorkerConfig::validate_module_with_modules(self, source, symbol, modules, limits)
     }
 }

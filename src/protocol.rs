@@ -14,7 +14,7 @@ use tokio::sync::Semaphore;
 
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
-const SERVER_INSTRUCTIONS: &str = "StateMCP lets you create SQLite databases and publish Python tools that use them. Create a namespace and databases, write Python source with fs.write, then publish with function.declare and invoke with call. Use describe with mode=runtime for Python helpers and mode=full for exact schemas. Namespace selectors accept names or stable UUIDs. Published functions have only their declared grants; root execute scripts have owner access. Use expected_revision and expected_version for optimistic concurrency. Tool content contains a JSON-encoded text block; isError indicates an application failure.";
+const SERVER_INSTRUCTIONS: &str = "StateMCP lets you create SQLite databases and publish Python tools that use them. Create a namespace and databases, write Python source with fs.write, then publish with function.declare and invoke with call. Use describe with mode=runtime for Python helpers and mode=full for exact schemas. Namespace selectors accept names or stable UUIDs. Published functions have full access to their own namespace only; root execute scripts have owner access. Use expected_revision and expected_version for optimistic concurrency. Tool content contains a JSON-encoded text block; isError indicates an application failure.";
 
 /// Clones share the store and invocation budget across all transports and clients.
 #[derive(Clone)]

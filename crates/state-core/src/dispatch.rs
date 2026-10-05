@@ -1,14 +1,12 @@
 use crate::{
     CoreLimits, Error, FileAction, FunctionAction, Result, RuntimeBackend, Tool, bounded,
-    policy::{
-        Access, AuthorizationPlan, AuthorizationRequest, EndpointAccess, plan_authorization,
-        verify_database_identity,
-    },
+    policy::{self, Access, Target},
     remaining,
     request::Request,
     schemas,
 };
 use serde_json::{Value, json};
+use state_runtime::ModuleSources;
 use state_store::{
     Arguments, CallRequest, DescribeRequest, DiscoveryMode, ExecuteRequest, FileRequest,
     FunctionRequest, Transaction,
@@ -97,9 +95,14 @@ impl Root {
                 "idempotency keys are only valid on root calls",
             ));
         }
-        if let Access::Endpoint(endpoint) = access {
-            args.resolve_self(&endpoint.namespace);
-            self.authorize(&args, endpoint)?;
+        if let Access::Namespace(namespace) = access {
+            args.resolve_self(namespace);
+            if let Arguments::Execute(script) = &mut args
+                && script.namespace.is_none()
+            {
+                script.namespace = Some(namespace.clone());
+            }
+            self.authorize(&args, namespace)?;
         }
         let result = match &args {
             Arguments::Function(function)
@@ -112,7 +115,7 @@ impl Root {
             }
             Arguments::Call(call) => self.invoke(call)?,
             Arguments::Execute(script) => self.execute(script, access)?,
-            Arguments::Describe(discovery) => self.describe(discovery, access)?,
+            Arguments::Describe(discovery) => self.describe(discovery)?,
             _ => self.tx.dispatch_request(&args)?,
         };
         let result = crate::presentation::tool_result(operation, result);
@@ -153,20 +156,12 @@ impl Root {
             .map(str::to_owned)
             .map_err(Into::into)
     }
-    fn authorize(&self, args: &Arguments, endpoint: &EndpointAccess) -> Result<()> {
-        let request = AuthorizationRequest::from_arguments(args)?;
-        let namespace = request
-            .namespace()
-            .map(|selector| self.tx.namespace_identity(selector))
-            .transpose()?;
-        match plan_authorization(endpoint, &request, namespace)? {
-            AuthorizationPlan::Allowed => Ok(()),
-            AuthorizationPlan::VerifyDatabase {
-                name,
-                expected_identity,
-            } => {
-                let current = self.tx.database_identity(&endpoint.namespace, name)?;
-                verify_database_identity(expected_identity, current)
+    fn authorize(&self, args: &Arguments, namespace: &str) -> Result<()> {
+        match policy::target(args) {
+            Target::ApiDiscovery => Ok(()),
+            Target::GlobalState => Err(Error::denied()),
+            Target::Namespace(selector) => {
+                policy::check_namespace(namespace, self.tx.namespace_identity(selector)?)
             }
         }
     }
@@ -177,17 +172,18 @@ impl Root {
         schemas::compile(input_schema)?;
         let output_schema = args.output_schema.get_or_insert(Value::Bool(true));
         schemas::compile(output_schema)?;
-        for call in &mut args.grants.calls {
-            if call.namespace != "self" {
-                call.namespace = self.namespace_id(&call.namespace)?;
-            }
-        }
-        args.grants.normalize()?;
         let file = args.file.as_ref().expect("parsed declaration file");
         let source = self.tx.file_text(&args.namespace, file)?;
         let limits = remaining(self.start, &self.limits.runtime)?;
+        let modules = ModuleSources {
+            entry_path: file.clone(),
+            files: self
+                .tx
+                .python_sources(&args.namespace, limits.max_source_bytes)?,
+        };
         self.backend.validate_module(
             &source,
+            &modules,
             args.symbol.as_deref().expect("parsed symbol"),
             &limits,
         )?;
@@ -234,15 +230,17 @@ impl Root {
         )?
         .validate(&arguments)
         .map_err(|e| Error::new("SCHEMA_VALIDATION", format!("input schema: {e}")))?;
-        let access = Access::Endpoint(EndpointAccess::from_declaration(
-            namespace.clone(),
-            &declaration,
-        )?);
+        let access = Access::Namespace(namespace.clone());
         self.enter()?;
         let limits = remaining(self.start, &self.limits.runtime)?;
         let backend = self.backend.clone();
+        let modules = ModuleSources {
+            entry_path: declaration.file.clone(),
+            files: declaration.modules,
+        };
         let result = backend.invoke(
             &declaration.source,
+            &modules,
             &declaration.symbol,
             arguments,
             &limits,
@@ -274,8 +272,17 @@ impl Root {
         self.enter()?;
         let limits = remaining(self.start, &self.limits.runtime)?;
         let backend = self.backend.clone();
+        let modules = ModuleSources {
+            entry_path: "/state.py".into(),
+            files: namespace
+                .as_deref()
+                .map(|ns| self.tx.python_sources(ns, limits.max_source_bytes))
+                .transpose()?
+                .unwrap_or_default(),
+        };
         let result = backend.execute(
             &args.script,
+            &modules,
             args.inputs.clone(),
             &limits,
             &mut |name, positional, keywords| {
@@ -289,7 +296,7 @@ impl Root {
         self.account_stdout(&result.stdout)?;
         Ok(json!({"value":result.value,"stdout":result.stdout}))
     }
-    fn describe(&mut self, args: &DescribeRequest, access: &Access) -> Result<Value> {
+    fn describe(&mut self, args: &DescribeRequest) -> Result<Value> {
         let Some(selector) = args.namespace.as_deref() else {
             let mut tools = schemas::tool_definitions();
             if let Some(name) = args.tool.as_deref() {
@@ -327,11 +334,6 @@ impl Root {
                 .function
                 .as_deref()
                 .is_some_and(|requested| requested != name)
-            {
-                continue;
-            }
-            if let Access::Endpoint(endpoint) = access
-                && !endpoint.calls.contains(&(namespace.clone(), name.clone()))
             {
                 continue;
             }

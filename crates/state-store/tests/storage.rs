@@ -450,7 +450,7 @@ fn read_only_query_and_single_statement_are_enforced() {
 }
 
 #[test]
-fn endpoint_source_and_database_ids_are_pinned() {
+fn endpoint_source_is_pinned_but_databases_can_be_dropped() {
     let (_dir, store) = setup();
     namespace(&store, "a");
     db(&store, "a");
@@ -462,7 +462,7 @@ fn endpoint_source_and_database_ids_are_pinned() {
     let declaration = run(
         &store,
         "state_function",
-        json!({"action":"declare","namespace":"a","name":"f","file":"/api.py","symbol":"f","databases": [{"database":"app","access":"read"}]}),
+        json!({"action":"declare","namespace":"a","name":"f","file":"/api.py","symbol":"f"}),
     );
     run(
         &store,
@@ -487,18 +487,26 @@ fn endpoint_source_and_database_ids_are_pinned() {
             &store,
             "state_function",
             json!({"action":"get","namespace":"b","name":"f"})
-        )["database_ids"],
-        declaration["database_ids"]
+        )["version"],
+        declaration["version"]
     );
-    let mut tx = store.begin().unwrap();
+    run(
+        &store,
+        "state_db",
+        json!({"action":"drop","namespace":"a","database":"app"}),
+    );
+    run(
+        &store,
+        "state_db",
+        json!({"action":"create","namespace":"a","database":"app"}),
+    );
     assert_eq!(
-        tx.dispatch(
-            "state_db",
-            json!({"action":"drop","namespace":"a","database":"app"})
-        )
-        .unwrap_err()
-        .code,
-        "CONFLICT"
+        run(
+            &store,
+            "state_function",
+            json!({"action":"get","namespace":"a","name":"f"})
+        )["version"],
+        declaration["version"]
     );
 }
 

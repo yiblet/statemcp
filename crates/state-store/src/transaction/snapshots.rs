@@ -37,78 +37,6 @@ fn copy_database(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn copy_lock_excludes_writers_and_releases_on_drop() {
-        let directory = tempfile::tempdir().unwrap();
-        let source = directory.path().join("source.sqlite");
-        let writer = Connection::open(&source).unwrap();
-        writer
-            .execute_batch("CREATE TABLE t(value); INSERT INTO t VALUES (42)")
-            .unwrap();
-        writer.busy_timeout(Duration::ZERO).unwrap();
-        let lock = lock_copy_source(&source).unwrap();
-        let error = writer
-            .execute_batch("INSERT INTO t VALUES (43)")
-            .unwrap_err();
-        assert_eq!(Error::from(error).code, "CONFLICT");
-        drop(lock);
-        writer.execute_batch("INSERT INTO t VALUES (43)").unwrap();
-    }
-
-    #[test]
-    fn copy_refuses_active_writer_and_wal() {
-        let directory = tempfile::tempdir().unwrap();
-        let source = directory.path().join("source.sqlite");
-        let destination = directory.path().join("copy.sqlite");
-        let writer = Connection::open(&source).unwrap();
-        writer
-            .execute_batch("CREATE TABLE t(value); BEGIN IMMEDIATE; INSERT INTO t VALUES (42)")
-            .unwrap();
-        assert_eq!(
-            copy_database(&source, &destination).unwrap_err().code,
-            "CONFLICT"
-        );
-        assert!(!destination.exists());
-        writer
-            .execute_batch("ROLLBACK; PRAGMA journal_mode=WAL; INSERT INTO t VALUES (43)")
-            .unwrap();
-        assert_eq!(
-            copy_database(&source, &destination).unwrap_err().code,
-            "INVALID_ARGUMENT"
-        );
-        assert!(!destination.exists());
-        writer.execute_batch("INSERT INTO t VALUES (44)").unwrap();
-    }
-
-    #[test]
-    fn copy_preserves_data_and_releases_lock_on_io_failure() {
-        let directory = tempfile::tempdir().unwrap();
-        let source = directory.path().join("source.sqlite");
-        let destination = directory.path().join("copy.sqlite");
-        let writer = Connection::open(&source).unwrap();
-        writer
-            .execute_batch("CREATE TABLE t(value); INSERT INTO t VALUES (42)")
-            .unwrap();
-        copy_database(&source, &destination).unwrap();
-        let copy = Connection::open(&destination).unwrap();
-        assert_eq!(
-            copy.query_row("SELECT value FROM t", [], |row| row.get::<_, i64>(0))
-                .unwrap(),
-            42
-        );
-        assert_eq!(
-            copy_database(&source, directory.path()).unwrap_err().code,
-            "IO_ERROR"
-        );
-        writer.busy_timeout(Duration::ZERO).unwrap();
-        writer.execute_batch("INSERT INTO t VALUES (43)").unwrap();
-    }
-}
-
 pub(super) struct WorkingDatabase {
     pub(super) connection: Connection,
     pub(super) path: PathBuf,
@@ -182,5 +110,77 @@ impl Transaction {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_lock_excludes_writers_and_releases_on_drop() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.sqlite");
+        let writer = Connection::open(&source).unwrap();
+        writer
+            .execute_batch("CREATE TABLE t(value); INSERT INTO t VALUES (42)")
+            .unwrap();
+        writer.busy_timeout(Duration::ZERO).unwrap();
+        let lock = lock_copy_source(&source).unwrap();
+        let error = writer
+            .execute_batch("INSERT INTO t VALUES (43)")
+            .unwrap_err();
+        assert_eq!(Error::from(error).code, "CONFLICT");
+        drop(lock);
+        writer.execute_batch("INSERT INTO t VALUES (43)").unwrap();
+    }
+
+    #[test]
+    fn copy_refuses_active_writer_and_wal() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.sqlite");
+        let destination = directory.path().join("copy.sqlite");
+        let writer = Connection::open(&source).unwrap();
+        writer
+            .execute_batch("CREATE TABLE t(value); BEGIN IMMEDIATE; INSERT INTO t VALUES (42)")
+            .unwrap();
+        assert_eq!(
+            copy_database(&source, &destination).unwrap_err().code,
+            "CONFLICT"
+        );
+        assert!(!destination.exists());
+        writer
+            .execute_batch("ROLLBACK; PRAGMA journal_mode=WAL; INSERT INTO t VALUES (43)")
+            .unwrap();
+        assert_eq!(
+            copy_database(&source, &destination).unwrap_err().code,
+            "INVALID_ARGUMENT"
+        );
+        assert!(!destination.exists());
+        writer.execute_batch("INSERT INTO t VALUES (44)").unwrap();
+    }
+
+    #[test]
+    fn copy_preserves_data_and_releases_lock_on_io_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.sqlite");
+        let destination = directory.path().join("copy.sqlite");
+        let writer = Connection::open(&source).unwrap();
+        writer
+            .execute_batch("CREATE TABLE t(value); INSERT INTO t VALUES (42)")
+            .unwrap();
+        copy_database(&source, &destination).unwrap();
+        let copy = Connection::open(&destination).unwrap();
+        assert_eq!(
+            copy.query_row("SELECT value FROM t", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            42
+        );
+        assert_eq!(
+            copy_database(&source, directory.path()).unwrap_err().code,
+            "IO_ERROR"
+        );
+        writer.busy_timeout(Duration::ZERO).unwrap();
+        writer.execute_batch("INSERT INTO t VALUES (43)").unwrap();
     }
 }

@@ -2,7 +2,6 @@
 mod declarations;
 mod durability;
 mod error;
-mod grants;
 mod identity;
 mod model;
 mod operations;
@@ -13,7 +12,6 @@ mod transaction;
 mod validation;
 
 pub use error::{Error, Result};
-pub use grants::{CallGrant, DatabaseAccess, DatabaseGrant, FileAccess, FileGrant, Grants};
 pub use model::Receipt;
 pub use operations::{
     DatabaseAction, FileAction, FunctionAction, NamespaceAction, Operation, Tool,

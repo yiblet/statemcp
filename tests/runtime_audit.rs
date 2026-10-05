@@ -129,7 +129,7 @@ fn malformed_host_reply_ends_worker_without_a_second_callback() {
         write_frame(
             &mut input,
             &json!({
-                "operation": {"operation": "execute", "source": "try:\n    mcp('first')\nexcept Exception:\n    pass\nmcp('later')", "inputs": null},
+                "operation": {"operation": "execute", "modules": {"entry_path":"/state.py", "files":{}}, "source": "try:\n    mcp('first')\nexcept Exception:\n    pass\nmcp('later')", "inputs": null},
                 "limits": Limits::default(),
             }),
         );
@@ -177,4 +177,26 @@ fn source_limits_apply_before_spawning_and_nested_values_before_host_dispatch() 
             "LIMIT_EXCEEDED"
         );
     }
+}
+
+#[test]
+fn imported_sources_are_bounded_before_spawning_the_worker() {
+    let modules = state_runtime::ModuleSources {
+        entry_path: "/api.py".into(),
+        files: std::collections::BTreeMap::from([("/helper.py".into(), "x".repeat(100))]),
+    };
+    let limits = Limits {
+        max_source_bytes: 64,
+        ..Limits::default()
+    };
+    let error = WorkerConfig::new("/nonexistent/statemcp-import-audit")
+        .execute_with_modules(
+            "42",
+            Value::Null,
+            &modules,
+            &limits,
+            &mut |_, _, _| unreachable!(),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, "LIMIT_EXCEEDED");
 }

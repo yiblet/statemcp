@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{
     borrow::Cow,
+    collections::BTreeMap,
     fmt,
     io::{self, Write},
     sync::atomic::Ordering,
@@ -24,6 +25,30 @@ mod worker;
 pub use worker::{
     WorkerConfig, execute_isolated, invoke_isolated, validate_module_isolated, worker_main,
 };
+
+/// Immutable namespace Python files supplied to one fresh interpreter session.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModuleSources {
+    pub entry_path: String,
+    pub files: BTreeMap<String, String>,
+}
+
+impl ModuleSources {
+    pub(crate) fn check_limit(&self, limits: &Limits) -> Result<(), RuntimeError> {
+        let size = self
+            .files
+            .iter()
+            .try_fold(0usize, |size, (path, source)| {
+                size.checked_add(path.len())
+                    .and_then(|n| n.checked_add(source.len()))
+            })
+            .ok_or_else(|| limit_error("module source byte limit exceeded"))?;
+        if size > limits.max_source_bytes {
+            return Err(limit_error("module source byte limit exceeded"));
+        }
+        Ok(())
+    }
+}
 
 pub const HOST_FUNCTIONS: &[&str] = &[
     "mcp",
@@ -129,6 +154,22 @@ pub fn execute(
     )
 }
 
+pub fn execute_with_modules(
+    source: &str,
+    inputs: Value,
+    modules: &ModuleSources,
+    limits: &Limits,
+    host: &mut HostCallback<'_>,
+) -> Result<RunResult, RuntimeError> {
+    execute_with_bindings_with_modules(
+        source,
+        Map::from_iter([("inputs".into(), inputs)]),
+        modules,
+        limits,
+        host,
+    )
+}
+
 /// Execute with explicit globals. Host function names cannot be overridden by
 /// bindings; JSON is converted directly, never interpolated into Python source.
 pub fn execute_with_bindings(
@@ -137,9 +178,19 @@ pub fn execute_with_bindings(
     limits: &Limits,
     host: &mut HostCallback<'_>,
 ) -> Result<RunResult, RuntimeError> {
+    execute_with_bindings_with_modules(source, bindings, &ModuleSources::default(), limits, host)
+}
+
+pub fn execute_with_bindings_with_modules(
+    source: &str,
+    bindings: Map<String, Value>,
+    modules: &ModuleSources,
+    limits: &Limits,
+    host: &mut HostCallback<'_>,
+) -> Result<RunResult, RuntimeError> {
     let mut session = Session::new(source, limits)?;
     let mut budget = JsonBudget::new(limits);
-    let mut inputs = host_inputs();
+    let mut inputs = session.module_inputs(modules)?;
     for (name, value) in &bindings {
         if !identifier(name) || HOST_FUNCTIONS.contains(&name.as_str()) {
             return Err(RuntimeError::new(
@@ -162,8 +213,17 @@ pub fn execute_with_bindings(
 /// Compile and initialize a module in a fresh VM, denying all host effects, and
 /// check that `symbol` names a callable. No endpoint is invoked.
 pub fn validate_module(source: &str, symbol: &str, limits: &Limits) -> Result<(), RuntimeError> {
+    validate_module_with_modules(source, symbol, &ModuleSources::default(), limits)
+}
+
+pub fn validate_module_with_modules(
+    source: &str,
+    symbol: &str,
+    modules: &ModuleSources,
+    limits: &Limits,
+) -> Result<(), RuntimeError> {
     let mut session = Session::new(source, limits)?;
-    session.module(source, symbol)?;
+    session.module(source, symbol, modules)?;
     session.check_deadline()
 }
 
@@ -177,6 +237,24 @@ pub fn invoke(
     limits: &Limits,
     host: &mut HostCallback<'_>,
 ) -> Result<RunResult, RuntimeError> {
+    invoke_with_modules(
+        source,
+        symbol,
+        arguments,
+        &ModuleSources::default(),
+        limits,
+        host,
+    )
+}
+
+pub fn invoke_with_modules(
+    source: &str,
+    symbol: &str,
+    arguments: Value,
+    modules: &ModuleSources,
+    limits: &Limits,
+    host: &mut HostCallback<'_>,
+) -> Result<RunResult, RuntimeError> {
     if !arguments.is_object() {
         return Err(RuntimeError::new(
             "INVALID_ARGUMENT",
@@ -184,7 +262,7 @@ pub fn invoke(
         ));
     }
     let mut session = Session::new(source, limits)?;
-    let repl = session.module(source, symbol)?;
+    let repl = session.module(source, symbol, modules)?;
     let mut inputs = NamedValues::new();
     inputs.push("__state_arguments", session.to_monty(&arguments)?);
     // Symbol syntax is restricted to one identifier before interpolation.
@@ -302,7 +380,31 @@ impl<'a> Session<'a> {
         }
     }
 
-    fn module(&mut self, source: &str, symbol: &str) -> Result<MontyRepl, RuntimeError> {
+    fn module_inputs(&self, modules: &ModuleSources) -> Result<NamedValues, RuntimeError> {
+        modules.check_limit(self.limits)?;
+        let mut inputs = host_inputs();
+        let files = serde_json::to_value(&modules.files)
+            .map_err(|e| RuntimeError::new("INVALID_ARGUMENT", e.to_string()))?;
+        inputs.push("__state_sources", self.to_monty(&files)?);
+        inputs.push("__state_modules", self.to_monty(&serde_json::json!({}))?);
+        let root = modules
+            .entry_path
+            .rsplit_once('/')
+            .map_or("", |(root, _)| root)
+            .trim_start_matches('/')
+            .replace('/', ".");
+        inputs.push("__state_import_root", MontyObject::string(root.clone()));
+        inputs.push("__package__", MontyObject::string(root));
+        inputs.push("__file__", MontyObject::string(modules.entry_path.clone()));
+        Ok(inputs)
+    }
+
+    fn module(
+        &mut self,
+        source: &str,
+        symbol: &str,
+        modules: &ModuleSources,
+    ) -> Result<MontyRepl, RuntimeError> {
         if !identifier(symbol) || symbol == "__state_arguments" || HOST_FUNCTIONS.contains(&symbol)
         {
             return Err(RuntimeError::new(
@@ -310,9 +412,10 @@ impl<'a> Session<'a> {
                 "endpoint symbol must be a non-reserved Python identifier",
             ));
         }
+        let inputs = self.module_inputs(modules)?;
         let progress = self
             .repl()
-            .feed_start(source, host_inputs(), self.print())
+            .feed_start(source, inputs, self.print())
             .map_err(repl_error)?;
         let (repl, _) = self.drive(progress, None)?;
         if !repl.has_function(symbol) {

@@ -48,15 +48,16 @@ Namespace names remain reserved after deletion.
 | `state_namespace` | `create {name}`, `list`, `get {namespace}`, `update {namespace,name}`, `copy {namespace,name}`, `delete {namespace}` |
 | `state_fs` | `read`, `stat`, `write`, `append`, `list`, `delete`, `move`, `copy`; `path` is an absolute virtual POSIX path; writes take exactly one of `text` or `base64`; moves/copies take `destination`; directory deletion requires `recursive:true` |
 | `state_db` | `create`, `list`, `drop`, `query`, `execute`, `inspect`, `migrate`, `migrations`; database operations take `database`; SQL takes `sql` and optional array `params`; migrations take `migrations:[{id,sql}]` |
-| `state_function` | `declare`/`update`, `get`, `list`, `remove`; each endpoint has `name`; declaration includes `file`, `symbol`, schemas and `databases:[{database,access:"read"|"write"|"migrate"}]`; optional `expected_version` |
+| `state_function` | `declare`/`update`, `get`, `list`, `remove`; each endpoint has `name`; declaration includes `file`, `symbol`, schemas; optional `expected_version` |
 
 Namespace/file/database/function lists are wrapped in `namespaces`, `entries`,
 `databases`, or `functions` respectively. Function get/declare returns metadata
-**directly**, including pinned `source`, `source_hash`, `version`, `abi_version`,
-and `database_ids:{alias:stable_local_id}`. Source edits do not change declarations.
+**directly**, including pinned `source`, `modules` (virtual paths to Python source),
+`source_hash`, `version`, and `abi_version`. Source edits do not change declarations.
 The public `state-core` API compacts declaration acknowledgments; these full
 metadata responses describe the lower-level storage API.
-Removing a database referenced by a declaration returns `CONFLICT`.
+Functions resolve database names within their namespace on each call; declarations
+do not prevent database dropping or recreation.
 
 SQL query/execute takes one statement and returns
 `{columns:[...],rows:[[...]],rows_affected:n}`. Duplicate column names are retained.

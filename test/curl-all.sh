@@ -150,10 +150,10 @@ tool db.query db.query '{"namespace":"curl-renamed","database":"app","sql":"SELE
 tool db.inspect db.inspect '{"namespace":"curl-renamed","database":"app"}'
 tool db.migrations db.migrations '{"namespace":"curl-renamed","database":"app"}'
 
-# Published endpoints, schemas, grants, version guards and idempotency.
+# Published endpoints, schemas, namespace scope, version guards and idempotency.
 source=$'def add(text):\n    return db_execute("app", "INSERT INTO notes(text) VALUES (?) RETURNING id, text", [text])["rows"][0]\n'
 tool function.source fs.write "$(jq -cn --arg source "$source" '{namespace:"curl-renamed",path:"/api.py",text:$source}')"
-declaration='{"namespace":"curl-renamed","name":"add","file":"/api.py","symbol":"add","databases": [{"database":"app","access":"write"}],"input_schema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false},"output_schema":{"type":"array"}}'
+declaration='{"namespace":"curl-renamed","name":"add","file":"/api.py","symbol":"add","input_schema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false},"output_schema":{"type":"array"}}'
 tool function.declare function.declare "$declaration"
 version=$(jq -r '.result.content[0].text | fromjson | .version' <<<"$response")
 tool function.get function.get "$(jq -cn --arg version "$version" '{namespace:"curl-renamed",name:"add",expected_version:$version}')"
@@ -188,12 +188,12 @@ tool error.schema call '{"namespace":"curl-renamed","function":"add","arguments"
 tool error.idempotency call '{"namespace":"curl-renamed","function":"add","arguments":{"text":"different"},"idempotency_key":"curl-add"}' IDEMPOTENCY_MISMATCH
 rpc error.unknown_tool tools/call '{"name":"unknown","arguments":{}}' rpc:-32602
 
-tool error.grant_access function.declare '{"namespace":"curl-renamed","name":"invalid","file":"/api.py","symbol":"add","databases":[{"database":"app","access":"admin"}]}' INVALID_ARGUMENT
-tool error.grant_duplicate function.declare '{"namespace":"curl-renamed","name":"invalid","file":"/api.py","symbol":"add","databases":[{"database":"app","access":"read"},{"database":"app","access":"write"}]}' INVALID_ARGUMENT
+tool error.removed_databases function.declare '{"namespace":"curl-renamed","name":"invalid","file":"/api.py","symbol":"add","databases":[]}' INVALID_ARGUMENT
+tool error.removed_calls function.declare '{"namespace":"curl-renamed","name":"invalid","file":"/api.py","symbol":"add","calls":[]}' INVALID_ARGUMENT
 
-# Remove grants before dropping their database, then remove both namespaces.
-tool function.remove function.remove '{"namespace":"curl-renamed","name":"add"}'
+# Databases can be dropped while functions remain published.
 tool db.drop db.drop '{"namespace":"curl-renamed","database":"app"}'
+tool function.remove function.remove '{"namespace":"curl-renamed","name":"add"}'
 tool fs.delete.recursive fs.delete '{"namespace":"curl-renamed","path":"/notes","recursive":true}'
 tool namespace.delete.copy namespace.delete '{"namespace":"curl-copy"}'
 tool namespace.delete namespace.delete '{"namespace":"curl-renamed"}'

@@ -79,6 +79,12 @@ Your agent combines them through MCP: create a database, define its tables,
 write Python functions that use it, and publish those functions as tools it can
 discover and call. The tools and data persist in your StateMCP store.
 
+Python files can import siblings with `import helpers` or `from helpers import name`.
+Publish again after editing a helper to update a tool.
+
+Published functions can use every file, database, and function in their own
+namespace. They can build new tools there, but cannot access other namespaces.
+
 That gives your agent the building blocks for shared memory, forums, issue
 trackers, and whatever your workflow needs next. It can update the code and
 database schema as those needs change, while other connected agents use the

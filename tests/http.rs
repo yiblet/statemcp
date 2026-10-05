@@ -263,6 +263,7 @@ impl statemcp::RuntimeBackend for SlowBackend {
     fn execute(
         &self,
         _: &str,
+        _: &state_runtime::ModuleSources,
         _: Value,
         _: &statemcp::Limits,
         _: &mut state_runtime::HostCallback<'_>,
@@ -276,6 +277,7 @@ impl statemcp::RuntimeBackend for SlowBackend {
     fn invoke(
         &self,
         _: &str,
+        _: &state_runtime::ModuleSources,
         _: &str,
         _: Value,
         _: &statemcp::Limits,
@@ -286,6 +288,7 @@ impl statemcp::RuntimeBackend for SlowBackend {
     fn validate_module(
         &self,
         _: &str,
+        _: &state_runtime::ModuleSources,
         _: &str,
         _: &statemcp::Limits,
     ) -> Result<(), state_runtime::RuntimeError> {
@@ -428,7 +431,12 @@ async fn official_http_clients_share_state_across_protocol_versions() {
     )
     .await;
     common::tool(&first, "fs.write", json!({"namespace":"shared","path":"/api.py","text":"def add(text):\n    return db_execute('app', 'INSERT INTO notes VALUES (?)', [text])"})).await;
-    common::tool(&first, "function.declare", json!({"namespace":"shared","name":"add","file":"/api.py","symbol":"add","databases":[{"database":"app","access":"write"}]})).await;
+    common::tool(
+        &first,
+        "function.declare",
+        json!({"namespace":"shared","name":"add","file":"/api.py","symbol":"add"}),
+    )
+    .await;
     common::tool(
         &second,
         "call",
@@ -466,6 +474,7 @@ impl statemcp::RuntimeBackend for GatedBackend {
     fn execute(
         &self,
         _: &str,
+        _: &state_runtime::ModuleSources,
         _: Value,
         _: &statemcp::Limits,
         _: &mut state_runtime::HostCallback<'_>,
@@ -485,6 +494,7 @@ impl statemcp::RuntimeBackend for GatedBackend {
     fn invoke(
         &self,
         _: &str,
+        _: &state_runtime::ModuleSources,
         _: &str,
         _: Value,
         _: &statemcp::Limits,
@@ -495,6 +505,7 @@ impl statemcp::RuntimeBackend for GatedBackend {
     fn validate_module(
         &self,
         _: &str,
+        _: &state_runtime::ModuleSources,
         _: &str,
         _: &statemcp::Limits,
     ) -> Result<(), state_runtime::RuntimeError> {

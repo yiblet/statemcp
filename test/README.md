@@ -39,7 +39,7 @@ The output file is overwritten on each run.
 The 61 requests cover MCP initialization, the initialized notification, ping,
 tool listing, all 30 tools and every advertised action, all discovery modes (including the bundled README),
 text/binary file writes, namespace copies, endpoint updates, concurrency tokens,
-idempotency replay, typed grant validation, and representative expected errors. This covers the API's
+idempotency replay, namespace isolation, and representative expected errors. This covers the API's
 request types, not every possible argument combination or error. Live tool
 schemas are checked for missing action coverage at the end.
 

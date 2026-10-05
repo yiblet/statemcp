@@ -1,8 +1,8 @@
 //! Parse protocol and host input once; preserve the established contract internally.
-use crate::{FileAction, Operation, Result, Tool, policy::AuthorizationRequest, schemas};
+use crate::{Operation, Result, Tool, schemas};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use state_store::{Arguments, FileAccess, VirtualPath};
+use state_store::Arguments;
 
 /// An operation paired with arguments accepted by its fixed tool contract.
 /// Fixed fields remain typed; dynamic fields hold agent-defined data.
@@ -38,43 +38,6 @@ impl Request {
     }
     pub(crate) fn into_arguments(self) -> Arguments {
         self.arguments
-    }
-}
-
-impl<'a> AuthorizationRequest<'a> {
-    pub fn from_arguments(args: &'a Arguments) -> Result<Self> {
-        Ok(match args {
-            Arguments::Describe(_) => Self::Describe,
-            Arguments::Namespace(_) | Arguments::Function(_) | Arguments::Execute(_) => {
-                Self::Forbidden
-            }
-            Arguments::Call(args) => Self::Call {
-                namespace: &args.namespace,
-                function: &args.function,
-            },
-            Arguments::File(args) => Self::File {
-                namespace: &args.namespace,
-                path: VirtualPath::parse(&args.path)?,
-                access: if matches!(
-                    args.action,
-                    FileAction::Read | FileAction::Stat | FileAction::List | FileAction::Copy
-                ) {
-                    FileAccess::Read
-                } else {
-                    FileAccess::Write
-                },
-                destination: args
-                    .destination
-                    .as_deref()
-                    .map(VirtualPath::parse)
-                    .transpose()?,
-            },
-            Arguments::Database(args) => Self::Database {
-                namespace: &args.namespace,
-                name: args.database.as_deref(),
-                action: args.action,
-            },
-        })
     }
 }
 

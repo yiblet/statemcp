@@ -1,4 +1,4 @@
-//! Endpoint declarations pin source bytes, database identities, and versioned metadata.
+//! Endpoint declarations pin source bytes and versioned metadata.
 use super::Transaction;
 use crate::FunctionDeclaration;
 use crate::identity::hash;
@@ -8,7 +8,6 @@ use crate::{
 };
 use crate::{FunctionAction, FunctionRequest};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 
 impl Transaction {
     pub fn function_declaration(
@@ -77,22 +76,6 @@ impl Transaction {
                 let source = String::from_utf8(self.bytes(&source_hash)?)
                     .map_err(|_| Error::invalid("function source must be UTF-8"))?;
                 required(args.symbol.as_deref(), "symbol")?;
-                let mut grants = args.grants.clone();
-                grants.normalize()?;
-                let mut database_ids = BTreeMap::new();
-                for grant in &grants.databases {
-                    let db = self.namespaces[&key]
-                        .manifest
-                        .databases
-                        .get(&grant.database)
-                        .ok_or_else(|| {
-                            Error::new(
-                                "NOT_FOUND",
-                                format!("database grant {} does not exist", grant.database),
-                            )
-                        })?;
-                    database_ids.insert(grant.database.clone(), db.id.clone());
-                }
                 let mut metadata = FunctionDeclaration {
                     name: function_name.clone(),
                     file,
@@ -100,14 +83,13 @@ impl Transaction {
                     description: args.description.clone(),
                     input_schema: args.input_schema.clone(),
                     output_schema: args.output_schema.clone(),
-                    grants,
-                    database_ids,
+                    modules: self.python_sources(&key, 1024 * 1024)?,
                     source,
                     source_hash,
                     abi_version: 1,
                     version: String::new(),
                 };
-                // Hash the canonical wire record to preserve existing function versions.
+                // Versions identify the source and complete current declaration.
                 metadata.version = hash(&serde_json::to_vec(&serde_json::to_value(&metadata)?)?);
                 let ns = self.namespaces.get_mut(&key).expect("selected");
                 ns.manifest

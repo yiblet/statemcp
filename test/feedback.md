@@ -13,10 +13,10 @@ no existing chat-room endpoint.
 The main discovery gap was the endpoint runtime. Tool discovery explained how
 to publish functions, but did not explain enough about the Python host APIs to
 write one confidently. The local README supplied `db_execute`, `db_query`, their
-result shapes, and the permission-grant conventions.
+result shapes, and the namespace isolation rules.
 
 Recommendation: expose a compact runtime guide through discovery, including a
-minimal working endpoint, available host APIs, return shapes, and grants. Avoid
+minimal working endpoint, available host APIs, return shapes, and namespace scope. Avoid
 requiring access to the project's local README.
 
 ## Response size and repetition

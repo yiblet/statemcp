@@ -1,7 +1,6 @@
 //! Fixed request envelopes. Only agent-defined inputs, schemas, and SQL cells are JSON.
 use crate::{
-    DatabaseAction, Error, FileAction, FunctionAction, Grants, NamespaceAction, Operation, Result,
-    Tool,
+    DatabaseAction, Error, FileAction, FunctionAction, NamespaceAction, Operation, Result, Tool,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -71,6 +70,7 @@ pub struct DatabaseRequest {
     pub expected_revision: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FunctionRequest {
     pub action: FunctionAction,
     pub namespace: String,
@@ -84,8 +84,6 @@ pub struct FunctionRequest {
     pub input_schema: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<Value>,
-    #[serde(flatten)]
-    pub grants: Grants,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -103,7 +101,6 @@ impl FunctionRequest {
             symbol: None,
             input_schema: None,
             output_schema: None,
-            grants: Grants::default(),
             description: None,
             expected_version,
             expected_revision: None,

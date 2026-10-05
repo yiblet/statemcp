@@ -70,8 +70,8 @@ address (plus localhost for loopback). Logs go to stderr and support `RUST_LOG`.
 | `function.list` | `namespace` | — |
 | `function.get` | `namespace`, `name` | `expected_version` |
 | `function.remove` | `namespace`, `name` | `expected_revision`, `expected_version` |
-| `function.declare` | `namespace`, `name`, `file`, `symbol` | `calls`, `databases`, `description`, `expected_revision`, `expected_version`, `files`, `input_schema`, `output_schema` |
-| `function.update` | `namespace`, `name`, `file`, `symbol` | `calls`, `databases`, `description`, `expected_revision`, `expected_version`, `files`, `input_schema`, `output_schema` |
+| `function.declare` | `namespace`, `name`, `file`, `symbol` | `description`, `expected_revision`, `expected_version`, `input_schema`, `output_schema` |
+| `function.update` | `namespace`, `name`, `file`, `symbol` | `description`, `expected_revision`, `expected_version`, `input_schema`, `output_schema` |
 | `call` | `namespace`, `function` | `arguments`, `expected_version`, `idempotency_key` |
 | `execute` | `script` | `idempotency_key`, `inputs`, `namespace` |
 | `describe` | — | `mode` |
@@ -105,7 +105,7 @@ results may additionally include `revision` as described above.
 | `db.migrate` | `{applied: integer, migrations: [{id, checksum}]}` |
 | `db.inspect` | `{name, id, snapshot, staged, schema_fingerprint, migrations, schema, tables}`; includes columns, indexes, and foreign keys. |
 | `function.declare`, `function.update` | `{name, published: true, version}` |
-| `function.get` | Full declaration: name, file, symbol, schemas, grants, version, pinned source, source hash, database IDs, and ABI version; description if supplied. |
+| `function.get` | Full declaration: name, file, symbol, schemas, version, pinned source, module sources, source hash, and ABI version; description if supplied. |
 | `function.list` | `{functions: [declaration metadata]}`; omits source, source hash, database IDs, and ABI version. |
 | `function.remove` | `{removed: true}` |
 | `call` | The function's JSON return value. |
@@ -715,7 +715,7 @@ Apply an ordered batch of SQL migrations atomically. Previously applied IDs must
 
 ### `function.list`
 
-List published functions in the required namespace, selected by name or stable UUID. Returns names, versions, input/output contracts, and access grants without source code. Use function.get with namespace and name for a full declaration.
+List published functions in the required namespace, selected by name or stable UUID. Returns names, versions, input/output contracts without source code. Use function.get with namespace and name for a full declaration.
 
 ```json
 {
@@ -734,7 +734,7 @@ List published functions in the required namespace, selected by name or stable U
 
 ### `function.get`
 
-Get one published function by namespace and name. Returns its pinned Python source, symbol, input/output schemas, grants, version, and diagnostic metadata. Supply expected_version to reject a stale lookup. Editing the source file does not change the published function until it is declared or updated again.
+Get one published function by namespace and name. Returns its pinned Python source, symbol, input/output schemas, version, and diagnostic metadata. Supply expected_version to reject a stale lookup. Editing the source file does not change the published function until it is declared or updated again.
 
 ```json
 {
@@ -789,57 +789,12 @@ Remove a published function by namespace and name. Its source file and data rema
 
 ### `function.declare`
 
-Publish a Python function by specifying namespace, name, file, and symbol. First write the source with fs.write and create any databases it needs. Arguments supplied to call become keyword arguments to the Python symbol; its return value must be JSON-compatible. Input/output schemas validate calls. Explicit database, file, and callee grants control host access; omitted grants allow none. Source bytes are pinned at publication. Returns name, version, and published status, plus the committed revision for direct calls.
+Publish a Python function by specifying namespace, name, file, and symbol. First write the source with fs.write and create any databases it needs. Arguments supplied to call become keyword arguments to the Python symbol; its return value must be JSON-compatible. Input/output schemas validate calls. Functions have full access to their own namespace and cannot access other namespaces. Source bytes are pinned at publication. Returns name, version, and published status, plus the committed revision for direct calls.
 
 ```json
 {
   "additionalProperties": false,
   "properties": {
-    "calls": {
-      "items": {
-        "additionalProperties": false,
-        "properties": {
-          "function": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "namespace": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "namespace",
-          "function"
-        ],
-        "type": "object"
-      },
-      "type": "array"
-    },
-    "databases": {
-      "items": {
-        "additionalProperties": false,
-        "properties": {
-          "access": {
-            "enum": [
-              "read",
-              "write",
-              "migrate"
-            ]
-          },
-          "database": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "database",
-          "access"
-        ],
-        "type": "object"
-      },
-      "type": "array"
-    },
     "description": {
       "type": "string"
     },
@@ -851,29 +806,6 @@ Publish a Python function by specifying namespace, name, file, and symbol. First
     },
     "file": {
       "type": "string"
-    },
-    "files": {
-      "items": {
-        "additionalProperties": false,
-        "properties": {
-          "access": {
-            "enum": [
-              "read",
-              "write"
-            ]
-          },
-          "path": {
-            "pattern": "^/",
-            "type": "string"
-          }
-        },
-        "required": [
-          "path",
-          "access"
-        ],
-        "type": "object"
-      },
-      "type": "array"
     },
     "input_schema": {
       "type": [
@@ -909,57 +841,12 @@ Publish a Python function by specifying namespace, name, file, and symbol. First
 
 ### `function.update`
 
-Publish a new function declaration for namespace and name using the current contents of file and its Python symbol. Supply the complete schemas and grants: omitted grants allow none, rather than preserving the previous grants. Use expected_version to reject a stale update. Returns the published function version; later source-file edits do not affect this version.
+Publish a new function declaration for namespace and name using the current contents of file and its Python symbol. Supply the complete schemas. The function has full access within its own namespace only. Use expected_version to reject a stale update. Returns the published function version; later source-file edits do not affect this version.
 
 ```json
 {
   "additionalProperties": false,
   "properties": {
-    "calls": {
-      "items": {
-        "additionalProperties": false,
-        "properties": {
-          "function": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "namespace": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "namespace",
-          "function"
-        ],
-        "type": "object"
-      },
-      "type": "array"
-    },
-    "databases": {
-      "items": {
-        "additionalProperties": false,
-        "properties": {
-          "access": {
-            "enum": [
-              "read",
-              "write",
-              "migrate"
-            ]
-          },
-          "database": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "database",
-          "access"
-        ],
-        "type": "object"
-      },
-      "type": "array"
-    },
     "description": {
       "type": "string"
     },
@@ -971,29 +858,6 @@ Publish a new function declaration for namespace and name using the current cont
     },
     "file": {
       "type": "string"
-    },
-    "files": {
-      "items": {
-        "additionalProperties": false,
-        "properties": {
-          "access": {
-            "enum": [
-              "read",
-              "write"
-            ]
-          },
-          "path": {
-            "pattern": "^/",
-            "type": "string"
-          }
-        },
-        "required": [
-          "path",
-          "access"
-        ],
-        "type": "object"
-      },
-      "type": "array"
     },
     "input_schema": {
       "type": [
@@ -1029,7 +893,7 @@ Publish a new function declaration for namespace and name using the current cont
 
 ### `call`
 
-Invoke a published function using namespace, function, and an arguments object matching its input schema. Returns the function's JSON value directly. The function runs with its declared grants; nested calls and writes share one transaction and failures roll back changes. expected_version guards against calling changed code. Reuse an idempotency_key only with the identical request to replay a completed result without repeating writes.
+Invoke a published function using namespace, function, and an arguments object matching its input schema. Returns the function's JSON value directly. The function has full access within its own namespace only; nested calls and writes share one transaction and failures roll back changes. expected_version guards against calling changed code. Reuse an idempotency_key only with the identical request to replay a completed result without repeating writes.
 
 ```json
 {
@@ -1061,7 +925,7 @@ Invoke a published function using namespace, function, and an arguments object m
 
 ### `execute`
 
-Run a Python script with owner access in one transaction. The inputs argument is available as the Python variable inputs; the final expression and printed output are returned as {value, stdout}. Set namespace to use db_query(database, sql, params=[]), db_execute(database, sql, params=[]), db_inspect(database), read_text(path), and write_text(path, text). SQL helpers return {columns, rows, rows_affected}. Use mcp(name, arguments={}) for any tool or call(namespace, function, arguments={}) for a published function. Failures roll back all nested writes. The runtime has no package loader or virtual-file imports. Reuse an idempotency_key only for an identical request.
+Run a Python script with owner access in one transaction. The inputs argument is available as the Python variable inputs; the final expression and printed output are returned as {value, stdout}. Set namespace to use db_query(database, sql, params=[]), db_execute(database, sql, params=[]), db_inspect(database), read_text(path), and write_text(path, text). SQL helpers return {columns, rows, rows_affected}. Use mcp(name, arguments={}) for any tool or call(namespace, function, arguments={}) for a published function. Failures roll back all nested writes. Imports load Python files and packages from the selected namespace, with per-run module caching. Published functions use pinned module sources. Reuse an idempotency_key only for an identical request.
 
 ```json
 {
@@ -1144,12 +1008,12 @@ Get a compact API overview, mode=runtime for a Python authoring guide, or mode=f
 Published functions receive `call.arguments` as keyword arguments and must
 return JSON-compatible values. `execute` scripts receive `inputs` as a Python
 variable; their final expression and captured print output become `{value, stdout}`.
-Helpers use the function's namespace or `execute.namespace`. Monty has no package
-loader or virtual-file import resolver. Module initialization cannot call host APIs.
+Helpers and imports use the function's namespace or `execute.namespace`.
+Module initialization cannot call host APIs.
 
 | Python helper | Result |
 | --- | --- |
-| `mcp(name, arguments={})` | The selected state tool result; endpoint grants still apply. |
+| `mcp(name, arguments={})` | The selected state tool result; namespace isolation still applies. |
 | `call(namespace, function, arguments={})` | Endpoint JSON value. |
 | `db_query(database, sql, params=[])` | {columns: [string], rows: [[value]], rows_affected: integer}; one read-only statement. |
 | `db_execute(database, sql, params=[])` | {columns: [string], rows: [[value]], rows_affected: integer}; one statement, supports RETURNING. |
@@ -1157,27 +1021,54 @@ loader or virtual-file import resolver. Module initialization cannot call host A
 | `read_text(path)` | UTF-8 string. |
 | `write_text(path, text)` | File write metadata. |
 
-### Grants and publication
+### Python imports
 
-- `databases`: `[{"database":"app","access":"read"}]`. Access is `read`,
-  `write` (includes read), or `migrate` (includes write). Grants pin database IDs.
-- `files`: `[{"path":"/notes","access":"read"}]`. Paths grant access by
-  prefix. `write` includes read.
-- `calls`: `[{"namespace":"self","function":"list"}]`. `self` follows
-  namespace copies. External namespaces resolve to stable UUIDs; use those UUIDs
-  in Python when a namespace may be renamed.
+Write `/api.py` and `/helpers.py` in the same namespace, then use ordinary imports:
 
-Omitted grants default to empty arrays. Duplicate resources and unknown grant
-fields are rejected. Published functions cannot manage namespaces or publish
-functions; root scripts have owner access and can compose all tools.
+```python
+import helpers
+from helpers import format_issue as format_item
+
+def endpoint(title):
+    return format_item(title)
+```
+
+The entry file's directory is searched first, followed by the namespace root.
+Packages use `__init__.py`; namespace packages, dotted imports, relative imports,
+and `from module import *` are supported. Wildcard imports respect `__all__`.
+Modules have separate globals and execute once per interpreter session; repeated
+and circular imports share the same module object. Missing modules raise
+`ModuleNotFoundError`. Importing cannot access another namespace or host files.
+Monty's built-in standard-library modules remain available; installing third-party
+packages is not supported.
+
+Published functions use the Python sources captured at publication, including
+imports inside function bodies. Update the declaration to pick up helper edits.
+`execute` uses the current transaction's files. Imported helpers can use the same
+host APIs as their caller; publication initialization still forbids host effects.
+The complete Python source snapshot is capped at the runtime source limit (1 MiB
+by default). Imported globals reset on each tool invocation.
+
+### Namespace scope and publication
+
+Published functions can read and write every file and database in their namespace,
+create or drop databases, publish functions, and call any function in that namespace.
+There are no per-resource grants. `self` resolves to the current namespace and
+follows namespace renames and copies. Explicit names and UUIDs must resolve to
+that same namespace. Cross-namespace calls and state access are rejected.
+
+Nested `execute` scripts inherit the function's namespace scope; they cannot
+obtain owner access. Functions cannot create, copy, or list namespaces. Root MCP
+calls and root scripts have owner access across namespaces.
 
 Default `input_schema` is `{"type":"object"}`; default `output_schema` is `true`.
 Schemas may be objects or booleans. References must be local fragments;
 remote/file references and `$id` resources are unsupported.
 
-Publication pins source bytes. Editing the file alone does not change a
-published function: call `function.update` to publish again. Updates take the
-complete declaration; omitted grants do not preserve previous access.
+Publication pins the entry file and a snapshot of the namespace's Python files.
+Editing a helper alone does not change a published function: call
+`function.update` to publish its current sources. Updates take the
+complete declaration.
 Runtime ABI is 1; unsupported ABI versions fail with `ABI_MISMATCH`.
 
 ### SQL and storage
@@ -1240,12 +1131,6 @@ Make these MCP tool calls in order. The final call returns `[1, "hello"]`.
 
 ```json
 {
-  "databases": [
-    {
-      "access": "write",
-      "database": "app"
-    }
-  ],
   "file": "/api.py",
   "input_schema": {
     "additionalProperties": false,

@@ -13,15 +13,6 @@ fn field(name: &str) -> Value {
         Some(Field::Schema) => json!({"type":["object","boolean"]}),
         Some(Field::Recursive) => json!({"type":"boolean"}),
         Some(Field::Params) => json!({"type":"array"}),
-        Some(Field::Databases) => {
-            json!({"type":"array","items":{"type":"object","properties":{"database":{"type":"string","minLength":1},"access":{"enum":["read","write","migrate"]}},"required":["database","access"],"additionalProperties":false}})
-        }
-        Some(Field::Files) => {
-            json!({"type":"array","items":{"type":"object","properties":{"path":{"type":"string","pattern":"^/"},"access":{"enum":["read","write"]}},"required":["path","access"],"additionalProperties":false}})
-        }
-        Some(Field::Calls) => {
-            json!({"type":"array","items":{"type":"object","properties":{"namespace":{"type":"string","minLength":1},"function":{"type":"string","minLength":1}},"required":["namespace","function"],"additionalProperties":false}})
-        }
         Some(Field::Migrations) => {
             json!({"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"sql":{"type":"string"}},"required":["id","sql"],"additionalProperties":false}})
         }
@@ -142,7 +133,7 @@ fn operation_definitions() -> Vec<Value> {
         ),
         (
             "state_function",
-            "Publish pinned code and grants. Use describe mode=runtime for host APIs and an example; get retrieves full pinned source.",
+            "Publish pinned code. Use describe mode=runtime for host APIs and an example; get retrieves full pinned source.",
             vec![
                 variant(Some("list"), &["namespace"], &[]),
                 variant(Some("get"), &["namespace", "name"], &["expected_version"]),
@@ -157,9 +148,6 @@ fn operation_definitions() -> Vec<Value> {
                     &[
                         "input_schema",
                         "output_schema",
-                        "databases",
-                        "files",
-                        "calls",
                         "description",
                         "expected_version",
                         "expected_revision",
@@ -171,9 +159,6 @@ fn operation_definitions() -> Vec<Value> {
                     &[
                         "input_schema",
                         "output_schema",
-                        "databases",
-                        "files",
-                        "calls",
                         "description",
                         "expected_version",
                         "expected_revision",
@@ -273,7 +258,7 @@ fn tool_description(operation: Operation) -> &'static str {
             "Create an empty named SQLite database in a namespace."
         }
         Operation::Database(crate::DatabaseAction::Drop) => {
-            "Drop a named SQLite database. Remove function declarations that reference it first."
+            "Drop a named SQLite database. Functions resolve database names within their namespace on each call."
         }
         Operation::Database(crate::DatabaseAction::Query) => {
             "Run one read-only SQL statement with optional bound parameters. Returns columns, rows, and rows_affected."
@@ -291,25 +276,25 @@ fn tool_description(operation: Operation) -> &'static str {
             "Apply an ordered batch of SQL migrations atomically. Previously applied IDs must match their stored checksums and order."
         }
         Operation::Function(crate::FunctionAction::List) => {
-            "List published functions in the required namespace, selected by name or stable UUID. Returns names, versions, input/output contracts, and access grants without source code. Use function.get with namespace and name for a full declaration."
+            "List published functions in the required namespace, selected by name or stable UUID. Returns names, versions, input/output contracts, without source code. Use function.get with namespace and name for a full declaration."
         }
         Operation::Function(crate::FunctionAction::Get) => {
-            "Get one published function by namespace and name. Returns its pinned Python source, symbol, input/output schemas, grants, version, and diagnostic metadata. Supply expected_version to reject a stale lookup. Editing the source file does not change the published function until it is declared or updated again."
+            "Get one published function by namespace and name. Returns its pinned Python source, symbol, input/output schemas, version, and diagnostic metadata. Supply expected_version to reject a stale lookup. Editing the source file does not change the published function until it is declared or updated again."
         }
         Operation::Function(crate::FunctionAction::Remove) => {
             "Remove a published function by namespace and name. Its source file and data remain available. Optional expected_version and expected_revision reject changes made since the function or namespace was inspected."
         }
         Operation::Function(crate::FunctionAction::Declare) => {
-            "Publish a Python function by specifying namespace, name, file, and symbol. First write the source with fs.write and create any databases it needs. Arguments supplied to call become keyword arguments to the Python symbol; its return value must be JSON-compatible. Input/output schemas validate calls. Explicit database, file, and callee grants control host access; omitted grants allow none. Source bytes are pinned at publication. Returns name, version, and published status, plus the committed revision for direct calls."
+            "Publish a Python function by specifying namespace, name, file, and symbol. First write the source with fs.write and create any databases it needs. Arguments supplied to call become keyword arguments to the Python symbol; its return value must be JSON-compatible. Input/output schemas validate calls. Functions can access all files, databases, and functions in their own namespace only. Source bytes are pinned at publication. Returns name, version, and published status, plus the committed revision for direct calls."
         }
         Operation::Function(crate::FunctionAction::Update) => {
-            "Publish a new function declaration for namespace and name using the current contents of file and its Python symbol. Supply the complete schemas and grants: omitted grants allow none, rather than preserving the previous grants. Use expected_version to reject a stale update. Returns the published function version; later source-file edits do not affect this version."
+            "Publish a new function declaration for namespace and name using the current contents of file and its Python symbol. Supply the complete declaration. Functions retain full access to their own namespace only. Use expected_version to reject a stale update. Returns the published function version; later source-file edits do not affect this version."
         }
         Operation::Call => {
-            "Invoke a published function using namespace, function, and an arguments object matching its input schema. Returns the function's JSON value directly. The function runs with its declared grants; nested calls and writes share one transaction and failures roll back changes. expected_version guards against calling changed code. Reuse an idempotency_key only with the identical request to replay a completed result without repeating writes."
+            "Invoke a published function using namespace, function, and an arguments object matching its input schema. Returns the function's JSON value directly. The function runs with full access to its own namespace only; nested calls and writes share one transaction and failures roll back changes. expected_version guards against calling changed code. Reuse an idempotency_key only with the identical request to replay a completed result without repeating writes."
         }
         Operation::Execute => {
-            "Run a Python script with owner access in one transaction. The inputs argument is available as the Python variable inputs; the final expression and printed output are returned as {value, stdout}. Set namespace to use db_query(database, sql, params=[]), db_execute(database, sql, params=[]), db_inspect(database), read_text(path), and write_text(path, text). SQL helpers return {columns, rows, rows_affected}. Use mcp(name, arguments={}) for any tool or call(namespace, function, arguments={}) for a published function. Failures roll back all nested writes. The runtime has no package loader or virtual-file imports. Reuse an idempotency_key only for an identical request."
+            "Run a Python script with owner access in one transaction. The inputs argument is available as the Python variable inputs; the final expression and printed output are returned as {value, stdout}. Set namespace to use db_query(database, sql, params=[]), db_execute(database, sql, params=[]), db_inspect(database), read_text(path), and write_text(path, text). SQL helpers return {columns, rows, rows_affected}. Use mcp(name, arguments={}) for any tool or call(namespace, function, arguments={}) for a published function. Failures roll back all nested writes. Imports load Python files and packages from the selected namespace, with per-run module caching. Published functions use pinned module sources. Reuse an idempotency_key only for an identical request."
         }
         Operation::Describe => {
             "Get a compact API overview, mode=runtime for a Python authoring guide, or mode=full for all schemas, or mode=readme for the bundled documentation. Select tool for one tool’s schema, or namespace and optional function for endpoint contracts."
@@ -492,9 +477,9 @@ pub(crate) fn runtime_guide() -> Value {
         "runtime":"Pydantic Monty",
         "abi_version":1,
         "compatibility":"Only ABI 1 is supported. Incompatible host signatures, invocation conventions, or result representations require an ABI increment. Unsupported declarations fail with ABI_MISMATCH and expected/actual versions; adapt source and redeclare. No automatic migration or older-ABI support is provided.",
-        "execution":"Endpoint arguments are keyword arguments to the pinned Python symbol. Return a JSON-compatible value. Scripts use inputs and return their final expression as {value, stdout}. Helpers use the endpoint namespace or execute.namespace. No package loader or virtual-file imports. Module initialization cannot call host APIs.",
+        "execution":"Endpoint arguments are keyword arguments to the pinned Python symbol. Return a JSON-compatible value. Scripts use inputs and return their final expression as {value, stdout}. Helpers use the endpoint namespace or execute.namespace. Imports load namespace Python files and packages with per-run caching; published functions use pinned sources. Module initialization cannot call host APIs.",
         "hosts":[
-            {"signature":"mcp(name, arguments={})","returns":"The selected state tool result; endpoint grants still apply."},
+            {"signature":"mcp(name, arguments={})","returns":"The selected state tool result; function namespace isolation still applies."},
             {"signature":"call(namespace, function, arguments={})","returns":"Endpoint JSON value."},
             {"signature":"db_query(database, sql, params=[])","returns":"{columns: [string], rows: [[value]], rows_affected: integer}; one read-only statement."},
             {"signature":"db_execute(database, sql, params=[])","returns":"{columns: [string], rows: [[value]], rows_affected: integer}; one statement, supports RETURNING."},
@@ -502,12 +487,7 @@ pub(crate) fn runtime_guide() -> Value {
             {"signature":"read_text(path)","returns":"UTF-8 string."},
             {"signature":"write_text(path, text)","returns":"File write metadata."}
         ],
-        "grants":{
-            "databases":"[{database, access: read|write|migrate}]; write includes read, migrate includes write. Grants pin database identities.",
-            "files":"[{path, access: read|write}]; write includes read.",
-            "calls":"[{namespace, function}]; self follows namespace copies. External grants pin namespace UUIDs; use that UUID in call().",
-            "default":"No grants. Published endpoints cannot manage namespaces or declare functions. Root scripts can compose all tools."
-        },
+        "scope":"Published functions can access all files, databases, and functions in their own namespace, including creating databases, publishing functions, and running nested scripts. self resolves to the calling function namespace. Namespace names and UUIDs must resolve to that same namespace. Functions cannot access another namespace or create, copy, or list namespaces. Root scripts have owner access.",
         "transactions":"Nested host calls share the root transaction. Failure rolls back staged effects. Use expected_revision for namespace concurrency and expected_version for endpoint concurrency.",
         "snapshot":"An opaque immutable SQLite file identifier, not a content hash or namespace revision. inspect reports the referenced snapshot; staged=true means pending writes are not represented by that snapshot. Unreferenced snapshots can be removed by maintenance. No historical read or restore API accepts this identifier.",
         "example":[
@@ -515,7 +495,7 @@ pub(crate) fn runtime_guide() -> Value {
             {"tool":"state_db","arguments":{"action":"create","namespace":"demo","database":"app"}},
             {"tool":"state_db","arguments":{"action":"execute","namespace":"demo","database":"app","sql":"CREATE TABLE notes(id INTEGER PRIMARY KEY, text TEXT)"}},
             {"tool":"state_fs","arguments":{"action":"write","namespace":"demo","path":"/api.py","text":"def add(text):\n    return db_execute('app', 'INSERT INTO notes(text) VALUES (?) RETURNING id, text', [text])['rows'][0]\n"}},
-            {"tool":"state_function","arguments":{"action":"declare","namespace":"demo","name":"add","file":"/api.py","symbol":"add","databases": [{"database":"app","access":"write"}],"input_schema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}}},
+            {"tool":"state_function","arguments":{"action":"declare","namespace":"demo","name":"add","file":"/api.py","symbol":"add","input_schema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}}},
             {"tool":"state_call","arguments":{"namespace":"demo","function":"add","arguments":{"text":"hello"}}}
         ]
     });

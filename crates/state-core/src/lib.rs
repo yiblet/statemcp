@@ -1,5 +1,4 @@
 //! One transactional service behind all fixed MCP tools and Monty host callbacks.
-mod declaration;
 mod dispatch;
 mod hosts;
 mod policy;
@@ -44,7 +43,7 @@ impl Error {
     pub(crate) fn denied() -> Self {
         Self::new(
             "PERMISSION_DENIED",
-            "operation is outside the endpoint's declared grants",
+            "operation is outside the function namespace",
         )
     }
 }
@@ -120,7 +119,7 @@ impl State {
         self.dispatch_as("owner", tool, args)
     }
     /// `principal` is a trusted embedding identity for receipt scoping, not authentication.
-    /// Every root call has local owner authority; endpoint bodies have declared grants.
+    /// Every root call has local owner authority; function bodies are restricted to their own namespace.
     pub fn dispatch_as(&self, principal: &str, tool: &str, args: Value) -> Result<Value> {
         if principal.is_empty() || principal.len() > 256 {
             return Err(Error::invalid("principal must contain 1..256 bytes"));

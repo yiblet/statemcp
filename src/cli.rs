@@ -76,7 +76,7 @@ pub enum ToolCommand {
     /// Manage named SQLite databases, SQL, migrations, and introspection
     #[command(name = "state_db")]
     Db(Database),
-    /// Publish and manage pinned endpoint definitions and resource grants
+    /// Publish and manage pinned endpoint definitions
     #[command(name = "state_function")]
     Function(Function),
     /// Invoke a declared endpoint
@@ -197,18 +197,6 @@ pub struct Function {
     #[arg(long, value_parser = json_value, value_name = "JSON")]
     #[serde(skip_serializing_if = "Option::is_none")]
     output_schema: Option<Value>,
-    #[arg(long, value_parser = json_value, value_name = "JSON")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// JSON array of {database, access: read|write|migrate} grants
-    databases: Option<Value>,
-    #[arg(long, value_parser = json_value, value_name = "JSON")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// JSON array of {path, access: read|write} grants
-    files: Option<Value>,
-    #[arg(long, value_parser = json_value, value_name = "JSON")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    /// JSON array of {namespace, function} grants
-    calls: Option<Value>,
     #[arg(long)]
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_version: Option<String>,

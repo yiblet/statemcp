@@ -23,7 +23,11 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 [workspace]
 members = ["crates/*"]
 resolver = "3"
+exclude = ["vendor/monty"]
 
 [dev-dependencies]
 rmcp = { version = "3.5.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 tower = { version = "0.5", features = ["util"] }
+
+[patch.crates-io]
+monty = { path = "vendor/monty" }

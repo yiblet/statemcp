@@ -26,7 +26,7 @@ runtime allocator and worker entrypoint as described in `state-runtime`.
 accepts an embedding-provided identity **only for receipt scoping**; it does not
 authenticate users or establish tenant permissions. Every root operation has
 local owner access. This v1 API is intended for trusted local builders; only
-published function bodies execute with restricted resource grants. The `Store`
+published function bodies execute with access restricted to their own namespace. The `Store`
 accessor is similarly an owner API, not a restricted interface for untrusted code.
 
 ## Fixed operations and results
@@ -44,7 +44,7 @@ and returns the endpoint's JSON value directly. `arguments` defaults to `{}`.
 `{value,stdout}`. `inputs` defaults to null, and `namespace` selects the default
 namespace for helpers. Top-level scripts have owner access and may call all seven
 tools; scripts nested through `mcp` retain that authority and share the root budget.
-Function bodies cannot create an owner script or redeclare their own permissions.
+Scripts nested inside functions inherit the function's namespace scope.
 
 There is no revision envelope around composable results. Root namespace
 create/copy/update results contain the actual committed revision; corresponding
@@ -55,11 +55,11 @@ Python print output from an endpoint is bounded and discarded; script prints are
 returned in that script's `stdout` (nested script output is returned by its own
 `state_execute` call, not spliced into the outer print stream).
 
-## Publication and grants
+## Publication and namespace scope
 
 A declaration takes `action: declare|update`, `namespace`, `name`, `file`, and
 `symbol`. Optional fields are `description`, `input_schema`, `output_schema`,
-`databases`, `files`, `calls`, `expected_version`, and `expected_revision`.
+`expected_version`, and `expected_revision`.
 
 ```json
 {
@@ -70,24 +70,31 @@ A declaration takes `action: declare|update`, `namespace`, `name`, `file`, and
   "symbol": "add",
   "input_schema": {
     "type": "object",
-    "properties": {"text": {"type": "string"}},
-    "required": ["text"],
+    "properties": {
+      "text": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "text"
+    ],
     "additionalProperties": false
   },
-  "output_schema": {"type": "integer"},
-  "databases": [{"database":"app","access":"write"}],
-  "files": [{"path":"/attachments","access":"read"}],
-  "calls": [{"namespace": "self", "function": "validate"}]
+  "output_schema": {
+    "type": "integer"
+  }
 }
 ```
 
 Declarations compile and initialize the module with all host effects denied,
-check the callable, and pin the source bytes and contracts. Initialization is
+check the callable, and pin the entry source, namespace Python files, and contracts. Initialization is
 also effect-free on every invocation; no VM globals persist between calls.
-Editing the virtual source file does not change the published endpoint.
+Editing the entry or imported helper files does not change the published endpoint;
+update its declaration to publish the current files. Imports have separate module
+globals and a fresh per-invocation cache.
 `expected_version` checks stale deployment or invocation versions. Input schemas
 (default `{"type":"object"}`) run before invocation; output schemas (default
-`true`) run before publication. A contract violation produces `SCHEMA_VALIDATION`
+`true`) run before commit. A contract violation produces `SCHEMA_VALIDATION`
 and rolls back every nested change.
 
 Schema compilation disables the JSON Schema library's file/network resolver
@@ -96,30 +103,15 @@ resources are rejected. Local fragment references, including `$defs`, are
 supported. Schemas are capped at 64 KiB and 32 schema nesting levels. No implicit
 schema-related file or network IO is available.
 
-All grants default to empty:
-
-- `databases: [{database, access: "read"|"write"|"migrate"}]` pins each database's stable local
-  ID. Read permits query/inspect/migration-history reads; write additionally
-  permits execute; migrate additionally permits migrations. No mode grants
-  database creation or dropping. Application DDL is available through execute.
-- `files: [{path, access: "read"|"write"}]` uses normalized, component-aware
-  virtual paths. `/foo` includes `/foo/bar`, not `/foobar`. Write includes read;
-  copy requires source read and destination write, move requires both writes.
-  Traversal, NULs, and backslashes are rejected.
-- `calls: [{namespace, function}]` explicitly permits another endpoint, including
-  same-namespace endpoints. `self` remains symbolic so namespace copies bind to
-  the copy; external namespace selectors resolve to immutable UUIDs at publish
-  time. For code that must survive external renames, call with that UUID rather
-  than an old display name. The callee runs with its own grants, which do not
-  become available to its caller.
-
-A function can only directly access granted databases/files in its own namespace.
-Cross-namespace state access happens through explicitly granted endpoint calls.
-Discovery from an endpoint lists only permitted callee contracts and never
-returns another endpoint's source. Root callers can inspect all declarations.
+A function has full access to every file, database, and function in its own
+namespace. It can manage databases and publish or update functions there.
+`self` follows namespace renames and copies. Explicit selectors are checked
+against the same stable namespace identity. Cross-namespace state access and
+calls are rejected. Nested scripts retain this scope; namespace creation,
+copying, and global listing require root owner access.
 
 Discovery defaults to a compact overview. `describe({"mode":"runtime"})`
-returns host signatures, result shapes, grant rules, ABI policy, and a runnable
+returns host signatures, result shapes, namespace scope, ABI policy, and a runnable
 endpoint example. `mode:"full"` returns full schemas; `tool:"db.create"` focuses discovery on one operation.
 
 Declaration/update responses contain `name`, `published`, and `version`;
@@ -144,7 +136,8 @@ namespace of the script or the owning namespace of the endpoint. `call("self",
 ...)` and `mcp` namespace `self` resolve locally inside endpoint bodies. Use
 `mcp("state_db", {...})` for migrations, or to select an explicit namespace in an
 owner script. Database values remain bound parameters, never interpolated code.
-There is no third-party Python package loader or virtual-source import resolver in v1.
+Imports resolve Python files and packages inside the selected namespace.
+There is no third-party package installer.
 
 ## Atomicity, limits, and receipts
 

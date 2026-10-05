@@ -13,15 +13,6 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 impl Transaction {
-    /// Fetch the identity used to pin an endpoint's database grant.
-    pub fn database_identity(&self, namespace: &str, name: &str) -> Result<Option<&str>> {
-        let id = self.namespace_identity(namespace)?;
-        Ok(self.namespaces[id]
-            .manifest
-            .databases
-            .get(name)
-            .map(|db| db.id.as_str()))
-    }
     pub(super) fn database(&mut self, args: &DatabaseRequest) -> Result<Value> {
         let action = args.action;
         let key = self.selected(&args.namespace)?;
@@ -91,17 +82,6 @@ impl Transaction {
             }
             DatabaseAction::Migrations => Ok(json!({"migrations":db.migrations})),
             DatabaseAction::Drop => {
-                if self.namespaces[&key]
-                    .manifest
-                    .functions
-                    .values()
-                    .any(|f| f.database_ids.values().any(|id| id == &db.id))
-                {
-                    return Err(Error::new(
-                        "CONFLICT",
-                        "database is referenced by a declared function",
-                    ));
-                }
                 self.working_databases
                     .remove(&(key.clone(), db_name.clone()));
                 let ns = self.namespaces.get_mut(&key).expect("selected");

@@ -1,6 +1,6 @@
 # state-runtime
 
-A Rust library embedding the official Pydantic Monty interpreter, pinned to
+A Rust library embedding Pydantic Monty with a local namespace-import extension, pinned to
 `monty = 1.0.0`, `monty-types = 1.0.0`, and `monty-alloc = 1.0.0` (Rust 1.96+).
 No Python interpreter, subprocess Python runner, filesystem mount, or network
 adapter is used.
@@ -35,7 +35,11 @@ Python support is exactly Monty's supported language and standard-library
 subset. Arbitrary package imports, OS/file operations requiring a host handler,
 unresolved host futures, and unknown host names are rejected. Monty's built-in
 clock and random behavior remains available; host sleeps are denied at OS
-suspension. There is no import resolver for virtual Python files in v1.
+suspension. Namespace-aware variants (`execute_with_modules`, `invoke_with_modules`,
+and `validate_module_with_modules`) accept a typed `ModuleSources` snapshot.
+Imports support module globals, aliases, packages, relative imports, wildcard
+imports, and per-session caching. The source snapshot has a cumulative byte limit.
+See `vendor/monty/STATEMCP.md` for the interpreter extension.
 
 ## Resource enforcement and worker integration
 

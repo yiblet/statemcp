@@ -1,5 +1,5 @@
 //! Disposable same-executable workers. The parent alone owns host capabilities.
-use crate::{HostCallback, Limits, RunResult, RuntimeError};
+use crate::{HostCallback, Limits, ModuleSources, RunResult, RuntimeError};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 use std::{
@@ -40,9 +40,20 @@ impl WorkerConfig {
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
+        self.execute_with_modules(source, inputs, &ModuleSources::default(), limits, host)
+    }
+    pub fn execute_with_modules(
+        &self,
+        source: &str,
+        inputs: Value,
+        modules: &ModuleSources,
+        limits: &Limits,
+        host: &mut HostCallback<'_>,
+    ) -> Result<RunResult, RuntimeError> {
         self.run(
             Operation::Execute {
                 source: source.into(),
+                modules: modules.clone(),
                 inputs,
             },
             limits,
@@ -57,9 +68,28 @@ impl WorkerConfig {
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
+        self.invoke_with_modules(
+            source,
+            symbol,
+            arguments,
+            &ModuleSources::default(),
+            limits,
+            host,
+        )
+    }
+    pub fn invoke_with_modules(
+        &self,
+        source: &str,
+        symbol: &str,
+        arguments: Value,
+        modules: &ModuleSources,
+        limits: &Limits,
+        host: &mut HostCallback<'_>,
+    ) -> Result<RunResult, RuntimeError> {
         self.run(
             Operation::Invoke {
                 source: source.into(),
+                modules: modules.clone(),
                 symbol: symbol.into(),
                 arguments,
             },
@@ -73,9 +103,19 @@ impl WorkerConfig {
         symbol: &str,
         limits: &Limits,
     ) -> Result<(), RuntimeError> {
+        self.validate_module_with_modules(source, symbol, &ModuleSources::default(), limits)
+    }
+    pub fn validate_module_with_modules(
+        &self,
+        source: &str,
+        symbol: &str,
+        modules: &ModuleSources,
+        limits: &Limits,
+    ) -> Result<(), RuntimeError> {
         self.run(
             Operation::Validate {
                 source: source.into(),
+                modules: modules.clone(),
                 symbol: symbol.into(),
             },
             limits,
@@ -101,6 +141,7 @@ impl WorkerConfig {
         if operation.source().len() > limits.max_source_bytes {
             return Err(limit("source byte limit exceeded"));
         }
+        operation.modules().check_limit(limits)?;
         let memory = limits.max_memory.unwrap_or(self.default_memory_bytes);
         if memory == 0 || memory > usize::MAX - MAX_FRAME_BYTES {
             return Err(RuntimeError::new(
@@ -226,19 +267,29 @@ pub fn validate_module_isolated(
 enum Operation {
     Execute {
         source: String,
+        modules: ModuleSources,
         inputs: Value,
     },
     Invoke {
         source: String,
+        modules: ModuleSources,
         symbol: String,
         arguments: Value,
     },
     Validate {
         source: String,
+        modules: ModuleSources,
         symbol: String,
     },
 }
 impl Operation {
+    fn modules(&self) -> &ModuleSources {
+        match self {
+            Self::Execute { modules, .. }
+            | Self::Invoke { modules, .. }
+            | Self::Validate { modules, .. } => modules,
+        }
+    }
     fn source(&self) -> &str {
         match self {
             Self::Execute { source, .. }
@@ -305,20 +356,34 @@ pub fn worker_main(memory_bytes: usize, max_frame_bytes: usize) -> Result<(), Ru
         Ok(value)
     };
     let result = match request.operation {
-        Operation::Execute { source, inputs } => {
-            crate::execute(&source, inputs, &request.limits, &mut host)
-        }
+        Operation::Execute {
+            source,
+            inputs,
+            modules,
+        } => crate::execute_with_modules(&source, inputs, &modules, &request.limits, &mut host),
         Operation::Invoke {
             source,
             symbol,
             arguments,
-        } => crate::invoke(&source, &symbol, arguments, &request.limits, &mut host),
-        Operation::Validate { source, symbol } => {
-            crate::validate_module(&source, &symbol, &request.limits).map(|()| RunResult {
+            modules,
+        } => crate::invoke_with_modules(
+            &source,
+            &symbol,
+            arguments,
+            &modules,
+            &request.limits,
+            &mut host,
+        ),
+        Operation::Validate {
+            source,
+            symbol,
+            modules,
+        } => crate::validate_module_with_modules(&source, &symbol, &modules, &request.limits).map(
+            |()| RunResult {
                 value: Value::Null,
                 stdout: String::new(),
-            })
-        }
+            },
+        ),
     };
     let message = match result {
         Ok(result) => Message::Complete { result },

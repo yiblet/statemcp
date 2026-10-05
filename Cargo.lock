@@ -1516,8 +1516,6 @@ dependencies = [
 [[package]]
 name = "monty"
 version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2146a40e2752039fd9e0582d141b832b4de4a9cb113a830cd46afbd79798ea89"
 dependencies = [
  "ahash",
  "chrono",
