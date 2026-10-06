@@ -12,15 +12,6 @@ macro_rules! selector {
     };
 }
 
-selector!(Field {
-    Inputs => "inputs",
-    Mode => "mode",
-    Arguments => "arguments",
-    Schema => "input_schema" | "output_schema",
-    Recursive => "recursive",
-    Params => "params",
-    Migrations => "migrations",
-});
 selector!(SchemaKeyword {
     Reference => "$ref" | "$dynamicRef" | "$recursiveRef",
     Dialect => "$schema",
@@ -36,33 +27,12 @@ selector!(SchemaDialect {
     Draft2020 => "https://json-schema.org/draft/2020-12/schema",
 });
 
-use state_store::{DatabaseAction, FileAction};
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HostFunction {
-    Mcp,
-    Call,
-    Database(DatabaseAction),
-    File(FileAction),
-}
-impl HostFunction {
-    pub fn parse(value: &str) -> Option<Self> {
-        const NAMES: &[(&str, HostFunction)] = &[
-            ("mcp", HostFunction::Mcp),
-            ("call", HostFunction::Call),
-            ("db_query", HostFunction::Database(DatabaseAction::Query)),
-            (
-                "db_execute",
-                HostFunction::Database(DatabaseAction::Execute),
-            ),
-            (
-                "db_inspect",
-                HostFunction::Database(DatabaseAction::Inspect),
-            ),
-            ("read_text", HostFunction::File(FileAction::Read)),
-            ("write_text", HostFunction::File(FileAction::Write)),
-        ];
-        NAMES
-            .iter()
-            .find_map(|(name, function)| (*name == value).then_some(*function))
-    }
-}
+selector!(HostFunction {
+    Mcp => "mcp",
+    Call => "call",
+    DbQuery => "db_query",
+    DbExecute => "db_execute",
+    DbInspect => "db_inspect",
+    ReadText => "read_text",
+    WriteText => "write_text",
+});

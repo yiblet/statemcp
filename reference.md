@@ -2,13 +2,17 @@
 
 This reference describes the 30 public tools advertised by `tools/list`.
 The input schemas below come from `describe({"mode":"full"})`. They are also
-validated by the service. Public MCP calls use the names below without an
+generated from typed Rust inputs and validated by the SDK and service. Public MCP calls use the names below without an
 `action` argument.
 
 ## MCP transport
 
 Stdio and Streamable HTTP use the official Rust MCP SDK (`rmcp`). The SDK
 handles protocol negotiation, initialization, sessions, and JSON-RPC envelopes.
+Tool routing and parameter schemas use rmcp’s `#[tool]`, `#[tool_router]`, and
+`#[tool_handler]` macros. Current-protocol tool lists include `ttlMs: 0` and
+`cacheScope: "public"`; the fixed catalog contains no user data.
+
 The HTTP endpoint is `/mcp`; clients must accept both `application/json` and
 `text/event-stream`. Protocol versions using sessions send the returned
 `Mcp-Session-Id` on subsequent requests.
@@ -17,6 +21,8 @@ A tool result contains one MCP text block with the application result encoded
 as JSON. Parse `content[0].text` to recover objects, arrays, or scalar values.
 Application failures set `isError: true` and encode `{error: {code, message}}`
 in that block. Unknown tools are protocol errors. `structuredContent` is omitted.
+The SDK rejects malformed tool parameters with `isError: true` and diagnostic
+text before execution. Application failures retain the JSON error envelope.
 The direct CLI and Python helpers return the application JSON value directly.
 
 Use `--auth-bearer TOKEN` to require a shared bearer token over HTTP. This grants
@@ -41,15 +47,21 @@ address (plus localhost for loopback). Logs go to stderr and support `RUST_LOG`.
   Repeating an identical committed request replays its result; a changed
   request with the same key fails. Receipts persist until maintenance removes them.
 
+Namespace results include `description` as a string or null. Create accepts an
+optional description. Update preserves an omitted description and clears it with
+`null`; name is optional so descriptions can be updated alone. Copy inherits the
+source description unless a string or null is supplied. Existing stores load
+without migration, with null descriptions for existing namespaces.
+
 ## Tool index
 
 | Tool | Required arguments | Optional arguments |
 | --- | --- | --- |
-| `namespace.create` | `name` | — |
+| `namespace.create` | `name` | `description` |
 | `namespace.list` | — | — |
 | `namespace.get` | `namespace` | — |
-| `namespace.update` | `namespace`, `name` | `expected_revision` |
-| `namespace.copy` | `namespace`, `name` | `expected_revision` |
+| `namespace.update` | `namespace` | `name`, `description`, `expected_revision` |
+| `namespace.copy` | `namespace`, `name` | `description`, `expected_revision` |
 | `namespace.delete` | `namespace` | `expected_revision` |
 | `fs.read` | `namespace`, `path` | — |
 | `fs.stat` | `namespace`, `path` | — |
@@ -88,7 +100,7 @@ results may additionally include `revision` as described above.
 
 | Tools | Result |
 | --- | --- |
-| `namespace.create`, `namespace.get`, `namespace.update`, `namespace.copy` | `{id, name, revision, files, databases, functions}`; the last three fields are counts. Nested create/update/copy omit `revision`. |
+| `namespace.create`, `namespace.get`, `namespace.update`, `namespace.copy` | `{id, name, description, revision, files, databases, functions}`; the last three fields are counts. Nested create/update/copy omit `revision`. |
 | `namespace.list` | `{namespaces: [namespace metadata]}` |
 | `namespace.delete` | `{deleted: true, id}` |
 | `fs.read` | `{path, kind: "file", size, text}` or `{path, kind: "file", size, base64}` for non-UTF-8 bytes. |
@@ -119,63 +131,77 @@ required arguments, alternatives, and nested grant shapes are specified here.
 
 ### `namespace.create`
 
-Create an empty namespace for files, SQLite databases, and published functions.
+Create an empty namespace with an optional description for files, SQLite databases, and published functions.
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "name": {
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
     "name"
-  ],
-  "type": "object"
+  ]
 }
 ```
 
 ### `namespace.list`
 
-List namespaces with their names, stable IDs, revisions, and resource counts.
+Primary entry point for discovering what is available in StateMCP. List namespaces with their names, descriptions, stable IDs, revisions, and resource counts. Then use function.list to discover published functions in the relevant namespace.
 
 ```json
 {
-  "additionalProperties": false,
-  "properties": {},
-  "required": [],
-  "type": "object"
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false
 }
 ```
 
 ### `namespace.get`
 
-Get a namespace’s name, stable ID, revision, and resource counts.
+Get a namespace’s name, description, stable ID, revision, and resource counts.
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "namespace": {
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
     "namespace"
-  ],
-  "type": "object"
+  ]
 }
 ```
 
 ### `namespace.update`
 
-Rename a namespace while preserving its stable ID and contents.
+Update a namespace name or description while preserving its stable ID and contents. Omitted description is preserved; null clears it.
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "expected_revision": {
       "type": "string"
     },
@@ -186,11 +212,10 @@ Rename a namespace while preserving its stable ID and contents.
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
-    "namespace",
-    "name"
-  ],
-  "type": "object"
+    "namespace"
+  ]
 }
 ```
 
@@ -200,8 +225,15 @@ Copy a namespace and its contents to a new name. Subsequent changes are independ
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
+    "description": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "expected_revision": {
       "type": "string"
     },
@@ -212,11 +244,11 @@ Copy a namespace and its contents to a new name. Subsequent changes are independ
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
-    "namespace",
-    "name"
-  ],
-  "type": "object"
+    "name",
+    "namespace"
+  ]
 }
 ```
 
@@ -226,7 +258,8 @@ Delete a namespace and its contents from active use. Its name remains reserved.
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "expected_revision": {
       "type": "string"
@@ -235,10 +268,10 @@ Delete a namespace and its contents from active use. Its name remains reserved.
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
     "namespace"
-  ],
-  "type": "object"
+  ]
 }
 ```
 
@@ -248,7 +281,8 @@ Read a virtual file as UTF-8 text or base64 for binary data.
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "namespace": {
       "type": "string"
@@ -257,11 +291,11 @@ Read a virtual file as UTF-8 text or base64 for binary data.
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
     "namespace",
     "path"
-  ],
-  "type": "object"
+  ]
 }
 ```
 
@@ -271,7 +305,8 @@ Get a virtual file’s metadata or check whether a virtual directory exists.
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "namespace": {
       "type": "string"
@@ -280,11 +315,11 @@ Get a virtual file’s metadata or check whether a virtual directory exists.
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
     "namespace",
     "path"
-  ],
-  "type": "object"
+  ]
 }
 ```
 
@@ -294,7 +329,8 @@ List files and directories directly beneath a virtual path.
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "namespace": {
       "type": "string"
@@ -303,10 +339,10 @@ List files and directories directly beneath a virtual path.
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
     "namespace"
-  ],
-  "type": "object"
+  ]
 }
 ```
 
@@ -316,41 +352,64 @@ Create or replace a virtual file. Supply either text or base64.
 
 ```json
 {
-  "additionalProperties": false,
-  "oneOf": [
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "anyOf": [
     {
+      "$ref": "#/$defs/FileTextInput"
+    },
+    {
+      "$ref": "#/$defs/FileBase64Input"
+    }
+  ],
+  "$defs": {
+    "FileBase64Input": {
+      "type": "object",
+      "properties": {
+        "base64": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
       "required": [
+        "base64",
+        "namespace",
+        "path"
+      ]
+    },
+    "FileTextInput": {
+      "type": "object",
+      "properties": {
+        "expected_revision": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "path",
         "text"
       ]
-    },
-    {
-      "required": [
-        "base64"
-      ]
     }
-  ],
-  "properties": {
-    "base64": {
-      "type": "string"
-    },
-    "expected_revision": {
-      "type": "string"
-    },
-    "namespace": {
-      "type": "string"
-    },
-    "path": {
-      "type": "string"
-    },
-    "text": {
-      "type": "string"
-    }
-  },
-  "required": [
-    "namespace",
-    "path"
-  ],
-  "type": "object"
+  }
 }
 ```
 
@@ -360,41 +419,64 @@ Append text or base64-encoded bytes to a virtual file.
 
 ```json
 {
-  "additionalProperties": false,
-  "oneOf": [
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "anyOf": [
     {
+      "$ref": "#/$defs/FileTextInput"
+    },
+    {
+      "$ref": "#/$defs/FileBase64Input"
+    }
+  ],
+  "$defs": {
+    "FileBase64Input": {
+      "type": "object",
+      "properties": {
+        "base64": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
       "required": [
+        "base64",
+        "namespace",
+        "path"
+      ]
+    },
+    "FileTextInput": {
+      "type": "object",
+      "properties": {
+        "expected_revision": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "path",
         "text"
       ]
-    },
-    {
-      "required": [
-        "base64"
-      ]
     }
-  ],
-  "properties": {
-    "base64": {
-      "type": "string"
-    },
-    "expected_revision": {
-      "type": "string"
-    },
-    "namespace": {
-      "type": "string"
-    },
-    "path": {
-      "type": "string"
-    },
-    "text": {
-      "type": "string"
-    }
-  },
-  "required": [
-    "namespace",
-    "path"
-  ],
-  "type": "object"
+  }
 }
 ```
 
@@ -404,7 +486,8 @@ Move a virtual file to another path in the same namespace.
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "destination": {
       "type": "string"
@@ -419,12 +502,12 @@ Move a virtual file to another path in the same namespace.
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
+    "destination",
     "namespace",
-    "path",
-    "destination"
-  ],
-  "type": "object"
+    "path"
+  ]
 }
 ```
 
@@ -434,7 +517,8 @@ Copy a virtual file to another path in the same namespace.
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "destination": {
       "type": "string"
@@ -449,12 +533,12 @@ Copy a virtual file to another path in the same namespace.
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
+    "destination",
     "namespace",
-    "path",
-    "destination"
-  ],
-  "type": "object"
+    "path"
+  ]
 }
 ```
 
@@ -464,7 +548,8 @@ Delete a virtual file, or delete a directory’s contents with recursive=true.
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "expected_revision": {
       "type": "string"
@@ -479,11 +564,11 @@ Delete a virtual file, or delete a directory’s contents with recursive=true.
       "type": "boolean"
     }
   },
+  "additionalProperties": false,
   "required": [
     "namespace",
     "path"
-  ],
-  "type": "object"
+  ]
 }
 ```
 
@@ -493,16 +578,17 @@ List the named SQLite databases in a namespace.
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "namespace": {
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
     "namespace"
-  ],
-  "type": "object"
+  ]
 }
 ```
 
@@ -512,7 +598,8 @@ Create an empty named SQLite database in a namespace.
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "database": {
       "type": "string"
@@ -524,11 +611,11 @@ Create an empty named SQLite database in a namespace.
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
-    "namespace",
-    "database"
-  ],
-  "type": "object"
+    "database",
+    "namespace"
+  ]
 }
 ```
 
@@ -538,7 +625,8 @@ Drop a named SQLite database. Remove function declarations that reference it fir
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "database": {
       "type": "string"
@@ -550,11 +638,11 @@ Drop a named SQLite database. Remove function declarations that reference it fir
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
-    "namespace",
-    "database"
-  ],
-  "type": "object"
+    "database",
+    "namespace"
+  ]
 }
 ```
 
@@ -564,7 +652,8 @@ Run one read-only SQL statement with optional bound parameters. Returns columns,
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "database": {
       "type": "string"
@@ -573,18 +662,80 @@ Run one read-only SQL statement with optional bound parameters. Returns columns,
       "type": "string"
     },
     "params": {
-      "type": "array"
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SqlCell"
+      }
     },
     "sql": {
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
-    "namespace",
     "database",
+    "namespace",
     "sql"
   ],
-  "type": "object"
+  "$defs": {
+    "BinaryCell": {
+      "type": "object",
+      "properties": {
+        "$base64": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "$base64"
+      ]
+    },
+    "IntegerCell": {
+      "type": "object",
+      "properties": {
+        "$integer": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "$integer"
+      ]
+    },
+    "SqlCell": {
+      "description": "SQLite has a fixed set of cell types; tagged values preserve binary data and large integers.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        {
+          "type": "number",
+          "format": "double"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/BinaryCell"
+        },
+        {
+          "$ref": "#/$defs/IntegerCell"
+        }
+      ]
+    }
+  }
 }
 ```
 
@@ -594,7 +745,8 @@ Run one SQL statement with optional bound parameters, including writes and RETUR
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "database": {
       "type": "string"
@@ -606,18 +758,80 @@ Run one SQL statement with optional bound parameters, including writes and RETUR
       "type": "string"
     },
     "params": {
-      "type": "array"
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/SqlCell"
+      }
     },
     "sql": {
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
-    "namespace",
     "database",
+    "namespace",
     "sql"
   ],
-  "type": "object"
+  "$defs": {
+    "BinaryCell": {
+      "type": "object",
+      "properties": {
+        "$base64": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "$base64"
+      ]
+    },
+    "IntegerCell": {
+      "type": "object",
+      "properties": {
+        "$integer": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "$integer"
+      ]
+    },
+    "SqlCell": {
+      "description": "SQLite has a fixed set of cell types; tagged values preserve binary data and large integers.",
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        {
+          "type": "number",
+          "format": "double"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "$ref": "#/$defs/BinaryCell"
+        },
+        {
+          "$ref": "#/$defs/IntegerCell"
+        }
+      ]
+    }
+  }
 }
 ```
 
@@ -627,7 +841,8 @@ Inspect a database’s tables, columns, indexes, foreign keys, schema, migration
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "database": {
       "type": "string"
@@ -636,11 +851,11 @@ Inspect a database’s tables, columns, indexes, foreign keys, schema, migration
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
-    "namespace",
-    "database"
-  ],
-  "type": "object"
+    "database",
+    "namespace"
+  ]
 }
 ```
 
@@ -650,7 +865,8 @@ Get the ordered IDs and checksums of applied database migrations.
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "database": {
       "type": "string"
@@ -659,11 +875,11 @@ Get the ordered IDs and checksums of applied database migrations.
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
-    "namespace",
-    "database"
-  ],
-  "type": "object"
+    "database",
+    "namespace"
+  ]
 }
 ```
 
@@ -673,7 +889,8 @@ Apply an ordered batch of SQL migrations atomically. Previously applied IDs must
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "database": {
       "type": "string"
@@ -682,34 +899,39 @@ Apply an ordered batch of SQL migrations atomically. Previously applied IDs must
       "type": "string"
     },
     "migrations": {
+      "type": "array",
       "items": {
-        "additionalProperties": false,
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "sql": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "sql"
-        ],
-        "type": "object"
-      },
-      "type": "array"
+        "$ref": "#/$defs/MigrationInput"
+      }
     },
     "namespace": {
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
-    "namespace",
     "database",
-    "migrations"
+    "migrations",
+    "namespace"
   ],
-  "type": "object"
+  "$defs": {
+    "MigrationInput": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "sql": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "sql"
+      ]
+    }
+  }
 }
 ```
 
@@ -719,16 +941,17 @@ List published functions in the required namespace, selected by name or stable U
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "namespace": {
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
     "namespace"
-  ],
-  "type": "object"
+  ]
 }
 ```
 
@@ -738,7 +961,8 @@ Get one published function by namespace and name. Returns its pinned Python sour
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "expected_version": {
       "type": "string"
@@ -750,11 +974,11 @@ Get one published function by namespace and name. Returns its pinned Python sour
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
-    "namespace",
-    "name"
-  ],
-  "type": "object"
+    "name",
+    "namespace"
+  ]
 }
 ```
 
@@ -764,7 +988,8 @@ Remove a published function by namespace and name. Its source file and data rema
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "expected_revision": {
       "type": "string"
@@ -779,11 +1004,11 @@ Remove a published function by namespace and name. Its source file and data rema
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
-    "namespace",
-    "name"
-  ],
-  "type": "object"
+    "name",
+    "namespace"
+  ]
 }
 ```
 
@@ -793,7 +1018,8 @@ Publish a Python function by specifying namespace, name, file, and symbol. First
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "description": {
       "type": "string"
@@ -808,10 +1034,7 @@ Publish a Python function by specifying namespace, name, file, and symbol. First
       "type": "string"
     },
     "input_schema": {
-      "type": [
-        "object",
-        "boolean"
-      ]
+      "$ref": "#/$defs/EndpointSchema"
     },
     "name": {
       "type": "string"
@@ -820,22 +1043,32 @@ Publish a Python function by specifying namespace, name, file, and symbol. First
       "type": "string"
     },
     "output_schema": {
-      "type": [
-        "object",
-        "boolean"
-      ]
+      "$ref": "#/$defs/EndpointSchema"
     },
     "symbol": {
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
-    "namespace",
-    "name",
     "file",
+    "name",
+    "namespace",
     "symbol"
   ],
-  "type": "object"
+  "$defs": {
+    "EndpointSchema": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": true
+        },
+        {
+          "type": "boolean"
+        }
+      ]
+    }
+  }
 }
 ```
 
@@ -845,7 +1078,8 @@ Publish a new function declaration for namespace and name using the current cont
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "description": {
       "type": "string"
@@ -860,10 +1094,7 @@ Publish a new function declaration for namespace and name using the current cont
       "type": "string"
     },
     "input_schema": {
-      "type": [
-        "object",
-        "boolean"
-      ]
+      "$ref": "#/$defs/EndpointSchema"
     },
     "name": {
       "type": "string"
@@ -872,22 +1103,32 @@ Publish a new function declaration for namespace and name using the current cont
       "type": "string"
     },
     "output_schema": {
-      "type": [
-        "object",
-        "boolean"
-      ]
+      "$ref": "#/$defs/EndpointSchema"
     },
     "symbol": {
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
-    "namespace",
-    "name",
     "file",
+    "name",
+    "namespace",
     "symbol"
   ],
-  "type": "object"
+  "$defs": {
+    "EndpointSchema": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": true
+        },
+        {
+          "type": "boolean"
+        }
+      ]
+    }
+  }
 }
 ```
 
@@ -897,10 +1138,12 @@ Invoke a published function using namespace, function, and an arguments object m
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "arguments": {
-      "type": "object"
+      "type": "object",
+      "additionalProperties": true
     },
     "expected_version": {
       "type": "string"
@@ -915,11 +1158,11 @@ Invoke a published function using namespace, function, and an arguments object m
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
-    "namespace",
-    "function"
-  ],
-  "type": "object"
+    "function",
+    "namespace"
+  ]
 }
 ```
 
@@ -929,12 +1172,13 @@ Run a Python script with owner access in one transaction. The inputs argument is
 
 ```json
 {
-  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
   "properties": {
     "idempotency_key": {
       "type": "string"
     },
-    "inputs": {},
+    "inputs": true,
     "namespace": {
       "type": "string"
     },
@@ -942,10 +1186,10 @@ Run a Python script with owner access in one transaction. The inputs argument is
       "type": "string"
     }
   },
+  "additionalProperties": false,
   "required": [
     "script"
-  ],
-  "type": "object"
+  ]
 }
 ```
 
@@ -955,36 +1199,31 @@ Get a compact API overview, mode=runtime for a Python authoring guide, or mode=f
 
 ```json
 {
-  "oneOf": [
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "anyOf": [
     {
-      "additionalProperties": false,
-      "properties": {
-        "mode": {
-          "enum": [
-            "overview",
-            "full",
-            "runtime",
-            "readme"
-          ]
-        }
-      },
-      "required": [],
-      "type": "object"
+      "$ref": "#/$defs/DiscoveryOverviewInput"
     },
     {
-      "additionalProperties": false,
-      "properties": {
-        "tool": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "tool"
-      ],
-      "type": "object"
+      "$ref": "#/$defs/DiscoveryToolInput"
     },
     {
-      "additionalProperties": false,
+      "$ref": "#/$defs/DiscoveryNamespaceInput"
+    }
+  ],
+  "$defs": {
+    "DiscoveryMode": {
+      "type": "string",
+      "enum": [
+        "overview",
+        "full",
+        "runtime",
+        "readme"
+      ]
+    },
+    "DiscoveryNamespaceInput": {
+      "type": "object",
       "properties": {
         "function": {
           "type": "string"
@@ -993,13 +1232,33 @@ Get a compact API overview, mode=runtime for a Python authoring guide, or mode=f
           "type": "string"
         }
       },
+      "additionalProperties": false,
       "required": [
         "namespace"
-      ],
-      "type": "object"
+      ]
+    },
+    "DiscoveryOverviewInput": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/DiscoveryMode"
+        }
+      },
+      "additionalProperties": false
+    },
+    "DiscoveryToolInput": {
+      "type": "object",
+      "properties": {
+        "tool": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "tool"
+      ]
     }
-  ],
-  "type": "object"
+  }
 }
 ```
 
@@ -1164,14 +1423,14 @@ Make these MCP tool calls in order. The final call returns `[1, "hello"]`.
 
 ## CLI and live discovery
 
-The CLI uses grouped names: `state_namespace`, `state_fs`, `state_db`,
-`state_function`, `state_call`, `state_execute`, and `state_describe`.
-Resource commands use `action` inside `--json`; public MCP names omit it.
+The CLI uses the same 30 tool names as MCP. Each command accepts its own named
+flags or `--json`, followed by a required data directory.
 
 ```sh
-statemcp cli state_db ./data --json '{"action":"query","namespace":"demo","database":"app","sql":"SELECT * FROM notes"}'
-statemcp cli state_describe ./data --json '{"mode":"full"}'
+statemcp cli db.query ./data --namespace demo --database app --sql 'SELECT * FROM notes'
+statemcp cli db.query ./data --json '{"namespace":"demo","database":"app","sql":"SELECT * FROM notes"}'
 ```
+
 
 Use `describe({"tool":"db.query"})` for one exact tool schema,
 `describe({"namespace":"demo","function":"add"})` for an endpoint contract,

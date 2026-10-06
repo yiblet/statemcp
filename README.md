@@ -41,14 +41,58 @@ target/release/statemcp stdio ./data
 
 # Or serve multiple clients over HTTP
 target/release/statemcp http ./data --bind 127.0.0.1:8000
+
+# Serve under a prefix on both IPv4 and IPv6 loopback interfaces
+target/release/statemcp http ./data --http-prefix /statemcp \
+  --bind 127.0.0.1:8000 --bind '[::1]:8000' --auth-bearer YOUR_TOKEN
 ```
 
 For stdio, configure your client to launch the binary with `stdio` and an absolute
 path to your data directory. For HTTP, the endpoint is `http://127.0.0.1:8000/mcp`.
 Use the same data directory to keep your tools and data across restarts.
 
+Repeat `--bind` to listen on multiple addresses with shared state and MCP sessions.
+`--http-prefix /statemcp` exposes `/statemcp/mcp/` and `/statemcp/health`.
+Trailing slashes are normalized before routing. Without a
+prefix, the routes are `/mcp` (or `/mcp/`) and `/health`. Health returns
+`{"status":"ok"}` without bearer authentication; MCP requires the token when
+`--auth-bearer` is configured. All routes check the request Host and Origin against
+the listening addresses. When using a reverse proxy, forward a permitted upstream
+Host and preserve authentication and streaming.
+
 StateMCP uses the official Rust MCP SDK for stdio and Streamable HTTP.
 Logs go to stderr; set `RUST_LOG=debug` for more detail.
+
+## Ubuntu server installation
+
+Copy `script.sh` and the Linux binary to an Ubuntu 22.04+ host running systemd:
+
+```sh
+./script.sh /path/to/statemcp
+```
+
+The executable installer uses sudo as needed. It installs Nginx, OpenSSL, and
+systemd configuration; creates a dedicated service user and persistent data
+directory; generates a self-signed TLS certificate; enables both services; and
+checks the local health endpoint. Nginx listens on IPv4 and IPv6 ports 80 and 443,
+redirects HTTP to HTTPS, and forwards `/statemcp/` to StateMCP's IPv4/IPv6 loopback
+listeners. The server exposes `/statemcp/mcp` with bearer authentication and
+`/statemcp/health` without bearer authentication, normalizing trailing slashes.
+
+Defaults reproduce the `micro` deployment: hostname `micro.yiblet.com` and bearer
+token `chernoff-bound`. Override them using `STATEMCP_HOSTNAME` and
+`STATEMCP_BEARER_TOKEN`. Reruns preserve data, an existing credential unless
+explicitly overridden, and a valid certificate matching the hostname. The token
+is stored root-only at `/etc/statemcp/bearer-token`; the service loads it through
+systemd credentials. Certificate renewal is manual: rerun the installer near
+expiry to generate a replacement.
+
+Allow TCP 80 and 443 in the cloud firewall and point DNS at the host. With a
+Cloudflare-proxied record, use TLS mode **Full** for the self-signed origin
+certificate. The script configures an already-active UFW firewall but does not
+create cloud firewall rules or change Cloudflare settings. It replaces the
+Ubuntu default Nginx site, so use it on a host dedicated to this deployment.
+For image preparation without starting services, set `STATEMCP_START_SERVICES=0`.
 
 ## What your agent can do
 

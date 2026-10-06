@@ -22,9 +22,6 @@ impl VirtualPath {
     }
 }
 
-pub(crate) fn required<'a>(value: Option<&'a str>, field: &str) -> Result<&'a str> {
-    value.ok_or_else(|| Error::invalid(format!("{field} must be a string")))
-}
 pub(crate) fn name(value: &str) -> Result<String> {
     if value.is_empty()
         || value.len() > 128

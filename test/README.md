@@ -17,7 +17,7 @@ Re-run `./build.sh` after changing statemcp source.
 Direct CLI access to persistent test data:
 
 ```sh
-./statemcp cli state_namespace ./data list
+./statemcp cli namespace.list ./data
 ./statemcp cli state_describe ./data
 ./statemcp cli state_execute ./data 'inputs + 1' --inputs 41
 ```

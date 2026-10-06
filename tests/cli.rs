@@ -67,24 +67,17 @@ impl Drop for Workspace {
 }
 
 #[test]
-fn all_seven_cli_tools_publish_invoke_and_manipulate_state() {
+fn direct_cli_tools_publish_invoke_and_manipulate_state() {
     let workspace = Workspace::new();
-    workspace.ok("state_namespace", &["create", "--name", "notes"]);
-    workspace.ok(
-        "state_db",
-        &["create", "--namespace", "notes", "--database", "app"],
-    );
-    workspace.ok("state_db", &["migrate", "--namespace", "notes", "--database", "app", "--migrations", r#"[{"id":"initial","sql":"CREATE TABLE notes(id INTEGER PRIMARY KEY, text TEXT NOT NULL)"}]"#]);
-    let inspect = workspace.ok(
-        "state_db",
-        &["inspect", "--namespace", "notes", "--database", "app"],
-    );
+    workspace.ok("namespace.create", &["--name", "notes"]);
+    workspace.ok("db.create", &["--namespace", "notes", "--database", "app"]);
+    workspace.ok("db.migrate", &[ "--namespace", "notes", "--database", "app", "--migrations", r#"[{"id":"initial","sql":"CREATE TABLE notes(id INTEGER PRIMARY KEY, text TEXT NOT NULL)"}]"#]);
+    let inspect = workspace.ok("db.inspect", &["--namespace", "notes", "--database", "app"]);
     assert_eq!(inspect["tables"][0]["name"], "notes");
     let python = "def add(text):\n    return db_execute('app', 'INSERT INTO notes(text) VALUES (?) RETURNING id, text', [text])['rows'][0]";
     workspace.ok(
-        "state_fs",
+        "fs.write",
         &[
-            "write",
             "--namespace",
             "notes",
             "--path",
@@ -97,9 +90,8 @@ fn all_seven_cli_tools_publish_invoke_and_manipulate_state() {
     fs::write(&schema, r#"{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}"#).unwrap();
     let schema_arg = format!("@{}", schema.display());
     workspace.ok(
-        "state_function",
+        "function.declare",
         &[
-            "declare",
             "--namespace",
             "notes",
             "--name",
@@ -112,14 +104,11 @@ fn all_seven_cli_tools_publish_invoke_and_manipulate_state() {
             &schema_arg,
         ],
     );
-    let described = workspace.ok(
-        "state_describe",
-        &["--namespace", "notes", "--function", "add"],
-    );
+    let described = workspace.ok("describe", &["--namespace", "notes", "--function", "add"]);
     assert_eq!(described["functions"][0]["name"], "add");
     assert_eq!(
         workspace.ok(
-            "state_call",
+            "call",
             &["notes", "add", "--arguments", r#"{"text":"first"}"#]
         ),
         json!([1, "first"])
@@ -128,7 +117,7 @@ fn all_seven_cli_tools_publish_invoke_and_manipulate_state() {
     fs::write(&script,"call('notes', 'add', {'text': inputs})\nwrite_text('/composed', inputs)\ndb_query('app', 'SELECT text FROM notes ORDER BY id')").unwrap();
     let script_arg = format!("@{}", script.display());
     let result = workspace.ok(
-        "state_execute",
+        "execute",
         &[
             &script_arg,
             "--namespace",
@@ -142,7 +131,7 @@ fn all_seven_cli_tools_publish_invoke_and_manipulate_state() {
     assert_eq!(result["value"]["rows"], json!([["first"], ["second"]]));
     assert_eq!(
         workspace.ok(
-            "state_execute",
+            "execute",
             &[
                 &script_arg,
                 "--namespace",
@@ -156,24 +145,23 @@ fn all_seven_cli_tools_publish_invoke_and_manipulate_state() {
         result
     );
     workspace.ok(
-        "state_namespace",
-        &["copy", "--namespace", "notes", "--name", "fork"],
+        "namespace.copy",
+        &["--namespace", "notes", "--name", "fork"],
     );
     workspace.ok(
-        "state_namespace",
-        &["rename", "--namespace", "fork", "--name", "renamed"],
+        "namespace.update",
+        &["--namespace", "fork", "--name", "renamed"],
     );
     assert_eq!(
         workspace.ok(
-            "state_call",
+            "call",
             &["renamed", "add", "--arguments", r#"{"text":"fork"}"#]
         ),
         json!([3, "fork"])
     );
     let count = workspace.ok(
-        "state_db",
+        "db.query",
         &[
-            "query",
             "--namespace",
             "notes",
             "--database",
@@ -186,9 +174,8 @@ fn all_seven_cli_tools_publish_invoke_and_manipulate_state() {
     );
     assert_eq!(count["rows"], json!([[2]]));
     workspace.ok(
-        "state_fs",
+        "fs.copy",
         &[
-            "copy",
             "--namespace",
             "notes",
             "--path",
@@ -198,9 +185,8 @@ fn all_seven_cli_tools_publish_invoke_and_manipulate_state() {
         ],
     );
     workspace.ok(
-        "state_fs",
+        "fs.move",
         &[
-            "move",
             "--namespace",
             "notes",
             "--path",
@@ -210,116 +196,91 @@ fn all_seven_cli_tools_publish_invoke_and_manipulate_state() {
         ],
     );
     workspace.ok(
-        "state_fs",
-        &[
-            "append",
-            "--namespace",
-            "notes",
-            "--path",
-            "/moved",
-            "--text",
-            "!",
-        ],
+        "fs.append",
+        &["--namespace", "notes", "--path", "/moved", "--text", "!"],
     );
     assert_eq!(
-        workspace.ok(
-            "state_fs",
-            &["read", "--namespace", "notes", "--path", "/moved"]
-        )["text"],
+        workspace.ok("fs.read", &["--namespace", "notes", "--path", "/moved"])["text"],
         "second!"
     );
+    workspace.ok("fs.delete", &["--namespace", "notes", "--path", "/moved"]);
     workspace.ok(
-        "state_fs",
-        &["delete", "--namespace", "notes", "--path", "/moved"],
+        "function.remove",
+        &["--namespace", "renamed", "--name", "add"],
     );
-    workspace.ok(
-        "state_function",
-        &["remove", "--namespace", "renamed", "--name", "add"],
-    );
-    workspace.ok(
-        "state_db",
-        &["drop", "--namespace", "renamed", "--database", "app"],
-    );
-    workspace.ok("state_namespace", &["delete", "--namespace", "renamed"]);
-    let tools = workspace.ok("state_describe", &[]);
+    workspace.ok("db.drop", &["--namespace", "renamed", "--database", "app"]);
+    workspace.ok("namespace.delete", &["--namespace", "renamed"]);
+    let tools = workspace.ok("describe", &[]);
     assert_eq!(tools["tools"].as_array().unwrap().len(), 30);
 }
 
 #[test]
 fn raw_json_file_and_stdin_match_service_results_and_cli_failures_roll_back() {
     let workspace = Workspace::new();
-    workspace.ok(
-        "state_namespace",
-        &["--json", r#"{"action":"create","name":"raw"}"#],
-    );
+    workspace.ok("namespace.create", &["--json", r#"{"name":"raw"}"#]);
     let input = workspace.0.join("request.json");
     fs::write(
         &input,
-        r#"{"action":"write","namespace":"raw","path":"/binary","base64":"AP8="}"#,
+        r#"{"namespace":"raw","path":"/binary","base64":"AP8="}"#,
     )
     .unwrap();
     let input_arg = format!("@{}", input.display());
-    workspace.ok("state_fs", &["--json", &input_arg]);
+    workspace.ok("fs.write", &["--json", &input_arg]);
     assert_eq!(
-        workspace.ok(
-            "state_fs",
-            &["read", "--namespace", "raw", "--path", "/binary"]
-        )["base64"],
+        workspace.ok("fs.read", &["--namespace", "raw", "--path", "/binary"])["base64"],
         "AP8="
     );
     let result = workspace.value(workspace.run(
-        "state_execute",
+        "execute",
         &["--json", "-"],
         Some(r#"{"script":"inputs + 1","inputs":41}"#),
     ));
     assert_eq!(result["value"], 42);
     let result = workspace.value(workspace.run(
-        "state_execute",
+        "execute",
         &["-", "--namespace", "raw"],
         Some("write_text('/stdin', 'saved')\nread_text('/stdin')"),
     ));
     assert_eq!(result["value"], "saved");
     let failure = workspace.fails(
-        "state_execute",
+        "execute",
         &["write_text('/rollback', 'no')\n1 / 0", "--namespace", "raw"],
     );
     assert!(failure["error"]["code"].is_string());
-    let missing = workspace.fails(
-        "state_fs",
-        &["read", "--namespace", "raw", "--path", "/rollback"],
-    );
+    let missing = workspace.fails("fs.read", &["--namespace", "raw", "--path", "/rollback"]);
     assert_eq!(missing["error"]["code"], "NOT_FOUND");
-    let malformed = workspace.run("state_namespace", &["create", "--json", "{bad"], None);
+    let malformed = workspace.run("namespace.create", &["--json", "{bad"], None);
     assert!(!malformed.status.success());
     assert!(malformed.stdout.is_empty());
     let ambiguous = workspace.run(
-        "state_namespace",
-        &["create", "--name", "x", "--json", r#"{"name":"y"}"#],
+        "namespace.create",
+        &["--name", "x", "--json", r#"{"name":"y"}"#],
         None,
     );
     assert!(!ambiguous.status.success());
-    let names = workspace.ok("state_namespace", &["list"]);
+    let names = workspace.ok("namespace.list", &[]);
     assert_eq!(names["namespaces"].as_array().unwrap().len(), 1);
-    let invalid = workspace.fails("state_db", &["--json", r#"{"action":"query","namespace":"raw","database":"app","sql":"SELECT 1","extra":true}"#]);
+    let invalid = workspace.fails(
+        "db.query",
+        &[
+            "--json",
+            r#"{"namespace":"raw","database":"app","sql":"SELECT 1","extra":true}"#,
+        ],
+    );
     assert_eq!(invalid["error"]["code"], "INVALID_ARGUMENT");
 }
 
 #[test]
-fn cli_groups_cover_mcp_tools_and_paths_are_required() {
+fn cli_commands_cover_mcp_tools_and_paths_are_required() {
     let workspace = Workspace::new();
-    let descriptions = workspace.ok("state_describe", &[]);
+    let descriptions = workspace.ok("describe", &[]);
     let groups: std::collections::BTreeSet<_> = descriptions["tools"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|tool| {
-            format!(
-                "state_{}",
-                tool["name"].as_str().unwrap().split('.').next().unwrap()
-            )
-        })
+        .map(|tool| tool["name"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(groups.len(), 7);
+    assert_eq!(groups.len(), 30);
     for name in &groups {
         let help = Command::new(env!("CARGO_BIN_EXE_statemcp"))
             .args(["cli", name, "--help"])

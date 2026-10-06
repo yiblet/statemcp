@@ -44,7 +44,7 @@ fn isolated_execute_invoke_and_validate() {
             .invoke(
                 source,
                 "add",
-                json!({"a": 2, "b": 3}),
+                json!({"a": 2, "b": 3}).as_object().unwrap().clone(),
                 &Limits::default(),
                 &mut deny
             )
@@ -52,20 +52,26 @@ fn isolated_execute_invoke_and_validate() {
             .value,
         json!(5)
     );
-    let bad = "mcp('state_fs', {})\ndef bad():\n    return 1";
+    let bad = "mcp('fs.read', {})\ndef bad():\n    return 1";
     assert_eq!(
         config
             .validate_module(bad, "bad", &Limits::default())
             .unwrap_err()
             .code,
-        "PERMISSION_DENIED"
+        state_core::ErrorCode::PermissionDenied
     );
     assert_eq!(
         config
-            .invoke(bad, "bad", json!({}), &Limits::default(), &mut deny)
+            .invoke(
+                bad,
+                "bad",
+                json!({}).as_object().unwrap().clone(),
+                &Limits::default(),
+                &mut deny
+            )
             .unwrap_err()
             .code,
-        "PERMISSION_DENIED"
+        state_core::ErrorCode::PermissionDenied
     );
 }
 
@@ -75,7 +81,7 @@ fn callbacks_and_recursive_workers_have_no_pool_deadlock() {
     let mut names = Vec::new();
     let result = config
         .execute(
-            "mcp('state_fs', {'path': '/a'})\ncall('other', 'add', {'x': inputs})",
+            "mcp('fs.read', {'path': '/a'})\ncall('other', 'add', {'x': inputs})",
             json!(7),
             &Limits::default(),
             &mut |name, args, kwargs| {
@@ -83,14 +89,14 @@ fn callbacks_and_recursive_workers_have_no_pool_deadlock() {
                 names.push(name.to_owned());
                 match name {
                     "mcp" => {
-                        assert_eq!(args, vec![json!("state_fs"), json!({"path":"/a"})]);
+                        assert_eq!(args, vec![json!("fs.read"), json!({"path":"/a"})]);
                         Ok(Value::Null)
                     }
                     "call" => config
                         .invoke(
                             "def add(x):\n    return x + 1",
                             "add",
-                            args[2].clone(),
+                            args[2].as_object().unwrap().clone(),
                             &Limits::default(),
                             &mut deny,
                         )
@@ -142,7 +148,7 @@ fn timeout_memory_recursion_and_output_limits_recover() {
         let error = config
             .execute(source, Value::Null, &limits, &mut deny)
             .unwrap_err();
-        assert_eq!(error.code, "LIMIT_EXCEEDED", "{error}");
+        assert_eq!(error.code, state_core::ErrorCode::LimitExceeded, "{error}");
         assert!(started.elapsed() < Duration::from_secs(6));
         healthy(&config);
     }
@@ -156,10 +162,15 @@ fn callback_errors_and_panics_reap_workers() {
             "try:\n    mcp('a', {})\nexcept Exception:\n    mcp('b', {})",
             Value::Null,
             &Limits::default(),
-            &mut |_, _, _| Err(RuntimeError::new("DENIED_TEST", "stop")),
+            &mut |_, _, _| {
+                Err(RuntimeError::new(
+                    state_runtime::ErrorCode::PermissionDenied,
+                    "stop",
+                ))
+            },
         )
         .unwrap_err();
-    assert_eq!(error.code, "DENIED_TEST");
+    assert_eq!(error.code, state_runtime::ErrorCode::PermissionDenied);
     let caught = std::panic::catch_unwind(|| {
         let _ = config.execute(
             "mcp('a', {})",
@@ -191,7 +202,10 @@ fn callback_time_counts_toward_deadline() {
         },
     );
     assert!(called);
-    assert_eq!(result.unwrap_err().code, "LIMIT_EXCEEDED");
+    assert_eq!(
+        result.unwrap_err().code,
+        state_core::ErrorCode::LimitExceeded
+    );
     healthy(&config);
 }
 
@@ -209,7 +223,7 @@ fn frames_are_bounded_and_malformed_workers_fail_closed() {
             )
             .unwrap_err()
             .code,
-        "LIMIT_EXCEEDED"
+        state_core::ErrorCode::LimitExceeded
     );
     healthy(&config);
     for body in [
@@ -277,7 +291,7 @@ fn fatal_allocator_exit_during_frame_decode_recovers() {
             &mut deny,
         )
         .unwrap_err();
-    assert_eq!(error.code, "LIMIT_EXCEEDED", "{error}");
+    assert_eq!(error.code, state_core::ErrorCode::LimitExceeded, "{error}");
     assert!(error.message.contains("memory"), "{error}");
     healthy(&config);
 }
@@ -303,7 +317,7 @@ fn workers_preserve_namespace_modules_and_shared_globals() {
                 .invoke_with_modules(
                     source,
                     "endpoint",
-                    json!({}),
+                    json!({}).as_object().unwrap().clone(),
                     &modules,
                     &Limits::default(),
                     &mut deny

@@ -1,6 +1,8 @@
+mod support;
 use serde_json::{Value, json};
 use state_core::{CoreLimits, State};
 use std::time::Duration;
+use support::ToolCalls;
 use tempfile::TempDir;
 
 fn service() -> (TempDir, State) {
@@ -9,51 +11,53 @@ fn service() -> (TempDir, State) {
     (dir, state)
 }
 fn run(state: &State, tool: &str, args: Value) -> Value {
-    state.dispatch(tool, args).unwrap()
+    state.tool(tool, args).unwrap()
 }
 fn namespace(state: &State, name: &str) {
-    run(
-        state,
-        "state_namespace",
-        json!({"action":"create","name":name}),
-    );
+    run(state, "namespace.create", json!({"name":name}));
 }
 fn write(state: &State, namespace: &str, path: &str, text: &str) {
     run(
         state,
-        "state_fs",
-        json!({"action":"write","namespace":namespace,"path":path,"text":text}),
+        "fs.write",
+        json!({"namespace":namespace,"path":path,"text":text}),
     );
 }
 fn publish(state: &State, namespace: &str, name: &str, source: &str, extra: Value) -> Value {
     write(state, namespace, &format!("/{name}.py"), source);
-    let mut declaration = json!({"action":"declare","namespace":namespace,"name":name,"file":format!("/{name}.py"),"symbol":"endpoint"});
+    let mut declaration =
+        json!({"namespace":namespace,"name":name,"file":format!("/{name}.py"),"symbol":"endpoint"});
     for (key, value) in extra.as_object().unwrap() {
         declaration[key] = value.clone();
     }
-    run(state, "state_function", declaration)
+    run(state, "function.declare", declaration)
 }
 fn call(state: &State, namespace: &str, function: &str, arguments: Value) -> Value {
     run(
         state,
-        "state_call",
+        "call",
         json!({"namespace":namespace,"function":function,"arguments":arguments}),
     )
 }
 fn database(state: &State, namespace: &str) {
     run(
         state,
-        "state_db",
-        json!({"action":"create","namespace":namespace,"database":"app"}),
+        "db.create",
+        json!({"namespace":namespace,"database":"app"}),
     );
     run(
         state,
-        "state_db",
-        json!({"action":"execute","namespace":namespace,"database":"app","sql":"CREATE TABLE items(id INTEGER PRIMARY KEY, text TEXT)"}),
+        "db.execute",
+        json!({"namespace":namespace,"database":"app","sql":"CREATE TABLE items(id INTEGER PRIMARY KEY, text TEXT)"}),
     );
 }
 fn rows(state: &State, namespace: &str) -> Value {
-    run(state, "state_db", json!({"action":"query","namespace":namespace,"database":"app","sql":"SELECT text FROM items ORDER BY id"}))["rows"].clone()
+    run(
+        state,
+        "db.query",
+        json!({"namespace":namespace,"database":"app","sql":"SELECT text FROM items ORDER BY id"}),
+    )["rows"]
+        .clone()
 }
 
 #[test]
@@ -62,13 +66,13 @@ fn create_migrate_publish_call_in_one_real_monty_script() {
     let source = "def add(text):\n    return db_execute('app', 'INSERT INTO items(text) VALUES (?) RETURNING id, text', [text])\n";
     let result = run(
         &state,
-        "state_execute",
+        "execute",
         json!({"inputs":{"source":source},"script":r#"
-mcp('state_namespace', {'action': 'create', 'name': 'notes'})
-mcp('state_db', {'action': 'create', 'namespace': 'notes', 'database': 'app'})
-mcp('state_db', {'action': 'migrate', 'namespace': 'notes', 'database': 'app', 'migrations': [{'id': 'initial', 'sql': 'CREATE TABLE items(id INTEGER PRIMARY KEY, text TEXT)'}]})
-mcp('state_fs', {'action': 'write', 'namespace': 'notes', 'path': '/api.py', 'text': inputs['source']})
-mcp('state_function', {'action': 'declare', 'namespace': 'notes', 'name': 'add', 'file': '/api.py', 'symbol': 'add'})
+mcp('namespace.create', { 'name': 'notes'})
+mcp('db.create', { 'namespace': 'notes', 'database': 'app'})
+mcp('db.migrate', { 'namespace': 'notes', 'database': 'app', 'migrations': [{'id': 'initial', 'sql': 'CREATE TABLE items(id INTEGER PRIMARY KEY, text TEXT)'}]})
+mcp('fs.write', { 'namespace': 'notes', 'path': '/api.py', 'text': inputs['source']})
+mcp('function.declare', { 'namespace': 'notes', 'name': 'add', 'file': '/api.py', 'symbol': 'add'})
 call('notes', 'add', {'text': 'bound; DROP TABLE items'})
 "#}),
     );
@@ -79,8 +83,8 @@ call('notes', 'add', {'text': 'bound; DROP TABLE items'})
     assert_eq!(rows(&state, "notes"), json!([["bound; DROP TABLE items"]]));
     let schema = run(
         &state,
-        "state_db",
-        json!({"action":"inspect","namespace":"notes","database":"app"}),
+        "db.inspect",
+        json!({"namespace":"notes","database":"app"}),
     );
     assert_eq!(schema["tables"][0]["name"], "items");
     assert_eq!(schema["migrations"].as_array().unwrap().len(), 1);
@@ -115,15 +119,15 @@ fn code_is_pinned_and_shared_db_bindings_follow_clones_and_renames() {
     assert_eq!(call(&state, "a", "list", json!({})), json!([["original"]]));
     let copied = run(
         &state,
-        "state_namespace",
-        json!({"action":"copy","namespace":"a","name":"b"}),
+        "namespace.copy",
+        json!({"namespace":"a","name":"b"}),
     );
     assert!(copied["revision"].is_string());
     call(&state, "b", "add", json!({"text":"fork"}));
     run(
         &state,
-        "state_namespace",
-        json!({"action":"update","namespace":"b","name":"renamed"}),
+        "namespace.update",
+        json!({"namespace":"b","name":"renamed"}),
     );
     assert_eq!(
         call(&state, "renamed", "list", json!({})),
@@ -132,8 +136,8 @@ fn code_is_pinned_and_shared_db_bindings_follow_clones_and_renames() {
     assert_eq!(call(&state, "a", "list", json!({})), json!([["original"]]));
     run(
         &state,
-        "state_function",
-        json!({"action":"update","namespace":"a","name":"list","file":"/list.py","symbol":"endpoint"}),
+        "function.update",
+        json!({"namespace":"a","name":"list","file":"/list.py","symbol":"endpoint"}),
     );
     assert_eq!(call(&state, "a", "list", json!({})), "edited");
     drop(state);
@@ -157,12 +161,12 @@ fn input_and_output_contracts_are_authoritative_before_publication() {
     );
     for arguments in [json!({"text":3}), json!({"text":"writes then fails"})] {
         let error = state
-            .dispatch(
-                "state_call",
+            .tool(
+                "call",
                 json!({"namespace":"n","function":"bad","arguments":arguments}),
             )
             .unwrap_err();
-        assert_eq!(error.code, "SCHEMA_VALIDATION");
+        assert_eq!(error.code, state_core::ErrorCode::SchemaValidation);
         assert_eq!(rows(&state, "n"), json!([]));
     }
 }
@@ -177,21 +181,19 @@ fn module_initialization_is_effect_free_at_declare_and_every_invoke() {
         "/bad.py",
         "write_text('/evil', 'x')\ndef endpoint():\n    return 1\n",
     );
-    let error=state.dispatch("state_function",json!({"action":"declare","namespace":"n","name":"bad","file":"/bad.py","symbol":"endpoint"})).unwrap_err();
-    assert_eq!(error.code, "PERMISSION_DENIED");
+    let error = state
+        .tool(
+            "function.declare",
+            json!({"namespace":"n","name":"bad","file":"/bad.py","symbol":"endpoint"}),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, state_core::ErrorCode::PermissionDenied);
     assert!(
         state
-            .dispatch(
-                "state_fs",
-                json!({"action":"read","namespace":"n","path":"/evil"})
-            )
+            .tool("fs.read", json!({"namespace":"n","path":"/evil"}))
             .is_err()
     );
-    let result = run(
-        &state,
-        "state_function",
-        json!({"action":"list","namespace":"n"}),
-    );
+    let result = run(&state, "function.list", json!({"namespace":"n"}));
     assert_eq!(result["functions"], json!([]));
 }
 
@@ -218,16 +220,16 @@ fn cross_namespace_nested_failure_rolls_back_every_staged_effect() {
     );
     assert!(
         state
-            .dispatch("state_call", json!({"namespace":"a","function":"outer"}))
+            .tool("call", json!({"namespace":"a","function":"outer"}))
             .is_err()
     );
     assert_eq!(rows(&state, "a"), json!([]));
     assert_eq!(rows(&state, "b"), json!([]));
     let error = state
-        .dispatch(
-            "state_execute",
+        .tool(
+            "execute",
             json!({"script":r#"
-mcp('state_fs', {'action':'write', 'namespace':'a', 'path':'/staged', 'text':'x'})
+mcp('fs.write', { 'namespace':'a', 'path':'/staged', 'text':'x'})
 try:
     call('a', 'outer')
 except:
@@ -236,13 +238,10 @@ except:
 "#}),
         )
         .unwrap_err();
-    assert!(!error.code.is_empty());
+    assert!(!error.message.is_empty());
     assert!(
         state
-            .dispatch(
-                "state_fs",
-                json!({"action":"read","namespace":"a","path":"/staged"})
-            )
+            .tool("fs.read", json!({"namespace":"a","path":"/staged"}))
             .is_err()
     );
 }
@@ -288,7 +287,7 @@ fn namespace_files_allow_all_paths_and_reject_traversal() {
     }
     assert!(
         state
-            .dispatch(
+            .tool(
                 "call",
                 json!({"namespace":"n","function":"files","arguments":{"path":"/allowed/../other"}})
             )
@@ -352,10 +351,10 @@ fn namespace_scope_follows_renames_and_clones_and_blocks_external_ids() {
         assert_eq!(call(&state, ns, "outer", json!({})), 8);
         assert_eq!(
             state
-                .dispatch("call", json!({"namespace":ns,"function":"escape"}))
+                .tool("call", json!({"namespace":ns,"function":"escape"}))
                 .unwrap_err()
                 .code,
-            "PERMISSION_DENIED"
+            state_core::ErrorCode::PermissionDenied
         );
     }
 }
@@ -395,10 +394,10 @@ fn functions_cannot_escape_through_mcp_or_nested_scripts() {
         publish(&state, "a", name, source, json!({}));
         assert_eq!(
             state
-                .dispatch("call", json!({"namespace":"a","function":name}))
+                .tool("call", json!({"namespace":"a","function":name}))
                 .unwrap_err()
                 .code,
-            "PERMISSION_DENIED",
+            state_core::ErrorCode::PermissionDenied,
             "{name}"
         );
     }
@@ -424,18 +423,18 @@ fn schemas_reject_external_references_and_support_local_defs() {
         json!({"$id":"https://example.invalid/"}),
         json!({"type":123}),
     ] {
-        assert_eq!(state.dispatch("state_function",json!({"action":"declare","namespace":"n","name":"test","file":"/api.py","symbol":"endpoint","input_schema":schema})).unwrap_err().code,"INVALID_ARGUMENT");
+        assert_eq!(state.tool("function.declare",json!({"namespace":"n","name":"test","file":"/api.py","symbol":"endpoint","input_schema":schema})).unwrap_err().code,state_core::ErrorCode::InvalidArgument);
     }
     run(
         &state,
-        "state_function",
-        json!({"action":"declare","namespace":"n","name":"test","file":"/api.py","symbol":"endpoint","input_schema":{"type":"object","properties":{"value":{"$ref":"#/$defs/text"}},"$defs":{"text":{"type":"string"}}}}),
+        "function.declare",
+        json!({"namespace":"n","name":"test","file":"/api.py","symbol":"endpoint","input_schema":{"type":"object","properties":{"value":{"$ref":"#/$defs/text"}},"$defs":{"text":{"type":"string"}}}}),
     );
     assert_eq!(call(&state, "n", "test", json!({"value":"good"})), "good");
     assert!(
         state
-            .dispatch(
-                "state_call",
+            .tool(
+                "call",
                 json!({"namespace":"n","function":"test","arguments":{"value":4}})
             )
             .is_err()
@@ -447,47 +446,41 @@ fn strict_tool_and_host_validation_and_discovery_share_the_same_surface() {
     let (_dir, state) = service();
     namespace(&state, "n");
     for (tool, args) in [
+        ("namespace.create", json!({"name":"oops","typo":true})),
+        ("db.delete", json!({"namespace":"n","database":"app"})),
+        ("execute", json!({"source":"42"})),
         (
-            "state_namespace",
-            json!({"action":"create","name":"oops","typo":true}),
-        ),
-        (
-            "state_db",
-            json!({"action":"delete","namespace":"n","database":"app"}),
-        ),
-        ("state_execute", json!({"source":"42"})),
-        (
-            "state_call",
+            "call",
             json!({"namespace":"n","function":"missing","arguments":[]}),
         ),
         (
-            "state_fs",
-            json!({"action":"write","namespace":"n","path":"/bad","text":"x","base64":"eA=="}),
+            "fs.write",
+            json!({"namespace":"n","path":"/bad","text":"x","base64":"eA=="}),
         ),
     ] {
         assert_eq!(
-            state.dispatch(tool, args).unwrap_err().code,
-            "INVALID_ARGUMENT"
+            state.tool(tool, args).unwrap_err().code,
+            state_core::ErrorCode::InvalidArgument
         );
     }
     for script in [
-        "mcp('state_namespace', {'action':'list'}, extra=1)",
-        "mcp('state_namespace', name='state_db')",
-        "mcp('state_namespace', {'action':'list','extra':1})",
+        "mcp('namespace.list', {}, extra=1)",
+        "mcp('namespace.create', name='db.query')",
+        "mcp('namespace.list', {'extra':1})",
         "db_query('app', 'SELECT 1')",
     ] {
         assert_eq!(
             state
-                .dispatch("state_execute", json!({"script":script}))
+                .tool("execute", json!({"script":script}))
                 .unwrap_err()
                 .code,
-            "INVALID_ARGUMENT"
+            state_core::ErrorCode::InvalidArgument
         );
     }
     let result = run(
         &state,
-        "state_execute",
-        json!({"script":"mcp('state_describe')['tools']"}),
+        "execute",
+        json!({"script":"mcp('describe')['tools']"}),
     );
     assert_eq!(result["value"].as_array().unwrap().len(), 30);
     assert_eq!(state_core::tool_definitions().len(), 30);
@@ -510,32 +503,23 @@ fn shared_depth_and_operation_budgets_abort_recursion_and_loops() {
     });
     assert_eq!(
         limited
-            .dispatch(
-                "state_call",
-                json!({"namespace":"n","function":"recursive"})
-            )
+            .tool("call", json!({"namespace":"n","function":"recursive"}))
             .unwrap_err()
             .code,
-        "LIMIT_EXCEEDED"
+        state_core::ErrorCode::LimitExceeded
     );
     assert!(
         state
-            .dispatch(
-                "state_fs",
-                json!({"action":"read","namespace":"n","path":"/staged"})
-            )
+            .tool("fs.read", json!({"namespace":"n","path":"/staged"}))
             .is_err()
     );
     let mut limits = CoreLimits::default();
     limits.runtime.max_calls = 4;
     let limited = state.clone().with_limits(limits);
-    assert_eq!(limited.dispatch("state_execute",json!({"namespace":"n","script":"for i in range(10):\n    write_text('/loop', 'x')\n"})).unwrap_err().code,"LIMIT_EXCEEDED");
+    assert_eq!(limited.tool("execute",json!({"namespace":"n","script":"for i in range(10):\n    write_text('/loop', 'x')\n"})).unwrap_err().code,state_core::ErrorCode::LimitExceeded);
     assert!(
         state
-            .dispatch(
-                "state_fs",
-                json!({"action":"read","namespace":"n","path":"/loop"})
-            )
+            .tool("fs.read", json!({"namespace":"n","path":"/loop"}))
             .is_err()
     );
     let mut limits = CoreLimits::default();
@@ -543,10 +527,10 @@ fn shared_depth_and_operation_budgets_abort_recursion_and_loops() {
     assert_eq!(
         state
             .with_limits(limits)
-            .dispatch("state_execute", json!({"script":"while True:\n    pass"}))
+            .tool("execute", json!({"script":"while True:\n    pass"}))
             .unwrap_err()
             .code,
-        "LIMIT_EXCEEDED"
+        state_core::ErrorCode::LimitExceeded
     );
 }
 
@@ -556,21 +540,38 @@ fn receipt_replays_exact_result_and_scopes_keys_by_trusted_principal() {
     namespace(&state, "n");
     database(&state, "n");
     let args = json!({"namespace":"n","idempotency_key":"k","script":"db_execute('app', \"INSERT INTO items(text) VALUES ('once') RETURNING id\")"});
-    let result = run(&state, "state_execute", args.clone());
-    assert_eq!(run(&state, "state_execute", args.clone()), result);
-    let parsed = state_core::Request::parse("execute", args.clone()).unwrap();
-    assert_eq!(state.dispatch_request(parsed).unwrap(), result);
+    let result = run(&state, "execute", args.clone());
+    assert_eq!(run(&state, "execute", args.clone()), result);
+    let input = serde_json::from_value(args.clone()).unwrap();
+    let identity = state_core::ReceiptIdentity::for_arguments("k", "execute", &args).unwrap();
+    assert_eq!(
+        serde_json::to_value(state.execute_script(input, Some(identity)).unwrap()).unwrap(),
+        result
+    );
     assert_eq!(rows(&state, "n"), json!([["once"]]));
     let mut changed = args.clone();
     changed["script"] = json!("42");
     assert_eq!(
-        state.dispatch("state_execute", changed).unwrap_err().code,
-        "IDEMPOTENCY_MISMATCH"
+        state.tool("execute", changed).unwrap_err().code,
+        state_core::ErrorCode::IdempotencyMismatch
     );
-    let parsed = state_core::Request::parse("execute", args).unwrap();
-    state.dispatch_request_as("other", parsed).unwrap();
+    state
+        .clone()
+        .with_principal("other")
+        .unwrap()
+        .tool("execute", args)
+        .unwrap();
     assert_eq!(rows(&state, "n"), json!([["once"], ["once"]]));
-    assert_eq!(state.dispatch("state_execute",json!({"script":"mcp('state_execute', {'script':'42', 'idempotency_key':'nested'})"})).unwrap_err().code,"INVALID_ARGUMENT");
+    assert_eq!(
+        state
+            .tool(
+                "execute",
+                json!({"script":"mcp('execute', {'script':'42', 'idempotency_key':'nested'})"})
+            )
+            .unwrap_err()
+            .code,
+        state_core::ErrorCode::InvalidArgument
+    );
 }
 
 #[test]
@@ -580,42 +581,35 @@ fn direct_large_files_remain_readable_and_runtime_writes_respect_bridge_limits()
     let text = "x".repeat(2 * 1024 * 1024);
     write(&state, "n", "/large", &text);
     assert_eq!(
-        run(
-            &state,
-            "state_fs",
-            json!({"action":"read","namespace":"n","path":"/large"})
-        )["text"],
+        run(&state, "fs.read", json!({"namespace":"n","path":"/large"}))["text"],
         text
     );
     assert_eq!(
         state
-            .dispatch(
-                "state_execute",
+            .tool(
+                "execute",
                 json!({"namespace":"n","script":"read_text('/large')"})
             )
             .unwrap_err()
             .code,
-        "LIMIT_EXCEEDED"
+        state_core::ErrorCode::LimitExceeded
     );
     let mut limits = CoreLimits::default();
     limits.runtime.max_output_bytes = 1024;
     let limited = state.clone().with_limits(limits);
     assert_eq!(
         limited
-            .dispatch(
-                "state_execute",
+            .tool(
+                "execute",
                 json!({"namespace":"n","script":"write_text('/escaped', '\\x00' * 200)"})
             )
             .unwrap_err()
             .code,
-        "LIMIT_EXCEEDED"
+        state_core::ErrorCode::LimitExceeded
     );
     assert!(
         state
-            .dispatch(
-                "state_fs",
-                json!({"action":"read","namespace":"n","path":"/escaped"})
-            )
+            .tool("fs.read", json!({"namespace":"n","path":"/escaped"}))
             .is_err()
     );
 }
@@ -630,7 +624,7 @@ fn migration_introspection_and_version_checks_are_enforced() {
         "n",
         "migration",
         r#"def endpoint():
-    mcp('state_db', {'action':'migrate', 'namespace':'self', 'database':'app', 'migrations':[{'id':'extend','sql':'CREATE TABLE more(value TEXT)'}]})
+    mcp('db.migrate', { 'namespace':'self', 'database':'app', 'migrations':[{'id':'extend','sql':'CREATE TABLE more(value TEXT)'}]})
     return db_inspect('app')
 "#,
         json!({}),
@@ -639,15 +633,15 @@ fn migration_introspection_and_version_checks_are_enforced() {
     assert_eq!(schema["tables"].as_array().unwrap().len(), 2);
     assert_eq!(schema["migrations"].as_array().unwrap().len(), 1);
     let stale = state
-        .dispatch(
-            "state_call",
+        .tool(
+            "call",
             json!({"namespace":"n","function":"migration","expected_version":"stale"}),
         )
         .unwrap_err();
-    assert_eq!(stale.code, "CONFLICT");
+    assert_eq!(stale.code, state_core::ErrorCode::Conflict);
     run(
         &state,
-        "state_call",
+        "call",
         json!({"namespace":"n","function":"migration","expected_version":declaration["version"]}),
     );
     publish(
@@ -655,7 +649,7 @@ fn migration_introspection_and_version_checks_are_enforced() {
         "n",
         "denied",
         r#"def endpoint():
-    return mcp('state_db', {'action':'migrate', 'namespace':'self', 'database':'app', 'migrations':[]})
+    return mcp('db.migrate', { 'namespace':'self', 'database':'app', 'migrations':[]})
 "#,
         json!({}),
     );
@@ -680,26 +674,26 @@ fn schema_instance_data_and_property_names_are_not_reference_keywords() {
 #[test]
 fn discovery_guide_runs_and_acknowledgments_keep_actionable_tokens() {
     let (_dir, state) = service();
-    let overview = run(&state, "state_describe", json!({}));
+    let overview = run(&state, "describe", json!({}));
     assert_eq!(overview["tools"].as_array().unwrap().len(), 30);
     assert!(overview["tools"][0].get("inputSchema").is_none());
-    let full = run(&state, "state_describe", json!({"mode":"full"}));
+    let full = run(&state, "describe", json!({"mode":"full"}));
     assert!(full["tools"][0]["inputSchema"].is_object());
-    let focused = run(&state, "state_describe", json!({"tool":"db.create"}));
+    let focused = run(&state, "describe", json!({"tool":"db.create"}));
     assert_eq!(focused["tool"]["name"], "db.create");
     for args in [
         json!({"mode":"unknown"}),
         json!({"action":"create"}),
         json!({"tool":"unknown"}),
-        json!({"tool":"state_db","action":"unknown"}),
+        json!({"tool":"db.query","action":"unknown"}),
         json!({"function":"add"}),
     ] {
         assert_eq!(
-            state.dispatch("state_describe", args).unwrap_err().code,
-            "INVALID_ARGUMENT"
+            state.tool("describe", args).unwrap_err().code,
+            state_core::ErrorCode::InvalidArgument
         );
     }
-    let guide = run(&state, "state_describe", json!({"mode":"runtime"}));
+    let guide = run(&state, "describe", json!({"mode":"runtime"}));
     let mut version = Value::Null;
     for step in guide["example"].as_array().unwrap() {
         let tool = step["tool"].as_str().unwrap();
@@ -721,28 +715,24 @@ fn discovery_guide_runs_and_acknowledgments_keep_actionable_tokens() {
     }
     let detail = run(
         &state,
-        "state_function",
-        json!({"action":"get","namespace":"demo","name":"add","expected_version":version}),
+        "function.get",
+        json!({"namespace":"demo","name":"add","expected_version":version}),
     );
     assert!(detail["source"].is_string());
     assert!(detail["source_hash"].is_string());
     assert_eq!(detail["abi_version"], 1);
-    let listing = run(
-        &state,
-        "state_function",
-        json!({"action":"list","namespace":"demo"}),
-    );
+    let listing = run(&state, "function.list", json!({"namespace":"demo"}));
     assert!(listing["functions"][0].get("source").is_none());
     let inspection = run(
         &state,
-        "state_db",
-        json!({"action":"inspect","namespace":"demo","database":"app"}),
+        "db.inspect",
+        json!({"namespace":"demo","database":"app"}),
     );
     assert!(inspection["snapshot"].is_string());
     assert_eq!(inspection["staged"], false);
     let staged = run(
         &state,
-        "state_execute",
+        "execute",
         json!({"namespace":"demo","script":"db_execute('app', \"INSERT INTO notes(text) VALUES ('pending')\")\ndb_inspect('app')"}),
     );
     assert_eq!(staged["value"]["staged"], true);
@@ -760,13 +750,13 @@ fn dotted_tools_imply_actions_and_keep_namespace_scope() {
     );
     assert_eq!(
         state
-            .dispatch(
+            .tool(
                 "db.query",
                 json!({"namespace":"n","database":"app","sql":"SELECT 1","action":"execute"})
             )
             .unwrap_err()
             .code,
-        "INVALID_ARGUMENT"
+        state_core::ErrorCode::InvalidArgument
     );
     let result = run(
         &state,
@@ -793,11 +783,11 @@ fn discovery_includes_bundled_readme_and_public_validation_errors() {
     assert_eq!(readme["format"], "markdown");
     assert_eq!(readme["text"], include_str!("../../../README.md"));
     let error = state
-        .dispatch("db.query", json!({"namespace":"n"}))
+        .tool("db.query", json!({"namespace":"n"}))
         .unwrap_err();
-    assert_eq!(error.code, "INVALID_ARGUMENT");
-    assert!(error.message.starts_with("db.query:"));
-    assert!(!error.message.contains("state_db"));
+    assert_eq!(error.code, state_core::ErrorCode::InvalidArgument);
+    assert!(error.message.contains("database"));
+    assert!(!error.message.contains("db.query"));
     assert!(!error.message.contains("oneOf"));
     namespace(&state, "n");
     let written = run(
@@ -821,7 +811,7 @@ fn rename_invalidates_namespace_revision() {
     );
     assert_eq!(created["id"], renamed["id"]);
     assert_ne!(created["revision"], renamed["revision"]);
-    assert_eq!(state.dispatch("namespace.update", json!({"namespace":created["id"],"name":"stale","expected_revision":created["revision"]})).unwrap_err().code, "CONFLICT");
+    assert_eq!(state.tool("namespace.update", json!({"namespace":created["id"],"name":"stale","expected_revision":created["revision"]})).unwrap_err().code, state_core::ErrorCode::Conflict);
 }
 
 #[test]
@@ -834,8 +824,8 @@ fn obsolete_grant_fields_are_rejected_before_publication() {
             json!({"namespace":"n","name":"invalid","file":"/api.py","symbol":"endpoint"});
         args[field] = json!([]);
         assert_eq!(
-            state.dispatch("function.declare", args).unwrap_err().code,
-            "INVALID_ARGUMENT"
+            state.tool("function.declare", args).unwrap_err().code,
+            state_core::ErrorCode::InvalidArgument
         );
     }
     assert_eq!(
@@ -995,10 +985,10 @@ fn imports_are_lazy_cached_and_isolated_and_failed_imports_can_retry() {
     assert_eq!(call(&state, "n", "api", json!({})), 2);
     assert_eq!(
         state
-            .dispatch("execute", json!({"namespace":"n","script":"import bad"}))
+            .tool("execute", json!({"namespace":"n","script":"import bad"}))
             .unwrap_err()
             .code,
-        "PYTHON_ERROR"
+        state_core::ErrorCode::PythonError
     );
 }
 
@@ -1029,20 +1019,20 @@ fn imported_helpers_use_host_callbacks_and_import_initialization_remains_effect_
     );
     assert_eq!(
         state
-            .dispatch(
+            .tool(
                 "function.declare",
                 json!({"namespace":"n","name":"bad","file":"/bad_api.py","symbol":"endpoint"})
             )
             .unwrap_err()
             .code,
-        "PERMISSION_DENIED"
+        state_core::ErrorCode::PermissionDenied
     );
     assert_eq!(
         state
-            .dispatch("fs.read", json!({"namespace":"n","path":"/effect"}))
+            .tool("fs.read", json!({"namespace":"n","path":"/effect"}))
             .unwrap_err()
             .code,
-        "NOT_FOUND"
+        state_core::ErrorCode::NotFound
     );
     assert_eq!(
         run(
@@ -1118,5 +1108,73 @@ fn module_attributes_and_globals_share_one_namespace_without_leaking_to_the_entr
     assert_eq!(
         call(&state, "n", "api", json!({})),
         json!([100, 7, 7, "helper", "/helper.py"])
+    );
+}
+
+#[test]
+fn namespace_descriptions_persist_copy_and_obey_revision_guards() {
+    let (dir, state) = service();
+    let old = run(&state, "namespace.create", json!({"name":"undescribed"}));
+    assert_eq!(old["description"], Value::Null);
+    let created = run(
+        &state,
+        "namespace.create",
+        json!({"name":"notes", "description":"Shared notes"}),
+    );
+    assert_eq!(created["description"], "Shared notes");
+    let renamed = run(
+        &state,
+        "namespace.update",
+        json!({"namespace":"notes", "name":"memory"}),
+    );
+    assert_eq!(renamed["description"], "Shared notes");
+    let updated = run(
+        &state,
+        "namespace.update",
+        json!({"namespace":"memory", "description":"Shared memory", "expected_revision":renamed["revision"]}),
+    );
+    assert_eq!(updated["name"], "memory");
+    assert_ne!(updated["revision"], renamed["revision"]);
+    assert_eq!(state.tool("namespace.update", json!({"namespace":"memory", "description":null, "expected_revision":renamed["revision"]})).unwrap_err().code, state_core::ErrorCode::Conflict);
+    let copied = run(
+        &state,
+        "namespace.copy",
+        json!({"namespace":"memory", "name":"backup"}),
+    );
+    assert_eq!(copied["description"], "Shared memory");
+    let cleared_copy = run(
+        &state,
+        "namespace.copy",
+        json!({"namespace":"memory", "name":"blank", "description":null}),
+    );
+    assert_eq!(cleared_copy["description"], Value::Null);
+    assert!(state.tool("execute", json!({"script":"mcp('namespace.update', {'namespace':'memory', 'description':'rolled back'})\n1 / 0"})).is_err());
+    drop(state);
+    let state = State::open(dir.path()).unwrap();
+    assert_eq!(
+        run(&state, "namespace.get", json!({"namespace":"memory"}))["description"],
+        "Shared memory"
+    );
+    let listed = run(&state, "namespace.list", json!({}));
+    assert!(
+        listed["namespaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|ns| ns["name"] == "memory" && ns["description"] == "Shared memory")
+    );
+    let cleared = run(
+        &state,
+        "namespace.update",
+        json!({"namespace":"memory", "description":null}),
+    );
+    assert_eq!(cleared["description"], Value::Null);
+    assert!(
+        state
+            .tool(
+                "namespace.update",
+                json!({"namespace":"memory", "description":42})
+            )
+            .is_err()
     );
 }

@@ -27,8 +27,10 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-"$script_dir/build.sh" >&2
-"$script_dir/statemcp" http "$work/data" --bind 127.0.0.1:0 >"$work/server.log" 2>&1 &
+if [[ -z ${STATEMCP_BINARY:-} ]]; then
+    "$script_dir/build.sh" >&2
+fi
+"${STATEMCP_BINARY:-$script_dir/statemcp}" http "$work/data" --bind 127.0.0.1:0 >"$work/server.log" 2>&1 &
 server_pid=$!
 url=''
 for ((attempt=0; attempt<100; attempt++)); do
@@ -62,6 +64,7 @@ request() {
         case "$expected" in
             notification) [[ $status == 202 ]] && passed=true ;;
             success) if [[ $status == 200 ]] && jq -e '.result != null and .error == null and (.result.isError != true)' <<<"$response" >/dev/null; then passed=true; fi ;;
+            invalid-parameters) if [[ $status == 200 ]] && jq -e ' .result.isError == true and (.result.content[0].text | type == "string" and length > 0)' <<<"$response" >/dev/null; then passed=true; fi ;;
             rpc:*) if [[ $status == 200 || $status == 400 ]] && jq -e --arg code "${expected#rpc:}" '.error.code == ($code|tonumber)' <<<"$response" >/dev/null; then passed=true; fi ;;
             *) if [[ $status == 200 ]] && jq -e --arg code "$expected" '.result.isError == true and (.result.content[0].text | fromjson).error.code == $code' <<<"$response" >/dev/null; then passed=true; fi ;;
         esac
@@ -181,15 +184,15 @@ assert_result copy.fork '.rows == [[3]]'
 
 # Representative failures (expected errors count as passing requests).
 tool error.not_found fs.read '{"namespace":"curl-renamed","path":"/missing"}' NOT_FOUND
-tool error.invalid_argument db.query '{"namespace":"curl-renamed"}' INVALID_ARGUMENT
+tool error.invalid_argument db.query '{"namespace":"curl-renamed"}' invalid-parameters
 tool error.revision_conflict namespace.update '{"namespace":"curl-renamed","name":"unused","expected_revision":"stale"}' CONFLICT
 tool error.version_conflict call '{"namespace":"curl-renamed","function":"add","expected_version":"stale","arguments":{"text":"no"}}' CONFLICT
 tool error.schema call '{"namespace":"curl-renamed","function":"add","arguments":{"text":42}}' SCHEMA_VALIDATION
 tool error.idempotency call '{"namespace":"curl-renamed","function":"add","arguments":{"text":"different"},"idempotency_key":"curl-add"}' IDEMPOTENCY_MISMATCH
 rpc error.unknown_tool tools/call '{"name":"unknown","arguments":{}}' rpc:-32602
 
-tool error.removed_databases function.declare '{"namespace":"curl-renamed","name":"invalid","file":"/api.py","symbol":"add","databases":[]}' INVALID_ARGUMENT
-tool error.removed_calls function.declare '{"namespace":"curl-renamed","name":"invalid","file":"/api.py","symbol":"add","calls":[]}' INVALID_ARGUMENT
+tool error.removed_databases function.declare '{"namespace":"curl-renamed","name":"invalid","file":"/api.py","symbol":"add","databases":[]}' invalid-parameters
+tool error.removed_calls function.declare '{"namespace":"curl-renamed","name":"invalid","file":"/api.py","symbol":"add","calls":[]}' invalid-parameters
 
 # Databases can be dropped while functions remain published.
 tool db.drop db.drop '{"namespace":"curl-renamed","database":"app"}'

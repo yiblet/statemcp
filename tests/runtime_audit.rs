@@ -33,7 +33,7 @@ fn embedded_bindings_share_one_budget_including_names_and_escaping() {
             )
             .unwrap_err()
             .code,
-            "LIMIT_EXCEEDED"
+            state_core::ErrorCode::LimitExceeded
         );
     }
 }
@@ -48,7 +48,7 @@ fn escaped_callback_arguments_and_results_cannot_bypass_json_byte_budget() {
     let error = worker()
         .execute("mcp('\\x00' * 30)", Value::Null, &limits, &mut deny)
         .unwrap_err();
-    assert_eq!(error.code, "LIMIT_EXCEEDED");
+    assert_eq!(error.code, state_core::ErrorCode::LimitExceeded);
     let mut calls = 0;
     let error = worker()
         .execute(
@@ -61,7 +61,7 @@ fn escaped_callback_arguments_and_results_cannot_bypass_json_byte_budget() {
             },
         )
         .unwrap_err();
-    assert_eq!(error.code, "LIMIT_EXCEEDED");
+    assert_eq!(error.code, state_core::ErrorCode::LimitExceeded);
     assert_eq!(calls, 1, "invalid host results must not resume Python");
 }
 
@@ -90,9 +90,15 @@ fn worker_denies_files_network_processes_and_sleep_before_later_effects() {
 fn module_default_arguments_cannot_hide_initialization_effects() {
     let source = "def endpoint(value=mcp('effect')):\n    return value";
     let error = worker()
-        .invoke(source, "endpoint", json!({}), &Limits::default(), &mut deny)
+        .invoke(
+            source,
+            "endpoint",
+            json!({}).as_object().unwrap().clone(),
+            &Limits::default(),
+            &mut deny,
+        )
         .unwrap_err();
-    assert_eq!(error.code, "PERMISSION_DENIED");
+    assert_eq!(error.code, state_core::ErrorCode::PermissionDenied);
 }
 
 fn write_frame(input: &mut impl Write, value: &Value) {
@@ -160,7 +166,7 @@ fn source_limits_apply_before_spawning_and_nested_values_before_host_dispatch() 
             &mut deny,
         )
         .unwrap_err();
-    assert_eq!(error.code, "LIMIT_EXCEEDED");
+    assert_eq!(error.code, state_core::ErrorCode::LimitExceeded);
     let limits = Limits {
         max_json_depth: 2,
         ..Limits::default()
@@ -174,7 +180,7 @@ fn source_limits_apply_before_spawning_and_nested_values_before_host_dispatch() 
                 .execute(source, inputs, &limits, &mut deny)
                 .unwrap_err()
                 .code,
-            "LIMIT_EXCEEDED"
+            state_core::ErrorCode::LimitExceeded
         );
     }
 }
@@ -198,5 +204,5 @@ fn imported_sources_are_bounded_before_spawning_the_worker() {
             &mut |_, _, _| unreachable!(),
         )
         .unwrap_err();
-    assert_eq!(error.code, "LIMIT_EXCEEDED");
+    assert_eq!(error.code, state_core::ErrorCode::LimitExceeded);
 }

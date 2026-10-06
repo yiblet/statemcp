@@ -1,3 +1,4 @@
+mod support;
 use serde_json::{Value, json};
 use state_store::Store;
 use std::{
@@ -6,33 +7,30 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+use support::ToolCalls;
 use tempfile::TempDir;
 
 fn run(store: &Store, tool: &str, args: Value) -> Value {
     let mut tx = store.begin().unwrap();
-    let value = tx.dispatch(tool, args).unwrap();
-    tx.commit().unwrap();
+    let value = tx.tool(tool, args).unwrap();
+    tx.commit_result().unwrap();
     value
 }
 fn sql(store: &Store, action: &str, source: &str) -> Value {
     run(
         store,
-        "state_db",
-        json!({"action":action,"namespace":"a","database":"app","sql":source}),
+        &format!("db.{action}"),
+        json!({"namespace":"a","database":"app","sql":source}),
     )
 }
 fn setup() -> (TempDir, Store) {
     let dir = TempDir::new().unwrap();
     let store = Store::open(dir.path()).unwrap();
+    run(&store, "namespace.create", json!({"name":"a"}));
     run(
         &store,
-        "state_namespace",
-        json!({"action":"create","name":"a"}),
-    );
-    run(
-        &store,
-        "state_db",
-        json!({"action":"create","namespace":"a","database":"app"}),
+        "db.create",
+        json!({"namespace":"a","database":"app"}),
     );
     sql(&store, "execute", "CREATE TABLE n(x)");
     sql(&store, "execute", "INSERT INTO n VALUES(1)");
@@ -44,49 +42,43 @@ fn maintenance_prunes_history_orphans_and_receipts_preserving_forks_and_pins() {
     let (dir, store) = setup();
     run(
         &store,
-        "state_fs",
-        json!({"action":"write","namespace":"a","path":"/api.py","text":"def f(): return 1"}),
+        "fs.write",
+        json!({"namespace":"a","path":"/api.py","text":"def f(): return 1"}),
     );
     run(
         &store,
-        "state_function",
-        json!({"action":"declare","namespace":"a","name":"f","file":"/api.py","symbol":"f"}),
+        "function.declare",
+        json!({"namespace":"a","name":"f","file":"/api.py","symbol":"f"}),
     );
     run(
         &store,
-        "state_fs",
-        json!({"action":"write","namespace":"a","path":"/api.py","text":"def f(): return 2"}),
+        "fs.write",
+        json!({"namespace":"a","path":"/api.py","text":"def f(): return 2"}),
     );
     run(
         &store,
-        "state_namespace",
-        json!({"action":"copy","namespace":"a","name":"b"}),
+        "namespace.copy",
+        json!({"namespace":"a","name":"b"}),
     );
     sql(&store, "execute", "UPDATE n SET x=2");
+    run(&store, "namespace.delete", json!({"namespace":"a"}));
+    run(&store, "namespace.create", json!({"name":"deleted"}));
     run(
         &store,
-        "state_namespace",
-        json!({"action":"delete","namespace":"a"}),
+        "fs.write",
+        json!({"namespace":"deleted","path":"/orphan","text":"unreferenced payload"}),
     );
-    run(
-        &store,
-        "state_namespace",
-        json!({"action":"create","name":"deleted"}),
-    );
-    run(
-        &store,
-        "state_fs",
-        json!({"action":"write","namespace":"deleted","path":"/orphan","text":"unreferenced payload"}),
-    );
-    run(
-        &store,
-        "state_namespace",
-        json!({"action":"delete","namespace":"deleted"}),
-    );
+    run(&store, "namespace.delete", json!({"namespace":"deleted"}));
     for key in ["first", "second", "third"] {
         let mut tx = store.begin().unwrap();
-        tx.set_receipt("owner", key, key, json!(key)).unwrap();
-        tx.commit().unwrap();
+        tx.set_receipt(
+            "owner",
+            key,
+            key,
+            state_store::records::ReceiptResult::Function(json!(key)),
+        )
+        .unwrap();
+        tx.commit_result().unwrap();
     }
     // Orphans and abandoned staging are reclaimed even after restart.
     let orphan = dir
@@ -115,17 +107,13 @@ fn maintenance_prunes_history_orphans_and_receipts_preserving_forks_and_pins() {
     assert_eq!(
         run(
             &store,
-            "state_db",
-            json!({"action":"query","namespace":"b","database":"app","sql":"SELECT x FROM n"})
+            "db.query",
+            json!({"namespace":"b","database":"app","sql":"SELECT x FROM n"})
         )["rows"],
         json!([[1]])
     );
     assert_eq!(
-        run(
-            &store,
-            "state_function",
-            json!({"action":"get","namespace":"b","name":"f"})
-        )["source"],
+        run(&store, "function.get", json!({"namespace":"b","name":"f"}))["source"],
         "def f(): return 1"
     );
     assert_eq!(
@@ -134,10 +122,10 @@ fn maintenance_prunes_history_orphans_and_receipts_preserving_forks_and_pins() {
     );
     let mut tx = store.begin().unwrap();
     assert_eq!(
-        tx.dispatch("state_namespace", json!({"action":"create","name":"a"}))
+        tx.tool("namespace.create", json!({"name":"a"}))
             .unwrap_err()
             .code,
-        "ALREADY_EXISTS"
+        state_store::ErrorCode::AlreadyExists
     );
     drop(tx);
     assert_eq!(store.maintenance(2).unwrap().snapshots_removed, 0);
@@ -149,9 +137,15 @@ fn active_invocations_block_maintenance_and_exclusive_lock_blocks_begin() {
     let first = store.begin().unwrap();
     let independent = Store::open(dir.path()).unwrap();
     let second = independent.begin().unwrap();
-    assert_eq!(independent.maintenance(0).unwrap_err().code, "CONFLICT");
+    assert_eq!(
+        independent.maintenance(0).unwrap_err().code,
+        state_store::ErrorCode::Conflict
+    );
     drop(first);
-    assert_eq!(store.maintenance(0).unwrap_err().code, "CONFLICT");
+    assert_eq!(
+        store.maintenance(0).unwrap_err().code,
+        state_store::ErrorCode::Conflict
+    );
     drop(second);
     let lock = fs::File::options()
         .read(true)
@@ -159,8 +153,14 @@ fn active_invocations_block_maintenance_and_exclusive_lock_blocks_begin() {
         .open(dir.path().join("maintenance.lock"))
         .unwrap();
     lock.try_lock().unwrap();
-    assert_eq!(store.begin().err().unwrap().code, "CONFLICT");
-    assert_eq!(Store::open(dir.path()).err().unwrap().code, "CONFLICT");
+    assert_eq!(
+        store.begin().err().unwrap().code,
+        state_store::ErrorCode::Conflict
+    );
+    assert_eq!(
+        Store::open(dir.path()).err().unwrap().code,
+        state_store::ErrorCode::Conflict
+    );
     // Parallel process tests can briefly inherit this descriptor between fork
     // and exec. Unlock the shared file description before asserting availability.
     lock.unlock().unwrap();
@@ -180,9 +180,9 @@ fn reader_process_helper() {
     std::io::stdin().read_exact(&mut signal).unwrap();
     if signal[0] == b'q' {
         let value = tx
-            .dispatch(
-                "state_db",
-                json!({"action":"query","namespace":"a","database":"app","sql":"SELECT x FROM n"}),
+            .tool(
+                "db.query",
+                json!({"namespace":"a","database":"app","sql":"SELECT x FROM n"}),
             )
             .unwrap();
         assert_eq!(value["rows"], json!([[1]]));
@@ -206,7 +206,10 @@ fn cross_process_reader_keeps_old_snapshot_until_process_exits() {
         std::thread::sleep(Duration::from_millis(5));
     }
     sql(&store, "execute", "UPDATE n SET x=2");
-    assert_eq!(store.maintenance(0).unwrap_err().code, "CONFLICT");
+    assert_eq!(
+        store.maintenance(0).unwrap_err().code,
+        state_store::ErrorCode::Conflict
+    );
     child.stdin.take().unwrap().write_all(b"q").unwrap();
     assert_eq!(child.wait().unwrap().code(), Some(73));
     let report = store.maintenance(0).unwrap();

@@ -56,13 +56,19 @@ fn module_initialization_cannot_mutate_even_when_python_catches_error() {
         validate_module(source, "run", &Limits::default())
             .unwrap_err()
             .code,
-        "PERMISSION_DENIED"
+        state_runtime::ErrorCode::PermissionDenied
     );
     assert_eq!(
-        invoke(source, "run", json!({}), &Limits::default(), &mut no_host)
-            .unwrap_err()
-            .code,
-        "PERMISSION_DENIED"
+        invoke(
+            source,
+            "run",
+            json!({}).as_object().unwrap().clone(),
+            &Limits::default(),
+            &mut no_host
+        )
+        .unwrap_err()
+        .code,
+        state_runtime::ErrorCode::PermissionDenied
     );
 }
 
@@ -75,7 +81,10 @@ fn invoked_function_has_callbacks_and_bound_keyword_arguments() {
     let result = invoke(
         source,
         "run",
-        json!({"title":attack,"value":21}),
+        json!({"title":attack,"value":21})
+            .as_object()
+            .unwrap()
+            .clone(),
         &Limits::default(),
         &mut |name, args, _| {
             assert_eq!(name, "db_query");
@@ -99,11 +108,14 @@ fn host_errors_cannot_be_caught_and_followed_by_effects() {
         &Limits::default(),
         &mut |_, _, _| {
             calls += 1;
-            Err(RuntimeError::new("SQL_ERROR", "failed"))
+            Err(RuntimeError::new(
+                state_runtime::ErrorCode::SqlError,
+                "failed",
+            ))
         },
     )
     .unwrap_err();
-    assert_eq!(error.code, "SQL_ERROR");
+    assert_eq!(error.code, state_runtime::ErrorCode::SqlError);
     assert_eq!(calls, 1);
 }
 
@@ -124,7 +136,7 @@ fn host_call_budget_is_enforced_before_dispatch() {
         },
     )
     .unwrap_err();
-    assert_eq!(error.code, "LIMIT_EXCEEDED");
+    assert_eq!(error.code, state_runtime::ErrorCode::LimitExceeded);
     assert_eq!(calls, 2);
 }
 
@@ -135,7 +147,11 @@ fn timeout_then_fresh_execution_succeeds() {
         ..Limits::default()
     };
     let error = execute("while True:\n    pass", Value::Null, &limits, &mut no_host).unwrap_err();
-    assert_eq!(error.code, "LIMIT_EXCEEDED", "{error}");
+    assert_eq!(
+        error.code,
+        state_runtime::ErrorCode::LimitExceeded,
+        "{error}"
+    );
     assert_eq!(
         execute("6 * 7", Value::Null, &Limits::default(), &mut no_host)
             .unwrap()
@@ -153,7 +169,11 @@ fn recursion_and_large_allocation_are_bounded() {
     };
     for code in ["def f():\n    return f()\nf()", "'x' * 10000000"] {
         let error = execute(code, Value::Null, &limits, &mut no_host).unwrap_err();
-        assert_eq!(error.code, "LIMIT_EXCEEDED", "{error}");
+        assert_eq!(
+            error.code,
+            state_runtime::ErrorCode::LimitExceeded,
+            "{error}"
+        );
     }
 }
 
@@ -167,7 +187,7 @@ fn unarmed_aggregate_memory_limit_is_explicitly_rejected() {
         execute("1", Value::Null, &limits, &mut no_host)
             .unwrap_err()
             .code,
-        "UNSUPPORTED_FEATURE"
+        state_runtime::ErrorCode::UnsupportedFeature
     );
 }
 
@@ -180,7 +200,7 @@ fn host_filesystem_access_is_denied() {
         &mut no_host,
     )
     .unwrap_err();
-    assert_eq!(error.code, "PERMISSION_DENIED");
+    assert_eq!(error.code, state_runtime::ErrorCode::PermissionDenied);
 }
 
 #[test]
@@ -210,13 +230,13 @@ fn output_and_input_depth_are_bounded() {
         execute("print('x' * 31)", Value::Null, &limits, &mut no_host)
             .unwrap_err()
             .code,
-        "LIMIT_EXCEEDED"
+        state_runtime::ErrorCode::LimitExceeded
     );
     assert_eq!(
         execute("inputs", json!([[[[[]]]]]), &limits, &mut no_host)
             .unwrap_err()
             .code,
-        "LIMIT_EXCEEDED"
+        state_runtime::ErrorCode::LimitExceeded
     );
 }
 
@@ -227,7 +247,7 @@ fn endpoint_symbol_injection_and_missing_symbol_are_rejected() {
             validate_module("def run():\n    return 1", symbol, &Limits::default())
                 .unwrap_err()
                 .code,
-            "INVALID_ARGUMENT"
+            state_runtime::ErrorCode::InvalidArgument
         );
     }
 }
@@ -239,7 +259,7 @@ fn globals_do_not_persist_across_executions() {
         execute("secret", Value::Null, &Limits::default(), &mut no_host)
             .unwrap_err()
             .code,
-        "PYTHON_ERROR"
+        state_runtime::ErrorCode::PythonError
     );
 }
 
@@ -256,5 +276,5 @@ fn caught_print_overflow_still_aborts_execution() {
         &mut no_host,
     )
     .unwrap_err();
-    assert_eq!(error.code, "LIMIT_EXCEEDED");
+    assert_eq!(error.code, state_runtime::ErrorCode::LimitExceeded);
 }

@@ -5,17 +5,17 @@ for application databases. It does not execute Python or validate endpoint schem
 the core must validate declarations before handing them to storage.
 
 ```rust,no_run
-use serde_json::json;
-use state_store::Store;
+use state_store::{Store, DescriptionChange, inputs::*};
 let store = Store::open("./state")?;
 let mut tx = store.begin()?;
-tx.dispatch("state_namespace", json!({"action":"create", "name":"notes"}))?;
-tx.dispatch("state_db", json!({"action":"create", "namespace":"notes", "database":"app"}))?;
-tx.dispatch("state_db", json!({
-    "action":"execute", "namespace":"notes", "database":"app",
-    "sql":"CREATE TABLE notes(id INTEGER PRIMARY KEY, text TEXT)"
-}))?;
-tx.commit()?;
+tx.create_namespace(&NamespaceCreateInput { name: "notes".into(), description: DescriptionChange::Unchanged })?;
+tx.create_database(&DbCreateInput { namespace: "notes".into(), database: "app".into(), expected_revision: None })?;
+tx.execute_database(&DbExecuteInput {
+    namespace: "notes".into(), database: "app".into(),
+    sql: "CREATE TABLE notes(id INTEGER PRIMARY KEY, text TEXT)".into(),
+    params: None, expected_revision: None,
+})?;
+let commit = tx.commit()?;
 # Ok::<(), state_store::Error>(())
 ```
 
@@ -23,17 +23,17 @@ tx.commit()?;
 
 - `Store::open(path) -> Result<Store>` creates or opens catalog format 1.
 - `Store::begin() -> Result<Transaction>` captures a consistent namespace view.
-- `Transaction::dispatch(tool, args) -> Result<Value>` handles storage operations.
-- `Transaction::commit() -> Result<Value>` publishes every staged change together.
+- Named `Transaction` methods accept specific input structs and return typed records.
+- `Transaction::commit() -> Result<CommitOutcome>` publishes every staged change together.
 - `Transaction::set_receipt(principal, key, request_hash, result)` stages a receipt.
 - `Store::receipt(principal, key) -> Result<Option<Receipt>>` retrieves one.
 - `Store::maintenance(retain_receipts) -> Result<MaintenanceReport>` explicitly
   prunes history and orphan payloads and retains the newest N receipts globally.
-- Errors expose public `code` and `message` fields. Any dispatch error poisons the
+- Errors expose public `code` and `message` fields. Any operation error poisons the
   invocation: catching it cannot allow partial publication. Drop rolls back.
 
-`commit` returns `{generation,revisions:{namespace_id:revision_id},changed}`.
-An identical concurrent receipt returns `{replayed:true,result}` and publishes
+`commit` returns `CommitOutcome::Published(CommitMetadata)` with generation, revisions, and changed fields.
+An identical concurrent receipt returns `CommitOutcome::Replayed(ReceiptResult)` and publishes
 none of the duplicate attempt's changes. Different request hashes produce
 `IDEMPOTENCY_MISMATCH`. Receipt lookup authorization belongs to the caller.
 
@@ -45,10 +45,10 @@ Namespace names remain reserved after deletion.
 
 | Tool | Actions and arguments |
 | --- | --- |
-| `state_namespace` | `create {name}`, `list`, `get {namespace}`, `update {namespace,name}`, `copy {namespace,name}`, `delete {namespace}` |
-| `state_fs` | `read`, `stat`, `write`, `append`, `list`, `delete`, `move`, `copy`; `path` is an absolute virtual POSIX path; writes take exactly one of `text` or `base64`; moves/copies take `destination`; directory deletion requires `recursive:true` |
-| `state_db` | `create`, `list`, `drop`, `query`, `execute`, `inspect`, `migrate`, `migrations`; database operations take `database`; SQL takes `sql` and optional array `params`; migrations take `migrations:[{id,sql}]` |
-| `state_function` | `declare`/`update`, `get`, `list`, `remove`; each endpoint has `name`; declaration includes `file`, `symbol`, schemas; optional `expected_version` |
+| `namespace.*` | `create {name}`, `list`, `get {namespace}`, `update {namespace,name}`, `copy {namespace,name}`, `delete {namespace}` |
+| `fs.*` | `read`, `stat`, `write`, `append`, `list`, `delete`, `move`, `copy`; `path` is an absolute virtual POSIX path; writes take exactly one of `text` or `base64`; moves/copies take `destination`; directory deletion requires `recursive:true` |
+| `db.*` | `create`, `list`, `drop`, `query`, `execute`, `inspect`, `migrate`, `migrations`; database operations take `database`; SQL takes `sql` and optional array `params`; migrations take `migrations:[{id,sql}]` |
+| `function.*` | `declare`/`update`, `get`, `list`, `remove`; each endpoint has `name`; declaration includes `file`, `symbol`, schemas; optional `expected_version` |
 
 Namespace/file/database/function lists are wrapped in `namespaces`, `entries`,
 `databases`, or `functions` respectively. Function get/declare returns metadata
@@ -167,3 +167,8 @@ for a committed fork and one for a first write. Run it explicitly with
 `cargo test -p state-store --test copy_benchmark -- --ignored --nocapture`.
 Measurements depend on filesystem caches and hardware; the test is not a latency
 or physical-I/O guarantee.
+
+SQL parameters and result cells use `SqlCell`, including typed `$base64` and
+`$integer` representations. Receipt results are tagged as function values or
+script results. Errors carry an `ErrorCode` enum and a human-readable message.
+These alpha interfaces do not accept grouped action envelopes or old aliases.

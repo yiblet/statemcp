@@ -40,6 +40,6 @@ fn allocator_child() {
         &mut |_, _, _| panic!("unexpected host call"),
     )
     .unwrap_err();
-    assert_eq!(error.code, "LIMIT_EXCEEDED");
+    assert_eq!(error.code, state_runtime::ErrorCode::LimitExceeded);
     println!("LIMIT_EXCEEDED");
 }

@@ -2,7 +2,13 @@ mod common;
 use common::{Directory, connect, request, tool, value};
 use rmcp::{ServiceExt, transport::TokioChildProcess};
 use serde_json::{Value, json};
-use statemcp::{State, tool_definitions};
+use statemcp::State;
+fn tool_definitions() -> Vec<Value> {
+    statemcp::tool_definitions()
+        .into_iter()
+        .map(|tool| serde_json::to_value(tool).unwrap())
+        .collect()
+}
 use std::process::Command;
 
 #[tokio::test]
@@ -44,7 +50,21 @@ async fn official_sdk_client_discovers_and_calls_tools() {
 async fn wire_results_preserve_json_values_and_application_errors() {
     let directory = Directory::new();
     let client = connect(State::open(&directory.0).unwrap()).await;
-    tool(&client, "namespace.create", json!({"name":"values"})).await;
+    let created = tool(
+        &client,
+        "namespace.create",
+        json!({"name":"values", "description":"Protocol values"}),
+    )
+    .await;
+    assert_eq!(created["description"], "Protocol values");
+    let updated = tool(
+        &client,
+        "namespace.update",
+        json!({"namespace":"values", "description":null}),
+    )
+    .await;
+    assert_eq!(updated["description"], Value::Null);
+
     tool(
         &client,
         "fs.write",
@@ -92,7 +112,7 @@ async fn wire_results_preserve_json_values_and_application_errors() {
         .await
         .unwrap();
     assert_eq!(invalid.is_error, Some(true));
-    assert_eq!(value(&invalid)["error"]["code"], "INVALID_ARGUMENT");
+    assert!(invalid.content.iter().any(|block| matches!(block, rmcp::model::ContentBlock::Text(text) if text.text.contains("unexpected"))));
     assert!(
         client
             .call_tool(request("unknown", json!({})))
@@ -153,15 +173,23 @@ fn schemas_advertise_exact_fixed_surface_and_required_properties() {
     for tool in &definitions {
         let schema = &tool["inputSchema"];
         assert_eq!(schema["type"], "object");
-        let variants = if schema.get("properties").is_some() {
+        let variants = if schema.get("anyOf").is_none() {
             vec![schema]
         } else {
-            schema["oneOf"].as_array().unwrap().iter().collect()
+            schema["anyOf"].as_array().unwrap().iter().collect()
         };
         for variant in variants {
+            let variant = if let Some(reference) = variant["$ref"].as_str() {
+                &schema["$defs"][reference.strip_prefix("#/$defs/").unwrap()]
+            } else {
+                variant
+            };
+            assert_eq!(variant["additionalProperties"], false);
             assert!(variant["properties"].get("action").is_none());
-            for key in variant["required"].as_array().unwrap() {
-                assert!(variant["properties"].get(key.as_str().unwrap()).is_some());
+            if let Some(required) = variant["required"].as_array() {
+                for key in required {
+                    assert!(variant["properties"].get(key.as_str().unwrap()).is_some());
+                }
             }
         }
     }
@@ -188,6 +216,7 @@ fn binary_cli_help_version_and_argument_errors() {
         vec!["stdio", "/unused", "--auth-bearer", "x"],
         vec!["http", "/unused", "--auth-key", "x"],
         vec!["http", "/unused", "--auth-bearer", ""],
+        vec!["http", "/unused", "--http-prefix", "/bad//prefix"],
         vec!["--worker"],
         vec!["--worker", "invalid", "1024"],
         vec!["--worker", "1024", "-1"],
@@ -198,4 +227,41 @@ fn binary_cli_help_version_and_argument_errors() {
         assert!(output.stdout.is_empty());
         assert!(!output.stderr.is_empty());
     }
+}
+
+#[test]
+fn sdk_macros_and_core_validate_the_same_tool_contracts() {
+    let sdk = tool_definitions();
+    let core: Vec<Value> = state_core::tool_definitions()
+        .into_iter()
+        .map(|tool| serde_json::to_value(tool).unwrap())
+        .collect();
+    for actual in sdk {
+        let expected = core
+            .iter()
+            .find(|tool| tool["name"] == actual["name"])
+            .unwrap();
+        assert_eq!(actual["inputSchema"], expected["inputSchema"]);
+        assert_eq!(actual["description"], expected["description"]);
+    }
+}
+
+#[tokio::test]
+async fn sdk_routing_preserves_original_idempotency_inputs() {
+    let directory = Directory::new();
+    let client = connect(State::open(&directory.0).unwrap()).await;
+    let args = json!({"script":"inputs", "idempotency_key":"original-wire-input"});
+    assert_eq!(
+        tool(&client, "execute", args.clone()).await,
+        tool(&client, "execute", args).await
+    );
+    let changed = client
+        .call_tool(request(
+            "execute",
+            json!({"script":"inputs", "inputs":null, "idempotency_key":"original-wire-input"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(value(&changed)["error"]["code"], "IDEMPOTENCY_MISMATCH");
+    client.cancel().await.unwrap();
 }

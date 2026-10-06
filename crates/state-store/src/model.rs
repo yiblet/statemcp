@@ -1,16 +1,17 @@
 //! Persisted manifests and the mutable namespace view of a root invocation.
 use crate::FunctionDeclaration;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Receipt {
     pub request_hash: String,
-    pub result: Value,
+    pub result: crate::records::ReceiptResult,
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Manifest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) description: Option<String>,
     #[serde(default)]
     pub(crate) files: BTreeMap<String, String>,
     #[serde(default)]
@@ -25,11 +26,7 @@ pub(crate) struct Database {
     #[serde(default)]
     pub(crate) migrations: Vec<Migration>,
 }
-#[derive(Clone, Serialize, Deserialize)]
-pub(crate) struct Migration {
-    pub(crate) id: String,
-    pub(crate) checksum: String,
-}
+pub(crate) use crate::records::Migration;
 #[derive(Clone)]
 pub(crate) struct Namespace {
     pub(crate) id: String,

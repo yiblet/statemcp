@@ -7,6 +7,7 @@ description = "Embedded Monty execution and JSON host boundary for statemcp"
 license = "MIT"
 
 [dependencies]
+state-contract = { path = "../state-contract" }
 monty = "=1.0.0"
 monty-types = "=1.0.0"
 monty-alloc = { version = "=1.0.0", features = ["exit-code"] }

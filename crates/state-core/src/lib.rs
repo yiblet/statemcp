@@ -1,14 +1,19 @@
 //! One transactional service behind all fixed MCP tools and Monty host callbacks.
-mod dispatch;
+pub use state_contract::ErrorCode;
+mod api;
+mod discovery;
+mod execution;
+pub use discovery::Discovery;
 mod hosts;
+pub use state_store::{inputs, records};
+mod host_tools;
+mod receipt;
+pub use receipt::ReceiptIdentity;
 mod policy;
-mod presentation;
-mod request;
 mod runtime;
 mod schemas;
 mod selectors;
 
-pub use request::Request;
 pub use runtime::{EmbeddedBackend, RuntimeBackend};
 pub use schemas::tool_definitions;
 pub use state_runtime::{Limits, WorkerConfig};
@@ -17,32 +22,31 @@ pub use state_store::{
 };
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 use std::{fmt, path::Path, sync::Arc, time::Instant};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Error {
-    pub code: String,
+    pub code: ErrorCode,
     pub message: String,
 }
 impl Error {
-    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
-            code: code.into(),
+            code,
             message: message.into(),
         }
     }
     pub(crate) fn invalid(message: impl Into<String>) -> Self {
-        Self::new("INVALID_ARGUMENT", message)
+        Self::new(crate::ErrorCode::InvalidArgument, message)
     }
     pub(crate) fn limit(message: impl Into<String>) -> Self {
-        Self::new("LIMIT_EXCEEDED", message)
+        Self::new(crate::ErrorCode::LimitExceeded, message)
     }
     pub(crate) fn denied() -> Self {
         Self::new(
-            "PERMISSION_DENIED",
+            crate::ErrorCode::PermissionDenied,
             "operation is outside the function namespace",
         )
     }
@@ -92,6 +96,7 @@ pub struct State {
     store: Store,
     backend: Arc<dyn RuntimeBackend>,
     limits: CoreLimits,
+    principal: String,
 }
 impl State {
     /// Open an embedded service; does not launch another executable.
@@ -106,7 +111,16 @@ impl State {
             store,
             backend,
             limits: CoreLimits::default(),
+            principal: "owner".into(),
         }
+    }
+    pub fn with_principal(mut self, principal: impl Into<String>) -> Result<Self> {
+        let principal = principal.into();
+        if principal.is_empty() || principal.len() > 256 {
+            return Err(Error::invalid("principal must contain 1..256 bytes"));
+        }
+        self.principal = principal;
+        Ok(self)
     }
     pub fn with_limits(mut self, limits: CoreLimits) -> Self {
         self.limits = limits;
@@ -115,107 +129,14 @@ impl State {
     pub fn store(&self) -> &Store {
         &self.store
     }
-    pub fn dispatch(&self, tool: &str, args: Value) -> Result<Value> {
-        self.dispatch_as("owner", tool, args)
-    }
-    /// `principal` is a trusted embedding identity for receipt scoping, not authentication.
-    /// Every root call has local owner authority; function bodies are restricted to their own namespace.
-    pub fn dispatch_as(&self, principal: &str, tool: &str, args: Value) -> Result<Value> {
-        if principal.is_empty() || principal.len() > 256 {
-            return Err(Error::invalid("principal must contain 1..256 bytes"));
-        }
-        self.dispatch_request_as(principal, Request::parse(tool, args)?)
-    }
-    /// Execute an already parsed request without serializing or parsing it again.
-    pub fn dispatch_request(&self, request: Request) -> Result<Value> {
-        self.dispatch_request_as("owner", request)
-    }
-    /// Scope an already parsed request's receipts to a trusted embedding identity.
-    pub fn dispatch_request_as(&self, principal: &str, request: Request) -> Result<Value> {
-        if principal.is_empty() || principal.len() > 256 {
-            return Err(Error::invalid("principal must contain 1..256 bytes"));
-        }
-        let operation = request.operation();
-        let args = request.arguments();
-        let key = args.idempotency_key();
-        let hash = request.receipt_hash();
-        if let Some(key) = key {
-            if key.is_empty() || key.len() > 256 {
-                return Err(Error::invalid("idempotency_key must contain 1..256 bytes"));
-            }
-            if let Some(receipt) = self.store.receipt(principal, key)? {
-                return if Some(receipt.request_hash.as_str()) == hash {
-                    Ok(receipt.result)
-                } else {
-                    Err(Error::new(
-                        "IDEMPOTENCY_MISMATCH",
-                        "key was already used for a different request",
-                    ))
-                };
-            }
-        }
-        let mut root = dispatch::Root::new(
-            self.store.begin()?,
-            self.backend.clone(),
-            self.limits.clone(),
-        );
-        let mut result = root.dispatch_request(request.clone(), &policy::Access::Owner, true)?;
-        root.check()?;
-        bounded(&result, self.limits.max_result_bytes)?;
-        if let Some(error) = root.failure {
-            return Err(error);
-        }
-        if let Some(key) = key {
-            root.tx.set_receipt(
-                principal,
-                key,
-                hash.expect("receipted request"),
-                result.clone(),
-            )?;
-        }
-        let mutation_namespace = if operation.mutates_resource() {
-            Some(
-                root.tx
-                    .namespace_identity(args.namespace().expect("parsed namespace"))?
-                    .to_owned(),
-            )
-        } else {
-            None
-        };
-        let committed = root.tx.commit()?;
-        if committed["replayed"] == true {
-            return Ok(committed["result"].clone());
-        }
-        // Storage mutations return staged revisions. Only advertise the actual committed head.
-        if operation.publishes_namespace()
-            && let Some(id) = result["id"].as_str().map(str::to_owned)
-        {
-            result["revision"] = committed["revisions"][id].clone();
-        }
-        if let Some(id) = mutation_namespace
-            && let Some(revision) = committed["revisions"].get(&id)
-        {
-            result["revision"] = revision.clone();
-        }
-        Ok(result)
-    }
 }
 
-fn canonical(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let ordered: std::collections::BTreeMap<_, _> =
-                map.iter().map(|(k, v)| (k.clone(), canonical(v))).collect();
-            json!(ordered)
-        }
-        Value::Array(values) => Value::Array(values.iter().map(canonical).collect()),
-        other => other.clone(),
-    }
-}
-
-pub(crate) fn bounded(value: &Value, max: usize) -> Result<()> {
-    // serde_json::Value serialization cannot fail for values constructed by the service.
-    if value.to_string().len() > max {
+pub(crate) fn bounded(value: &impl Serialize, max: usize) -> Result<()> {
+    if serde_json::to_vec(value)
+        .map_err(|e| Error::invalid(e.to_string()))?
+        .len()
+        > max
+    {
         return Err(Error::limit("JSON value exceeds output byte limit"));
     }
     Ok(())

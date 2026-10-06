@@ -1,3 +1,5 @@
+mod support;
+use support::ToolCalls;
 mod common;
 use serde_json::{Value, json};
 fn tool_value(result: &Value) -> Value {
@@ -38,16 +40,16 @@ async fn embedded_service_dispatches_through_mcp_and_rolls_back_failed_scripts()
     assert_eq!(response.is_error, Some(true));
     assert!(
         state
-            .dispatch("fs.read", json!({"namespace":"app","path":"/failed.txt"}))
+            .tool("fs.read", json!({"namespace":"app","path":"/failed.txt"}))
             .is_err()
     );
-    let result = state.dispatch("execute", json!({"namespace":"app","script":"write_text('/ok.txt', 'saved')\nread_text('/ok.txt')"})).unwrap();
+    let result = state.tool("execute", json!({"namespace":"app","script":"write_text('/ok.txt', 'saved')\nread_text('/ok.txt')"})).unwrap();
     assert_eq!(result["value"], "saved");
     client.cancel().await.unwrap();
     drop(state);
     let reopened = State::open(&path).unwrap();
     let file: Value = reopened
-        .dispatch("fs.read", json!({"namespace":"app","path":"/ok.txt"}))
+        .tool("fs.read", json!({"namespace":"app","path":"/ok.txt"}))
         .unwrap();
     assert_eq!(file["text"], "saved");
     drop(reopened);
@@ -80,7 +82,7 @@ fn executable_runs_real_worker_callbacks_and_explicit_maintenance() {
     let requests = [
         json!({"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
         json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
-        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"execute","arguments":{"script":"mcp('state_namespace', {'action': 'create', 'name': 'cli'})\nmcp('state_fs', {'action': 'write', 'namespace': 'cli', 'path': '/value.txt', 'text': 'persisted'})\n42"}}}),
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"execute","arguments":{"script":"mcp('namespace.create', { 'name': 'cli'})\nmcp('fs.write', { 'namespace': 'cli', 'path': '/value.txt', 'text': 'persisted'})\n42"}}}),
     ];
     let mut input = child.stdin.take().unwrap();
     for request in requests {
@@ -107,7 +109,7 @@ fn executable_runs_real_worker_callbacks_and_explicit_maintenance() {
     let state = State::open(&path).unwrap();
     assert_eq!(
         state
-            .dispatch("fs.read", json!({"namespace":"cli","path":"/value.txt"}))
+            .tool("fs.read", json!({"namespace":"cli","path":"/value.txt"}))
             .unwrap()["text"],
         "persisted"
     );

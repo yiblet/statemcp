@@ -1,11 +1,12 @@
 //! Immutable namespace metadata and isolated, file-backed SQLite snapshots.
+pub use state_contract::ErrorCode;
 mod declarations;
+mod description;
 mod durability;
 mod error;
 mod identity;
 mod model;
 mod operations;
-mod requests;
 mod sql;
 mod store;
 mod transaction;
@@ -21,9 +22,13 @@ pub use transaction::Transaction;
 
 pub use validation::{PathComponent, VirtualPath};
 
-pub use requests::{
-    Arguments, CallRequest, DatabaseRequest, DescribeRequest, DiscoveryMode, ExecuteRequest,
-    FileRequest, FunctionRequest, MigrationSource, NamespaceRequest,
-};
+pub use description::DescriptionChange;
 
 pub use declarations::FunctionDeclaration;
+
+pub use schemars::Schema;
+pub mod inputs;
+pub mod records;
+
+#[cfg(test)]
+mod test_support;

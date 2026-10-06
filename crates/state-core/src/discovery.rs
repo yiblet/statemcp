@@ -1,0 +1,152 @@
+//! Discovery records contain schemas and sample protocol arguments only in their JSON fields.
+use crate::{
+    Error, Result,
+    execution::Root,
+    inputs::{DescribeInput, DiscoveryMode},
+    schemas::{self, RuntimeGuide, ToolDefinition},
+};
+use serde::Serialize;
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum Discovery {
+    Tool {
+        tool: ToolDefinition,
+    },
+    Readme {
+        title: &'static str,
+        format: &'static str,
+        text: &'static str,
+    },
+    Runtime(RuntimeGuide),
+    Catalog(Catalog),
+    Namespace {
+        namespace: String,
+        functions: Vec<EndpointContract>,
+    },
+}
+#[derive(Debug, Serialize)]
+pub struct EndpointContract {
+    name: String,
+    version: String,
+    description: Option<String>,
+    input_schema: Option<crate::inputs::EndpointSchema>,
+    output_schema: Option<crate::inputs::EndpointSchema>,
+}
+#[derive(Debug, Serialize)]
+pub struct Catalog {
+    tools: Vec<ToolDefinition>,
+    model: &'static str,
+    runtime: &'static str,
+    abi_version: u32,
+    discovery: DiscoverySelectors,
+    identity: &'static str,
+    retention: &'static str,
+    limits: DiscoveryLimits,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime_guide: Option<RuntimeGuide>,
+}
+#[derive(Debug, Serialize)]
+struct DiscoverySelectors {
+    readme: ModeSelector,
+    runtime: ModeSelector,
+    schemas: ModeSelector,
+    operation: ToolSelector,
+}
+#[derive(Debug, Serialize)]
+struct ModeSelector {
+    mode: DiscoveryMode,
+}
+#[derive(Debug, Serialize)]
+struct ToolSelector {
+    tool: &'static str,
+}
+#[derive(Debug, Serialize)]
+struct DiscoveryLimits {
+    root_calls: usize,
+    root_depth: usize,
+    root_milliseconds: u128,
+    runtime_json_bytes: usize,
+    direct_result_bytes: usize,
+}
+impl Root {
+    pub(crate) fn describe_typed(&mut self, input: DescribeInput) -> Result<Discovery> {
+        match input {
+            DescribeInput::Tool(input) => {
+                let tool = schemas::typed_tool_definitions(true)
+                    .into_iter()
+                    .find(|tool| tool.name == input.tool)
+                    .ok_or_else(|| Error::invalid("unknown discovery tool"))?;
+                Ok(Discovery::Tool { tool })
+            }
+            DescribeInput::Namespace(input) => {
+                let namespace = self.tx.namespace_identity(&input.namespace)?.to_owned();
+                let functions: Vec<_> = self
+                    .tx
+                    .function_declarations(&namespace)?
+                    .filter(|declaration| {
+                        input
+                            .function
+                            .as_ref()
+                            .is_none_or(|name| name == &declaration.name)
+                    })
+                    .map(|declaration| EndpointContract {
+                        name: declaration.name.clone(),
+                        version: declaration.version.clone(),
+                        description: declaration.description.clone(),
+                        input_schema: declaration.input_schema.clone(),
+                        output_schema: declaration.output_schema.clone(),
+                    })
+                    .collect();
+                if input.function.is_some() && functions.is_empty() {
+                    return Err(Error::new(
+                        crate::ErrorCode::NotFound,
+                        "endpoint contract is unavailable",
+                    ));
+                }
+                Ok(Discovery::Namespace {
+                    namespace,
+                    functions,
+                })
+            }
+            DescribeInput::Overview(input) => match input.mode.unwrap_or_default() {
+                DiscoveryMode::Readme => Ok(Discovery::Readme {
+                    title: "StateMCP README",
+                    format: "markdown",
+                    text: include_str!("../../../README.md"),
+                }),
+                DiscoveryMode::Runtime => Ok(Discovery::Runtime(schemas::runtime_guide())),
+                mode @ (DiscoveryMode::Overview | DiscoveryMode::Full) => {
+                    Ok(Discovery::Catalog(Catalog {
+                        tools: schemas::typed_tool_definitions(mode == DiscoveryMode::Full),
+                        model: "Namespaces contain virtual files, named SQLite databases, and published Python endpoints.",
+                        runtime: "Pydantic Monty",
+                        abi_version: 1,
+                        discovery: DiscoverySelectors {
+                            readme: ModeSelector {
+                                mode: DiscoveryMode::Readme,
+                            },
+                            runtime: ModeSelector {
+                                mode: DiscoveryMode::Runtime,
+                            },
+                            schemas: ModeSelector {
+                                mode: DiscoveryMode::Full,
+                            },
+                            operation: ToolSelector { tool: "db.create" },
+                        },
+                        identity: "local owner; embedding principal scopes receipts only",
+                        retention: "history and receipts retained until explicit maintenance; no automatic GC",
+                        limits: DiscoveryLimits {
+                            root_calls: self.limits.runtime.max_calls,
+                            root_depth: self.limits.max_depth,
+                            root_milliseconds: self.limits.runtime.max_duration.as_millis(),
+                            runtime_json_bytes: self.limits.runtime.max_output_bytes,
+                            direct_result_bytes: self.limits.max_result_bytes,
+                        },
+                        runtime_guide: (mode == DiscoveryMode::Full).then(schemas::runtime_guide),
+                    }))
+                }
+            },
+        }
+    }
+}

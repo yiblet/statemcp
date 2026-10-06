@@ -1,12 +1,14 @@
 //! Manual wall-clock probe; not a performance assertion or a default test.
+mod support;
 use serde_json::{Value, json};
 use state_store::Store;
 use std::{fs, time::Instant};
+use support::ToolCalls;
 
 fn run(store: &Store, tool: &str, args: Value) -> Value {
     let mut tx = store.begin().unwrap();
-    let value = tx.dispatch(tool, args).unwrap();
-    tx.commit().unwrap();
+    let value = tx.tool(tool, args).unwrap();
+    tx.commit_result().unwrap();
     value
 }
 
@@ -19,23 +21,19 @@ fn portable_copy_and_namespace_fork() {
     for mib in [1_u64, 32, 256] {
         let dir = tempfile::TempDir::new().unwrap();
         let store = Store::open(dir.path()).unwrap();
+        run(&store, "namespace.create", json!({"name":"a"}));
         run(
             &store,
-            "state_namespace",
-            json!({"action":"create","name":"a"}),
-        );
-        run(
-            &store,
-            "state_db",
-            json!({"action":"create","namespace":"a","database":"app"}),
+            "db.create",
+            json!({"namespace":"a","database":"app"}),
         );
         let rows = mib * 16 - 2;
         run(
             &store,
-            "state_db",
-            json!({"action":"migrate","namespace":"a","database":"app","migrations":[{"id":"seed","sql":format!("CREATE TABLE payload(id INTEGER PRIMARY KEY, bytes BLOB); WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM seq WHERE n<{rows}) INSERT INTO payload SELECT n,zeroblob(65000) FROM seq;")}]}),
+            "db.migrate",
+            json!({"namespace":"a","database":"app","migrations":[{"id":"seed","sql":format!("CREATE TABLE payload(id INTEGER PRIMARY KEY, bytes BLOB); WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM seq WHERE n<{rows}) INSERT INTO payload SELECT n,zeroblob(65000) FROM seq;")}]}),
         );
-        let db = run(&store, "state_db", json!({"action":"list","namespace":"a"}));
+        let db = run(&store, "db.list", json!({"namespace":"a"}));
         let snapshot = db["databases"][0]["snapshot"].as_str().unwrap();
         let path = dir
             .path()
@@ -50,8 +48,8 @@ fn portable_copy_and_namespace_fork() {
         let start = Instant::now();
         run(
             &store,
-            "state_namespace",
-            json!({"action":"copy","namespace":"a","name":"b"}),
+            "namespace.copy",
+            json!({"namespace":"a","name":"b"}),
         );
         let fork_ms = start.elapsed().as_secs_f64() * 1000.0;
         let fork_count = count() - before;
@@ -59,8 +57,8 @@ fn portable_copy_and_namespace_fork() {
         let start = Instant::now();
         run(
             &store,
-            "state_db",
-            json!({"action":"execute","namespace":"b","database":"app","sql":"UPDATE payload SET bytes=zeroblob(65000) WHERE id=1"}),
+            "db.execute",
+            json!({"namespace":"b","database":"app","sql":"UPDATE payload SET bytes=zeroblob(65000) WHERE id=1"}),
         );
         let write_ms = start.elapsed().as_secs_f64() * 1000.0;
         let write_count = count() - before;

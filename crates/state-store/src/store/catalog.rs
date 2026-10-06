@@ -1,9 +1,9 @@
 //! Internal catalog schema, consistent metadata reads, and atomic publication.
 //! This connection is never exposed to application SQL.
 use super::Store;
+use crate::records::{CommitMetadata, CommitOutcome};
 use crate::{Error, Receipt, Result, durability::sync_dir, identity::id, model::Namespace};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-use serde_json::{Value, json};
 use std::{collections::BTreeMap, fs, path::Path, sync::Arc, time::Duration};
 
 impl Store {
@@ -21,7 +21,7 @@ impl Store {
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version != 0 && version != 1 {
             return Err(Error::new(
-                "UNSUPPORTED_FEATURE",
+                crate::ErrorCode::UnsupportedFeature,
                 format!("unsupported catalog format {version}"),
             ));
         }
@@ -93,7 +93,7 @@ impl Store {
                 r.get(0)
             })
             .optional()?
-            .ok_or_else(|| Error::new("CORRUPT_STORE", "file object is missing"))
+            .ok_or_else(|| Error::new(crate::ErrorCode::CorruptStore, "file object is missing"))
     }
     pub(crate) fn publish(
         &self,
@@ -101,7 +101,7 @@ impl Store {
         namespaces: &BTreeMap<String, Namespace>,
         objects: &BTreeMap<String, Vec<u8>>,
         pending_receipt: &Option<(String, String, Receipt)>,
-    ) -> Result<Value> {
+    ) -> Result<CommitOutcome> {
         let changed = namespaces.values().any(|n| n.dirty);
         let mut conn = self.catalog()?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -110,11 +110,11 @@ impl Store {
         {
             if existing.request_hash != desired.request_hash {
                 return Err(Error::new(
-                    "IDEMPOTENCY_MISMATCH",
+                    crate::ErrorCode::IdempotencyMismatch,
                     "idempotency key was used for another request",
                 ));
             }
-            return Ok(json!({"replayed":true,"result":existing.result}));
+            return Ok(CommitOutcome::Replayed(existing.result));
         }
         let current: i64 = tx.query_row(
             "SELECT generation FROM catalog_state WHERE singleton=1",
@@ -123,7 +123,7 @@ impl Store {
         )?;
         if current != generation {
             return Err(Error::new(
-                "CONFLICT",
+                crate::ErrorCode::Conflict,
                 "catalog changed during invocation; retry from a fresh snapshot",
             ));
         }
@@ -133,7 +133,7 @@ impl Store {
                 params![hash, bytes],
             )?;
         }
-        let mut revisions = serde_json::Map::new();
+        let mut revisions = BTreeMap::new();
         for ns in namespaces.values().filter(|n| n.dirty) {
             let manifest = serde_json::to_string(&ns.manifest)?;
             let previous: Option<String> = if ns.revision.is_empty() {
@@ -176,7 +176,7 @@ impl Store {
                 revision
             };
             tx.execute("INSERT INTO namespaces(id,name,head_revision,deleted) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,head_revision=excluded.head_revision,deleted=excluded.deleted",params![ns.id,ns.name,revision,ns.deleted])?;
-            revisions.insert(ns.id.clone(), json!(revision));
+            revisions.insert(ns.id.clone(), revision);
         }
         if let Some((principal, key, receipt)) = pending_receipt {
             tx.execute(
@@ -198,7 +198,11 @@ impl Store {
         tx.commit()?;
         #[cfg(test)]
         crate::durability::publication_failpoint("after_catalog_commit");
-        Ok(json!({"generation":current+1,"revisions":revisions,"changed":changed}))
+        Ok(CommitOutcome::Published(CommitMetadata {
+            generation: current + 1,
+            revisions,
+            changed,
+        }))
     }
 }
 fn receipt(conn: &Connection, principal: &str, key: &str) -> Result<Option<Receipt>> {

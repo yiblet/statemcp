@@ -1,0 +1,11 @@
+[package]
+name = "state-migrations"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Forward Rust migrations with a SQLite catalog history"
+
+[dependencies]
+state-fs = { path = "../state-fs" }
+rusqlite = { version = "0.38", features = ["bundled", "hooks"] }
+thiserror = "2"

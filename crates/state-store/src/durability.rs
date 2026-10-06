@@ -54,7 +54,7 @@ pub(crate) fn root_lock(root: &Path, exclusive: bool) -> Result<File> {
     match result {
         Ok(()) => Ok(file),
         Err(std::fs::TryLockError::WouldBlock) => Err(crate::Error::new(
-            "CONFLICT",
+            crate::ErrorCode::Conflict,
             "storage maintenance conflicts with an active invocation; retry later",
         )),
         Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
@@ -72,12 +72,13 @@ pub(crate) fn publication_failpoint(point: &str) {
 #[cfg(test)]
 mod tests {
     use crate::Store;
+    use crate::test_support::ToolCalls;
     use serde_json::{Value, json};
 
     fn run(store: &Store, tool: &str, args: Value) -> Value {
         let mut tx = store.begin().unwrap();
-        let result = tx.dispatch(tool, args).unwrap();
-        tx.commit().unwrap();
+        let result = tx.tool(tool, args).unwrap();
+        tx.commit_result().unwrap();
         result
     }
 
@@ -89,16 +90,25 @@ mod tests {
         let store = Store::open(root).unwrap();
         let mut tx = store.begin().unwrap();
         for ns in ["a", "b"] {
-            tx.dispatch("state_db", json!({"action":"execute","namespace":ns,"database":"app","sql":"INSERT INTO n VALUES(1)"})).unwrap();
-            tx.dispatch(
-                "state_fs",
-                json!({"action":"write","namespace":ns,"path":"/note","text":"new"}),
+            tx.tool(
+                "db.execute",
+                json!({"namespace":ns,"database":"app","sql":"INSERT INTO n VALUES(1)"}),
+            )
+            .unwrap();
+            tx.tool(
+                "fs.write",
+                json!({"namespace":ns,"path":"/note","text":"new"}),
             )
             .unwrap();
         }
-        tx.set_receipt("owner", "key", "request", json!("done"))
-            .unwrap();
-        tx.commit().unwrap();
+        tx.set_receipt(
+            "owner",
+            "key",
+            "request",
+            crate::records::ReceiptResult::Function(json!("done")),
+        )
+        .unwrap();
+        tx.commit_result().unwrap();
         panic!("failpoint did not exit");
     }
 
@@ -112,25 +122,21 @@ mod tests {
             let dir = tempfile::TempDir::new().unwrap();
             let store = Store::open(dir.path()).unwrap();
             for ns in ["a", "b"] {
+                run(&store, "namespace.create", json!({"name":ns}));
                 run(
                     &store,
-                    "state_namespace",
-                    json!({"action":"create","name":ns}),
+                    "db.create",
+                    json!({"namespace":ns,"database":"app"}),
                 );
                 run(
                     &store,
-                    "state_db",
-                    json!({"action":"create","namespace":ns,"database":"app"}),
+                    "db.execute",
+                    json!({"namespace":ns,"database":"app","sql":"CREATE TABLE n(x)"}),
                 );
                 run(
                     &store,
-                    "state_db",
-                    json!({"action":"execute","namespace":ns,"database":"app","sql":"CREATE TABLE n(x)"}),
-                );
-                run(
-                    &store,
-                    "state_fs",
-                    json!({"action":"write","namespace":ns,"path":"/note","text":"old"}),
+                    "fs.write",
+                    json!({"namespace":ns,"path":"/note","text":"old"}),
                 );
             }
             let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -152,17 +158,13 @@ mod tests {
                 assert_eq!(
                     run(
                         &reopened,
-                        "state_db",
-                        json!({"action":"query","namespace":ns,"database":"app","sql":"SELECT x FROM n"})
+                        "db.query",
+                        json!({"namespace":ns,"database":"app","sql":"SELECT x FROM n"})
                     )["rows"],
                     if committed { json!([[1]]) } else { json!([]) }
                 );
                 assert_eq!(
-                    run(
-                        &reopened,
-                        "state_fs",
-                        json!({"action":"read","namespace":ns,"path":"/note"})
-                    )["text"],
+                    run(&reopened, "fs.read", json!({"namespace":ns,"path":"/note"}))["text"],
                     if committed { "new" } else { "old" }
                 );
             }

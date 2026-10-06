@@ -1,0 +1,21 @@
+[package]
+name = "state-sqlite-vfs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+description = "Transaction-local SQLite VFS overlays with recoverable multi-file publication"
+
+[dependencies]
+state-fs = { path = "../state-fs" }
+state-migrations = { path = "../state-migrations" }
+rusqlite = { version = "0.38", features = ["bundled"] }
+sqlite-plugin = "0.11"
+sha2 = "0.10"
+thiserror = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[build-dependencies]
+# sqlite-plugin generates bindings. Runtime discovery also accepts versioned
+# libclang libraries on hosts without a development-package libclang.so symlink.
+bindgen = { version = "0.72", default-features = false, features = ["runtime"] }

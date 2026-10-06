@@ -1,8 +1,10 @@
+mod support;
 use serde_json::{Map, Value, json};
 use state_core::{CoreLimits, EmbeddedBackend, RuntimeBackend, State, Store};
 use state_runtime::{HostCallback, Limits, RunResult, RuntimeError};
 use std::sync::{Arc, Barrier, Mutex};
 use std::time::Duration;
+use support::ToolCalls;
 
 struct ObservingBackend {
     seen: Mutex<Vec<Duration>>,
@@ -21,7 +23,7 @@ impl RuntimeBackend for ObservingBackend {
             std::thread::sleep(Duration::from_millis(20));
             host(
                 "mcp",
-                vec![json!("state_execute"), json!({"script":"nested"})],
+                vec![json!("execute"), json!({"script":"nested"})],
                 Map::new(),
             )?
         } else {
@@ -37,7 +39,7 @@ impl RuntimeBackend for ObservingBackend {
         _: &str,
         _: &state_runtime::ModuleSources,
         _: &str,
-        _: Value,
+        _: Map<String, Value>,
         _: &Limits,
         _: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
@@ -64,9 +66,7 @@ fn nested_execution_gets_only_remaining_root_wall_budget() {
     limits.runtime.max_duration = Duration::from_secs(1);
     let state =
         State::with_backend(Store::open(dir.path()).unwrap(), backend.clone()).with_limits(limits);
-    state
-        .dispatch("state_execute", json!({"script":"outer"}))
-        .unwrap();
+    state.tool("execute", json!({"script":"outer"})).unwrap();
     let seen = backend.seen.lock().unwrap();
     assert_eq!(seen.len(), 2);
     assert!(seen[1] + Duration::from_millis(15) < seen[0]);
@@ -84,10 +84,7 @@ impl RuntimeBackend for CatchingBackend {
     ) -> Result<RunResult, RuntimeError> {
         host(
             "mcp",
-            vec![
-                json!("state_namespace"),
-                json!({"action":"create","name":"staged"}),
-            ],
+            vec![json!("namespace.create"), json!({"name":"staged"})],
             Map::new(),
         )?;
         let _ignored = host("unknown_helper", vec![], Map::new());
@@ -101,7 +98,7 @@ impl RuntimeBackend for CatchingBackend {
         _: &str,
         _: &state_runtime::ModuleSources,
         _: &str,
-        _: Value,
+        _: Map<String, Value>,
         _: &Limits,
         _: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
@@ -123,15 +120,13 @@ fn core_poisoning_survives_a_backend_that_swallows_host_errors() {
     let state = State::with_backend(Store::open(dir.path()).unwrap(), Arc::new(CatchingBackend));
     assert_eq!(
         state
-            .dispatch("state_execute", json!({"script":"ignored"}))
+            .tool("execute", json!({"script":"ignored"}))
             .unwrap_err()
             .code,
-        "INVALID_ARGUMENT"
+        state_core::ErrorCode::InvalidArgument
     );
     assert_eq!(
-        state
-            .dispatch("state_namespace", json!({"action":"list"}))
-            .unwrap()["namespaces"],
+        state.tool("namespace.list", json!({})).unwrap()["namespaces"],
         json!([])
     );
 }
@@ -157,7 +152,7 @@ impl RuntimeBackend for RacingBackend {
         source: &str,
         modules: &state_runtime::ModuleSources,
         symbol: &str,
-        args: Value,
+        args: Map<String, Value>,
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
@@ -182,21 +177,29 @@ fn concurrent_identical_receipts_publish_once_and_return_the_winners_result() {
             barrier: Barrier::new(2),
         }),
     );
+    state.tool("namespace.create", json!({"name":"n"})).unwrap();
     state
-        .dispatch("state_namespace", json!({"action":"create","name":"n"}))
+        .tool("db.create", json!({"namespace":"n","database":"app"}))
         .unwrap();
     state
-        .dispatch(
-            "state_db",
-            json!({"action":"create","namespace":"n","database":"app"}),
+        .tool(
+            "db.execute",
+            json!({"namespace":"n","database":"app","sql":"CREATE TABLE writes(value TEXT)"}),
         )
         .unwrap();
-    state.dispatch("state_db",json!({"action":"execute","namespace":"n","database":"app","sql":"CREATE TABLE writes(value TEXT)"})).unwrap();
     let args = json!({"namespace":"n","idempotency_key":"same","script":"db_execute('app', \"INSERT INTO writes VALUES ('one') RETURNING value\")"});
     let left = state.clone();
     let left_args = args.clone();
-    let thread = std::thread::spawn(move || left.dispatch("state_execute", left_args));
-    let right = state.dispatch("state_execute", args).unwrap();
+    let thread = std::thread::spawn(move || left.tool("execute", left_args));
+    let right = state.tool("execute", args).unwrap();
     assert_eq!(thread.join().unwrap().unwrap(), right);
-    assert_eq!(state.dispatch("state_db",json!({"action":"query","namespace":"n","database":"app","sql":"SELECT count(*) FROM writes"})).unwrap()["rows"],json!([[1]]));
+    assert_eq!(
+        state
+            .tool(
+                "db.query",
+                json!({"namespace":"n","database":"app","sql":"SELECT count(*) FROM writes"})
+            )
+            .unwrap()["rows"],
+        json!([[1]])
+    );
 }

@@ -130,7 +130,7 @@ mod tests {
         let error = writer
             .execute_batch("INSERT INTO t VALUES (43)")
             .unwrap_err();
-        assert_eq!(Error::from(error).code, "CONFLICT");
+        assert_eq!(Error::from(error).code, crate::ErrorCode::Conflict);
         drop(lock);
         writer.execute_batch("INSERT INTO t VALUES (43)").unwrap();
     }
@@ -146,7 +146,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             copy_database(&source, &destination).unwrap_err().code,
-            "CONFLICT"
+            crate::ErrorCode::Conflict
         );
         assert!(!destination.exists());
         writer
@@ -154,7 +154,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             copy_database(&source, &destination).unwrap_err().code,
-            "INVALID_ARGUMENT"
+            crate::ErrorCode::InvalidArgument
         );
         assert!(!destination.exists());
         writer.execute_batch("INSERT INTO t VALUES (44)").unwrap();
@@ -178,7 +178,7 @@ mod tests {
         );
         assert_eq!(
             copy_database(&source, directory.path()).unwrap_err().code,
-            "IO_ERROR"
+            crate::ErrorCode::IoError
         );
         writer.busy_timeout(Duration::ZERO).unwrap();
         writer.execute_batch("INSERT INTO t VALUES (43)").unwrap();

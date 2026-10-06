@@ -26,7 +26,7 @@ fn open_state(storage: &Storage) -> Result<State> {
 
 fn invoke(tool: ToolCommand) -> Result<ExitCode> {
     // Load inputs before opening the store, so invalid inputs do not create it.
-    let request = match tool.request() {
+    let request = match tool.prepare() {
         Ok(request) => request,
         Err(error) => {
             if let Some(error) = error.downcast_ref::<statemcp::CoreError>() {
@@ -37,7 +37,7 @@ fn invoke(tool: ToolCommand) -> Result<ExitCode> {
         }
     };
     let state = open_state(tool.storage())?;
-    match state.dispatch_request(request) {
+    match request.run(&state) {
         Ok(value) => {
             println!("{value}");
             Ok(ExitCode::SUCCESS)
@@ -62,16 +62,27 @@ async fn serve(command: Command) -> Result<()> {
         Command::Http {
             storage,
             bind,
+            http_prefix,
             auth_bearer,
         } => {
-            let listener = tokio::net::TcpListener::bind(bind)
-                .await
-                .with_context(|| format!("cannot listen on {bind}"))?;
-            let address = listener.local_addr()?;
-            let options = HttpOptions::new(address, auth_bearer)?;
+            // Bind every address before opening persistent state or serving requests.
+            let mut listeners = Vec::with_capacity(bind.len());
+            let mut addresses = Vec::with_capacity(bind.len());
+            for address in bind {
+                let listener = tokio::net::TcpListener::bind(address)
+                    .await
+                    .with_context(|| format!("cannot listen on {address}"))?;
+                addresses.push(listener.local_addr()?);
+                listeners.push(listener);
+            }
+            let path = http_prefix.mcp_path();
+            let options =
+                HttpOptions::for_addresses(&addresses, auth_bearer)?.with_prefix(http_prefix);
             let state = open_state(&storage)?;
-            tracing::info!(url = %format!("http://{address}/mcp"), "MCP server listening");
-            statemcp::http::serve(listener, state, options)
+            for address in addresses {
+                tracing::info!(url = %format!("http://{address}{path}"), "MCP server listening");
+            }
+            statemcp::http::serve_listeners(listeners, state, options)
                 .await
                 .context("HTTP server failed")?;
         }

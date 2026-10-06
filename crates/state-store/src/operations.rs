@@ -1,7 +1,6 @@
 //! Typed operation identifiers shared by validation, authorization, and storage.
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::str::FromStr;
 
 macro_rules! wire_enum {
@@ -30,13 +29,13 @@ macro_rules! wire_enum {
 }
 
 wire_enum!(Tool {
-    Namespace => "state_namespace",
-    File => "state_fs",
-    Database => "state_db",
-    Function => "state_function",
-    Call => "state_call",
-    Execute => "state_execute",
-    Describe => "state_describe",
+    Namespace => "namespace",
+    File => "fs",
+    Database => "db",
+    Function => "function",
+    Call => "call",
+    Execute => "execute",
+    Describe => "describe",
 });
 impl Tool {
     pub fn public_name(self) -> &'static str {
@@ -49,9 +48,6 @@ impl Tool {
             Self::Execute => "execute",
             Self::Describe => "describe",
         }
-    }
-    pub fn operation(self, args: &Value) -> Result<Operation> {
-        self.with_action(args["action"].as_str())
     }
     pub fn with_action(self, action: Option<&str>) -> Result<Operation> {
         let action = || action.ok_or_else(|| Error::invalid("action must be a string"));
@@ -87,7 +83,7 @@ wire_enum!(NamespaceAction {
     Create => "create",
     List => "list",
     Get => "get",
-    Update => "update" | "rename",
+    Update => "update",
     Copy => "copy",
     Delete => "delete",
 });
@@ -168,7 +164,6 @@ impl Operation {
             .find(|tool| tool.public_name() == family)
             .ok_or_else(|| Error::invalid("unknown statemcp tool"))?;
         let operation = tool.with_action(action)?;
-        // Aliases belong to the legacy/CLI boundary, not the public MCP surface.
         if operation.action_name() != action {
             return Err(Error::invalid("unknown statemcp tool"));
         }

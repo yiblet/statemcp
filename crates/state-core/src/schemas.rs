@@ -1,225 +1,23 @@
 use crate::{
-    Error, Operation, Result, Tool,
-    selectors::{Field, SchemaDialect, SchemaKeyword},
+    Error, Operation, Result,
+    selectors::{SchemaDialect, SchemaKeyword},
 };
-use serde_json::{Map, Value, json};
-use std::{collections::BTreeMap, sync::OnceLock};
-
-fn field(name: &str) -> Value {
-    match Field::parse(name) {
-        Some(Field::Inputs) => json!({}),
-        Some(Field::Mode) => json!({"enum":["overview","full","runtime","readme"]}),
-        Some(Field::Arguments) => json!({"type":"object"}),
-        Some(Field::Schema) => json!({"type":["object","boolean"]}),
-        Some(Field::Recursive) => json!({"type":"boolean"}),
-        Some(Field::Params) => json!({"type":"array"}),
-        Some(Field::Migrations) => {
-            json!({"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"sql":{"type":"string"}},"required":["id","sql"],"additionalProperties":false}})
-        }
-        None => json!({"type":"string"}),
-    }
-}
-fn variant(action: Option<&str>, required: &[&str], optional: &[&str]) -> Value {
-    let mut properties = Map::new();
-    let mut required: Vec<_> = required.iter().map(|s| json!(s)).collect();
-    if let Some(action) = action {
-        properties.insert("action".into(), json!({"const":action}));
-        required.push(json!("action"));
-    }
-    for name in required
-        .iter()
-        .filter_map(Value::as_str)
-        .chain(optional.iter().copied())
-    {
-        if name != "action" || action.is_none() {
-            properties.insert(name.into(), field(name));
-        }
-    }
-    let mut schema = json!({"type":"object","properties":properties,"required":required,"additionalProperties":false});
-    if optional.contains(&"text") && optional.contains(&"base64") {
-        schema["oneOf"] = json!([{"required":["text"]},{"required":["base64"]}]);
-    }
-    if action.is_none() && optional == ["namespace", "function"] {
-        schema["dependentRequired"] = json!({"function":["namespace"]});
-    }
-    schema
-}
-/// Canonical fixed-tool schemas, also enforced for calls originating inside Monty.
-fn operation_definitions() -> Vec<Value> {
-    let tools = [
-        (
-            "state_namespace",
-            "Create, inspect, list, rename, copy, or delete namespaces.",
-            vec![
-                variant(Some("create"), &["name"], &[]),
-                variant(Some("list"), &[], &[]),
-                variant(Some("get"), &["namespace"], &[]),
-                variant(
-                    Some("update"),
-                    &["namespace", "name"],
-                    &["expected_revision"],
-                ),
-                variant(Some("copy"), &["namespace", "name"], &["expected_revision"]),
-                variant(Some("delete"), &["namespace"], &["expected_revision"]),
-            ],
-        ),
-        (
-            "state_fs",
-            "Read and mutate namespace virtual files.",
-            vec![
-                variant(Some("read"), &["namespace", "path"], &[]),
-                variant(Some("stat"), &["namespace", "path"], &[]),
-                variant(Some("list"), &["namespace"], &["path"]),
-                variant(
-                    Some("write"),
-                    &["namespace", "path"],
-                    &["text", "base64", "expected_revision"],
-                ),
-                variant(
-                    Some("append"),
-                    &["namespace", "path"],
-                    &["text", "base64", "expected_revision"],
-                ),
-                variant(
-                    Some("move"),
-                    &["namespace", "path", "destination"],
-                    &["expected_revision"],
-                ),
-                variant(
-                    Some("copy"),
-                    &["namespace", "path", "destination"],
-                    &["expected_revision"],
-                ),
-                variant(
-                    Some("delete"),
-                    &["namespace", "path"],
-                    &["recursive", "expected_revision"],
-                ),
-            ],
-        ),
-        (
-            "state_db",
-            "Named SQLite databases, parameterized SQL, introspection and migrations.",
-            vec![
-                variant(Some("list"), &["namespace"], &[]),
-                variant(
-                    Some("create"),
-                    &["namespace", "database"],
-                    &["expected_revision"],
-                ),
-                variant(
-                    Some("drop"),
-                    &["namespace", "database"],
-                    &["expected_revision"],
-                ),
-                variant(
-                    Some("query"),
-                    &["namespace", "database", "sql"],
-                    &["params"],
-                ),
-                variant(
-                    Some("execute"),
-                    &["namespace", "database", "sql"],
-                    &["params", "expected_revision"],
-                ),
-                variant(Some("inspect"), &["namespace", "database"], &[]),
-                variant(Some("migrations"), &["namespace", "database"], &[]),
-                variant(
-                    Some("migrate"),
-                    &["namespace", "database", "migrations"],
-                    &["expected_revision"],
-                ),
-            ],
-        ),
-        (
-            "state_function",
-            "Publish pinned code. Use describe mode=runtime for host APIs and an example; get retrieves full pinned source.",
-            vec![
-                variant(Some("list"), &["namespace"], &[]),
-                variant(Some("get"), &["namespace", "name"], &["expected_version"]),
-                variant(
-                    Some("remove"),
-                    &["namespace", "name"],
-                    &["expected_version", "expected_revision"],
-                ),
-                variant(
-                    Some("declare"),
-                    &["namespace", "name", "file", "symbol"],
-                    &[
-                        "input_schema",
-                        "output_schema",
-                        "description",
-                        "expected_version",
-                        "expected_revision",
-                    ],
-                ),
-                variant(
-                    Some("update"),
-                    &["namespace", "name", "file", "symbol"],
-                    &[
-                        "input_schema",
-                        "output_schema",
-                        "description",
-                        "expected_version",
-                        "expected_revision",
-                    ],
-                ),
-            ],
-        ),
-        (
-            "state_call",
-            "Invoke an endpoint with nested operations in one root transaction.",
-            vec![variant(
-                None,
-                &["namespace", "function"],
-                &["arguments", "expected_version", "idempotency_key"],
-            )],
-        ),
-        (
-            "state_execute",
-            "Execute a Monty script using transactional host APIs.",
-            vec![variant(
-                None,
-                &["script"],
-                &["namespace", "inputs", "idempotency_key"],
-            )],
-        ),
-        (
-            "state_describe",
-            "Discover a compact overview (default), runtime guide (mode=runtime), full schemas (mode=full), one tool (tool), or endpoint contracts (namespace, function).",
-            vec![
-                variant(None, &[], &["mode"]),
-                variant(None, &["tool"], &[]),
-                variant(None, &["namespace"], &["function"]),
-            ],
-        ),
-    ];
-    tools
-        .into_iter()
-        .map(|(name, description, variants)| {
-            let schema = if variants.len() == 1 {
-                variants.into_iter().next().expect("one")
-            } else {
-                json!({"type":"object","oneOf":variants})
-            };
-            json!({"name":name,"description":description,"inputSchema":schema})
-        })
-        .collect()
-}
+use serde_json::{Map, Value};
+use std::sync::OnceLock;
 
 fn tool_description(operation: Operation) -> &'static str {
     match operation {
         Operation::Namespace(crate::NamespaceAction::Create) => {
-            "Create an empty namespace for files, SQLite databases, and published functions."
+            "Create an empty namespace with an optional description for files, SQLite databases, and published functions."
         }
         Operation::Namespace(crate::NamespaceAction::List) => {
-            "List namespaces with their names, stable IDs, revisions, and resource counts."
+            "Primary entry point for discovering what is available in StateMCP. List namespaces with their names, descriptions, stable IDs, revisions, and resource counts. Then use function.list to discover published functions in the relevant namespace."
         }
         Operation::Namespace(crate::NamespaceAction::Get) => {
-            "Get a namespace’s name, stable ID, revision, and resource counts."
+            "Get a namespace’s name, description, stable ID, revision, and resource counts."
         }
         Operation::Namespace(crate::NamespaceAction::Update) => {
-            "Rename a namespace while preserving its stable ID and contents."
+            "Update a namespace name or description while preserving its stable ID and contents. Omitted description is preserved; null clears it."
         }
         Operation::Namespace(crate::NamespaceAction::Copy) => {
             "Copy a namespace and its contents to a new name. Subsequent changes are independent."
@@ -303,106 +101,47 @@ fn tool_description(operation: Operation) -> &'static str {
 }
 
 /// MCP tools have one operation per name and no action discriminator.
-pub fn tool_definitions() -> Vec<Value> {
-    operation_definitions().into_iter().flat_map(|tool| {
-        let family: Tool = tool["name"].as_str().expect("tool name").parse().expect("canonical tool");
-        if matches!(family, Tool::Call | Tool::Execute | Tool::Describe) {
-            let operation = family.with_action(None).expect("no action");
-            let mut tool = tool;
-            tool["name"] = json!(family.public_name());
-            tool["description"] = json!(tool_description(operation));
-            return vec![tool];
-        }
-        tool["inputSchema"]["oneOf"].as_array().expect("actions").iter().map(|schema| {
-            let action = schema["properties"]["action"]["const"].as_str().expect("action");
-            let operation = family.with_action(Some(action)).expect("canonical action");
-            let mut schema = schema.clone();
-            schema["properties"].as_object_mut().unwrap().remove("action");
-            schema["required"].as_array_mut().unwrap().retain(|key| key != "action");
-            json!({"name":operation.public_name(),"description":tool_description(operation),"inputSchema":schema})
-        }).collect()
-    }).collect()
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolDefinition {
+    pub name: String,
+    pub description: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<state_store::Schema>,
+}
+pub(crate) fn typed_tool_definitions(full: bool) -> Vec<ToolDefinition> {
+    use crate::{DatabaseAction, FileAction, FunctionAction, NamespaceAction};
+    NamespaceAction::ALL
+        .iter()
+        .copied()
+        .map(Operation::Namespace)
+        .chain(FileAction::ALL.iter().copied().map(Operation::File))
+        .chain(DatabaseAction::ALL.iter().copied().map(Operation::Database))
+        .chain(FunctionAction::ALL.iter().copied().map(Operation::Function))
+        .chain([Operation::Call, Operation::Execute, Operation::Describe])
+        .map(|operation| ToolDefinition {
+            name: operation.public_name(),
+            description: tool_description(operation),
+            input_schema: full.then(|| crate::inputs::schema(operation)),
+        })
+        .collect()
+}
+pub fn tool_definitions() -> Vec<ToolDefinition> {
+    typed_tool_definitions(true)
 }
 
-// Preserve existing embedded/CLI calls and persisted Python modules. MCP itself
-// advertises and accepts only the public names from tool_definitions().
-pub(crate) fn normalize_call(name: &str, mut args: Value) -> Result<(Tool, Value)> {
-    if let Ok(tool) = name.parse::<Tool>() {
-        return Ok((tool, args));
-    }
-    let operation =
-        Operation::from_public_name(name).map_err(|_| Error::invalid("unknown statemcp tool"))?;
-    if let Some(action) = operation.action_name() {
-        let object = args
-            .as_object_mut()
-            .ok_or_else(|| Error::invalid("arguments must be an object"))?;
-        if object.contains_key("action") {
-            return Err(Error::invalid(
-                "action is implied by the tool name; omit the action argument",
-            ));
-        }
-        validate_operation(name, &args)?;
-        args.as_object_mut()
-            .expect("object")
-            .insert("action".into(), json!(action));
-    } else {
-        validate_operation(name, &args)?;
-    }
-    Ok((operation.tool(), args))
-}
-
-pub(crate) fn validate_operation(tool: &str, args: &Value) -> Result<()> {
-    static VALIDATORS: OnceLock<BTreeMap<String, jsonschema::Validator>> = OnceLock::new();
-    let validators = VALIDATORS.get_or_init(|| {
-        operation_definitions()
-            .into_iter()
-            .chain(tool_definitions())
-            .map(|tool| {
-                (
-                    tool["name"].as_str().expect("tool name").into(),
-                    jsonschema::validator_for(&tool["inputSchema"]).expect("static schema"),
-                )
-            })
-            .collect()
-    });
-    let validator = validators
-        .get(tool)
-        .ok_or_else(|| Error::invalid("unknown statemcp tool"))?;
-    validator
-        .validate(args)
-        .map_err(|e| Error::invalid(format!("{tool}: {e}")))?;
-    let grouped = tool.parse::<Tool>().ok();
-    let operation = grouped.map(|tool| tool.operation(args)).transpose()?;
-    if matches!(
-        operation,
-        Some(Operation::File(
-            crate::FileAction::Write | crate::FileAction::Append
-        ))
-    ) && (args.get("text").is_some() == args.get("base64").is_some())
-    {
-        return Err(Error::invalid(
-            "file writes require exactly one of text or base64",
-        ));
-    }
-    if grouped == Some(Tool::Describe)
-        && args.get("function").is_some()
-        && args.get("namespace").is_none()
-    {
-        return Err(Error::invalid("function discovery requires a namespace"));
-    }
-    Ok(())
-}
-
-pub(crate) fn compile(schema: &Value) -> Result<jsonschema::Validator> {
+pub(crate) fn compile(schema: &crate::inputs::EndpointSchema) -> Result<jsonschema::Validator> {
+    // The schema library consumes JSON; preserve the typed object/boolean contract until this boundary.
+    let schema = serde_json::to_value(schema).map_err(|e| Error::invalid(e.to_string()))?;
     if schema.to_string().len() > 64 * 1024 {
         return Err(Error::limit("endpoint schema exceeds 64 KiB"));
     }
-    check_references(schema, 0)?;
-    jsonschema::meta::validate(schema)
+    check_references(&schema, 0)?;
+    jsonschema::meta::validate(&schema)
         .map_err(|e| Error::invalid(format!("invalid JSON schema: {e}")))?;
     jsonschema::options()
         .with_retriever(DenyRetrieval)
-        .build(schema)
+        .build(&schema)
         .map_err(|e| Error::invalid(format!("invalid JSON schema: {e}")))
 }
 
@@ -472,44 +211,80 @@ fn check_references(value: &Value, depth: usize) -> Result<()> {
 }
 
 /// Discoverable endpoint authoring contract; kept beside the fixed tool schemas.
-pub(crate) fn runtime_guide() -> Value {
-    let mut guide = json!({
-        "runtime":"Pydantic Monty",
-        "abi_version":1,
-        "compatibility":"Only ABI 1 is supported. Incompatible host signatures, invocation conventions, or result representations require an ABI increment. Unsupported declarations fail with ABI_MISMATCH and expected/actual versions; adapt source and redeclare. No automatic migration or older-ABI support is provided.",
-        "execution":"Endpoint arguments are keyword arguments to the pinned Python symbol. Return a JSON-compatible value. Scripts use inputs and return their final expression as {value, stdout}. Helpers use the endpoint namespace or execute.namespace. Imports load namespace Python files and packages with per-run caching; published functions use pinned sources. Module initialization cannot call host APIs.",
-        "hosts":[
-            {"signature":"mcp(name, arguments={})","returns":"The selected state tool result; function namespace isolation still applies."},
-            {"signature":"call(namespace, function, arguments={})","returns":"Endpoint JSON value."},
-            {"signature":"db_query(database, sql, params=[])","returns":"{columns: [string], rows: [[value]], rows_affected: integer}; one read-only statement."},
-            {"signature":"db_execute(database, sql, params=[])","returns":"{columns: [string], rows: [[value]], rows_affected: integer}; one statement, supports RETURNING."},
-            {"signature":"db_inspect(database)","returns":"Database name, id, snapshot, staged flag, schema_fingerprint, migrations, schema query result, and tables with columns/indexes/foreign_keys."},
-            {"signature":"read_text(path)","returns":"UTF-8 string."},
-            {"signature":"write_text(path, text)","returns":"File write metadata."}
-        ],
-        "scope":"Published functions can access all files, databases, and functions in their own namespace, including creating databases, publishing functions, and running nested scripts. self resolves to the calling function namespace. Namespace names and UUIDs must resolve to that same namespace. Functions cannot access another namespace or create, copy, or list namespaces. Root scripts have owner access.",
-        "transactions":"Nested host calls share the root transaction. Failure rolls back staged effects. Use expected_revision for namespace concurrency and expected_version for endpoint concurrency.",
-        "snapshot":"An opaque immutable SQLite file identifier, not a content hash or namespace revision. inspect reports the referenced snapshot; staged=true means pending writes are not represented by that snapshot. Unreferenced snapshots can be removed by maintenance. No historical read or restore API accepts this identifier.",
-        "example":[
-            {"tool":"state_namespace","arguments":{"action":"create","name":"demo"}},
-            {"tool":"state_db","arguments":{"action":"create","namespace":"demo","database":"app"}},
-            {"tool":"state_db","arguments":{"action":"execute","namespace":"demo","database":"app","sql":"CREATE TABLE notes(id INTEGER PRIMARY KEY, text TEXT)"}},
-            {"tool":"state_fs","arguments":{"action":"write","namespace":"demo","path":"/api.py","text":"def add(text):\n    return db_execute('app', 'INSERT INTO notes(text) VALUES (?) RETURNING id, text', [text])['rows'][0]\n"}},
-            {"tool":"state_function","arguments":{"action":"declare","namespace":"demo","name":"add","file":"/api.py","symbol":"add","input_schema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false}}},
-            {"tool":"state_call","arguments":{"namespace":"demo","function":"add","arguments":{"text":"hello"}}}
-        ]
-    });
-    for step in guide["example"].as_array_mut().expect("example") {
-        let tool: Tool = step["tool"]
-            .as_str()
-            .unwrap()
-            .parse()
-            .expect("example tool");
-        let operation = tool
-            .operation(&step["arguments"])
-            .expect("example operation");
-        step["arguments"].as_object_mut().unwrap().remove("action");
-        step["tool"] = json!(operation.public_name());
-    }
-    guide
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeGuide {
+    pub runtime: String,
+    pub abi_version: u32,
+    pub compatibility: String,
+    pub execution: String,
+    pub hosts: Vec<HostGuide>,
+    pub scope: String,
+    pub transactions: String,
+    pub snapshot: String,
+    pub example: Vec<ExampleCall>,
+}
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct HostGuide {
+    pub signature: String,
+    pub returns: String,
+}
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "tool", content = "arguments")]
+pub enum ExampleCall {
+    #[serde(rename = "namespace.create")]
+    NamespaceCreate(crate::inputs::NamespaceCreateInput),
+    #[serde(rename = "db.create")]
+    DbCreate(crate::inputs::DbCreateInput),
+    #[serde(rename = "db.execute")]
+    DbExecute(crate::inputs::DbExecuteInput),
+    #[serde(rename = "fs.write")]
+    FsWrite(crate::inputs::FsWriteInput),
+    #[serde(rename = "function.declare")]
+    FunctionDeclare(crate::inputs::FunctionDeclareInput),
+    #[serde(rename = "call")]
+    Call(crate::inputs::CallInput),
+}
+fn examples() -> Vec<ExampleCall> {
+    use crate::inputs::*;
+    let input_schema = EndpointSchema::Object(Map::from_iter([
+        ("type".into(), Value::String("object".into())),
+        (
+            "properties".into(),
+            Value::Object(Map::from_iter([(
+                "text".into(),
+                Value::Object(Map::from_iter([(
+                    "type".into(),
+                    Value::String("string".into()),
+                )])),
+            )])),
+        ),
+        (
+            "required".into(),
+            Value::Array(vec![Value::String("text".into())]),
+        ),
+        ("additionalProperties".into(), Value::Bool(false)),
+    ]));
+    vec![
+        ExampleCall::NamespaceCreate(NamespaceCreateInput { name:"demo".into(), description:state_store::DescriptionChange::Unchanged }),
+        ExampleCall::DbCreate(DbCreateInput { namespace:"demo".into(),database:"app".into(),expected_revision:None }),
+        ExampleCall::DbExecute(DbExecuteInput { namespace:"demo".into(),database:"app".into(),sql:"CREATE TABLE notes(id INTEGER PRIMARY KEY, text TEXT)".into(),params:None,expected_revision:None }),
+        ExampleCall::FsWrite(FsWriteInput::Text(FileTextInput { namespace:"demo".into(),path:"/api.py".into(),text:"def add(text):\n    return db_execute('app', 'INSERT INTO notes(text) VALUES (?) RETURNING id, text', [text])['rows'][0]\n".into(),expected_revision:None })),
+        ExampleCall::FunctionDeclare(FunctionDeclareInput { namespace:"demo".into(),name:"add".into(),file:"/api.py".into(),symbol:"add".into(),input_schema:Some(input_schema),output_schema:None,description:None,expected_version:None,expected_revision:None }),
+        ExampleCall::Call(CallInput { namespace:"demo".into(),function:"add".into(),arguments:Some(Map::from_iter([("text".into(),Value::String("hello".into()))])),expected_version:None,idempotency_key:None }),
+    ]
+}
+/// Build the static runtime documentation from typed records once.
+pub(crate) fn runtime_guide() -> RuntimeGuide {
+    static GUIDE: OnceLock<RuntimeGuide> = OnceLock::new();
+    GUIDE.get_or_init(|| RuntimeGuide {
+runtime: "Pydantic Monty".into(),
+abi_version: 1,
+compatibility: "Only ABI 1 is supported. Incompatible host signatures, invocation conventions, or result representations require an ABI increment. Unsupported declarations fail with ABI_MISMATCH and expected/actual versions; adapt source and redeclare. No automatic migration or older-ABI support is provided.".into(),
+execution: "Endpoint arguments are keyword arguments to the pinned Python symbol. Return a JSON-compatible value. Scripts use inputs and return their final expression as {value, stdout}. Helpers use the endpoint namespace or execute.namespace. Imports load namespace Python files and packages with per-run caching; published functions use pinned sources. Module initialization cannot call host APIs.".into(),
+hosts: vec![HostGuide { signature: "mcp(name, arguments={})".into(), returns: "The selected state tool result; function namespace isolation still applies.".into() },HostGuide { signature: "call(namespace, function, arguments={})".into(), returns: "Endpoint JSON value.".into() },HostGuide { signature: "db_query(database, sql, params=[])".into(), returns: "{columns: [string], rows: [[value]], rows_affected: integer}; one read-only statement.".into() },HostGuide { signature: "db_execute(database, sql, params=[])".into(), returns: "{columns: [string], rows: [[value]], rows_affected: integer}; one statement, supports RETURNING.".into() },HostGuide { signature: "db_inspect(database)".into(), returns: "Database name, id, snapshot, staged flag, schema_fingerprint, migrations, schema query result, and tables with columns/indexes/foreign_keys.".into() },HostGuide { signature: "read_text(path)".into(), returns: "UTF-8 string.".into() },HostGuide { signature: "write_text(path, text)".into(), returns: "File write metadata.".into() }],
+scope: "Published functions can access all files, databases, and functions in their own namespace, including creating databases, publishing functions, and running nested scripts. self resolves to the calling function namespace. Namespace names and UUIDs must resolve to that same namespace. Functions cannot access another namespace or create, copy, or list namespaces. Root scripts have owner access.".into(),
+transactions: "Nested host calls share the root transaction. Failure rolls back staged effects. Use expected_revision for namespace concurrency and expected_version for endpoint concurrency.".into(),
+snapshot: "An opaque immutable SQLite file identifier, not a content hash or namespace revision. inspect reports the referenced snapshot; staged=true means pending writes are not represented by that snapshot. Unreferenced snapshots can be removed by maintenance. No historical read or restore API accepts this identifier.".into(),
+example: examples()
+    }).clone()
 }

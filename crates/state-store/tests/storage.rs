@@ -1,5 +1,7 @@
+mod support;
 use serde_json::{Value, json};
 use state_store::{Store, Transaction};
+use support::ToolCalls;
 use tempfile::TempDir;
 
 fn setup() -> (TempDir, Store) {
@@ -9,35 +11,27 @@ fn setup() -> (TempDir, Store) {
 }
 fn run(store: &Store, tool: &str, args: Value) -> Value {
     let mut tx = store.begin().unwrap();
-    let result = tx.dispatch(tool, args).unwrap();
-    tx.commit().unwrap();
+    let result = tx.tool(tool, args).unwrap();
+    tx.commit_result().unwrap();
     result
 }
 fn namespace(store: &Store, name: &str) -> Value {
-    run(
-        store,
-        "state_namespace",
-        json!({"action":"create","name":name}),
-    )
+    run(store, "namespace.create", json!({"name":name}))
 }
 fn db(store: &Store, ns: &str) {
-    run(
-        store,
-        "state_db",
-        json!({"action":"create","namespace":ns,"database":"app"}),
-    );
+    run(store, "db.create", json!({"namespace":ns,"database":"app"}));
 }
 fn sql(store: &Store, ns: &str, action: &str, sql: &str) -> Value {
     run(
         store,
-        "state_db",
-        json!({"action":action,"namespace":ns,"database":"app","sql":sql}),
+        &format!("db.{action}"),
+        json!({"namespace":ns,"database":"app","sql":sql}),
     )
 }
 fn txsql(tx: &mut Transaction, ns: &str, sql: &str) -> Value {
-    tx.dispatch(
-        "state_db",
-        json!({"action":"execute","namespace":ns,"database":"app","sql":sql}),
+    tx.tool(
+        "db.execute",
+        json!({"namespace":ns,"database":"app","sql":sql}),
     )
     .unwrap()
 }
@@ -66,33 +60,25 @@ fn fork_preserves_then_diverges_without_payload_copy() {
     );
     run(
         &store,
-        "state_fs",
-        json!({"action":"write","namespace":"a","path":"/one.txt","text":"one"}),
+        "fs.write",
+        json!({"namespace":"a","path":"/one.txt","text":"one"}),
     );
     let count = snapshot_count(&dir);
     run(
         &store,
-        "state_namespace",
-        json!({"action":"copy","namespace":"a","name":"b"}),
+        "namespace.copy",
+        json!({"namespace":"a","name":"b"}),
     );
     assert_eq!(snapshot_count(&dir), count);
-    let a = run(
-        &store,
-        "state_namespace",
-        json!({"action":"get","namespace":"a"}),
-    );
-    let b = run(
-        &store,
-        "state_namespace",
-        json!({"action":"get","namespace":"b"}),
-    );
+    let a = run(&store, "namespace.get", json!({"namespace":"a"}));
+    let b = run(&store, "namespace.get", json!({"namespace":"b"}));
     assert_eq!(a["revision"], b["revision"]);
     assert_ne!(a["id"], b["id"]);
     sql(&store, "b", "execute", "UPDATE notes SET body='second'");
     run(
         &store,
-        "state_fs",
-        json!({"action":"write","namespace":"b","path":"/one.txt","text":"two"}),
+        "fs.write",
+        json!({"namespace":"b","path":"/one.txt","text":"two"}),
     );
     assert_eq!(
         sql(&store, "a", "query", "SELECT body FROM notes")["rows"],
@@ -105,8 +91,8 @@ fn fork_preserves_then_diverges_without_payload_copy() {
     assert_eq!(
         run(
             &store,
-            "state_fs",
-            json!({"action":"read","namespace":"a","path":"/one.txt"})
+            "fs.read",
+            json!({"namespace":"a","path":"/one.txt"})
         )["text"],
         "one"
     );
@@ -120,14 +106,11 @@ fn staged_copy_is_independent() {
     let mut tx = store.begin().unwrap();
     txsql(&mut tx, "a", "CREATE TABLE n(x)");
     txsql(&mut tx, "a", "INSERT INTO n VALUES(1)");
-    tx.dispatch(
-        "state_namespace",
-        json!({"action":"copy","namespace":"a","name":"b"}),
-    )
-    .unwrap();
+    tx.tool("namespace.copy", json!({"namespace":"a","name":"b"}))
+        .unwrap();
     txsql(&mut tx, "a", "UPDATE n SET x=2");
     txsql(&mut tx, "b", "INSERT INTO n VALUES(3)");
-    tx.commit().unwrap();
+    tx.commit_result().unwrap();
     assert_eq!(
         sql(&store, "a", "query", "SELECT x FROM n")["rows"],
         json!([[2]])
@@ -145,29 +128,25 @@ fn rename_preserves_uuid_and_reserves_deleted_names() {
     assert_eq!(
         run(
             &store,
-            "state_namespace",
-            json!({"action":"update","namespace":"a","name":"b"})
+            "namespace.update",
+            json!({"namespace":"a","name":"b"})
         )["id"],
         a["id"]
     );
     let mut tx = store.begin().unwrap();
     assert_eq!(
-        tx.dispatch("state_namespace", json!({"action":"get","namespace":"a"}))
+        tx.tool("namespace.get", json!({"namespace":"a"}))
             .unwrap_err()
             .code,
-        "NOT_FOUND"
+        state_store::ErrorCode::NotFound
     );
-    run(
-        &store,
-        "state_namespace",
-        json!({"action":"delete","namespace":"b"}),
-    );
+    run(&store, "namespace.delete", json!({"namespace":"b"}));
     let mut tx = store.begin().unwrap();
     assert_eq!(
-        tx.dispatch("state_namespace", json!({"action":"create","name":"b"}))
+        tx.tool("namespace.create", json!({"name":"b"}))
             .unwrap_err()
             .code,
-        "ALREADY_EXISTS"
+        state_store::ErrorCode::AlreadyExists
     );
 }
 
@@ -177,10 +156,10 @@ fn names_cannot_alias_existing_uuids() {
     let a = namespace(&store, "a");
     let mut tx = store.begin().unwrap();
     assert_eq!(
-        tx.dispatch("state_namespace", json!({"action":"create","name":a["id"]}))
+        tx.tool("namespace.create", json!({"name":a["id"]}))
             .unwrap_err()
             .code,
-        "ALREADY_EXISTS"
+        state_store::ErrorCode::AlreadyExists
     );
 }
 
@@ -191,25 +170,22 @@ fn paths_cannot_escape_or_conflict_with_directories() {
     for path in ["/../x", "../../x", "/a\0x", "/a\\x", "relative"] {
         let mut tx = store.begin().unwrap();
         assert_eq!(
-            tx.dispatch(
-                "state_fs",
-                json!({"action":"write","namespace":"a","path":path,"text":"x"})
-            )
-            .unwrap_err()
-            .code,
-            "INVALID_ARGUMENT"
+            tx.tool("fs.write", json!({"namespace":"a","path":path,"text":"x"}))
+                .unwrap_err()
+                .code,
+            state_store::ErrorCode::InvalidArgument
         );
     }
     run(
         &store,
-        "state_fs",
-        json!({"action":"write","namespace":"a","path":"/dir/x","text":"ok"}),
+        "fs.write",
+        json!({"namespace":"a","path":"/dir/x","text":"ok"}),
     );
     let mut tx = store.begin().unwrap();
     assert!(
-        tx.dispatch(
-            "state_fs",
-            json!({"action":"write","namespace":"a","path":"/dir","text":"bad"})
+        tx.tool(
+            "fs.write",
+            json!({"namespace":"a","path":"/dir","text":"bad"})
         )
         .is_err()
     );
@@ -227,19 +203,22 @@ fn restart_preserves_committed_state_and_rollback_hides_everything() {
     let mut tx = store.begin().unwrap();
     txsql(&mut tx, "a", "INSERT INTO n VALUES(1)");
     txsql(&mut tx, "b", "INSERT INTO n VALUES(2)");
-    tx.dispatch(
-        "state_fs",
-        json!({"action":"write","namespace":"a","path":"/pending","text":"x"}),
+    tx.tool(
+        "fs.write",
+        json!({"namespace":"a","path":"/pending","text":"x"}),
     )
     .unwrap();
     assert!(
-        tx.dispatch(
-            "state_db",
-            json!({"action":"execute","namespace":"b","database":"app","sql":"invalid sql"})
+        tx.tool(
+            "db.execute",
+            json!({"namespace":"b","database":"app","sql":"invalid sql"})
         )
         .is_err()
     );
-    assert_eq!(tx.commit().unwrap_err().code, "TRANSACTION_ABORTED");
+    assert_eq!(
+        tx.commit_result().unwrap_err().code,
+        state_store::ErrorCode::TransactionAborted
+    );
     drop(store);
     let reopened = Store::open(dir.path()).unwrap();
     assert_eq!(
@@ -251,11 +230,7 @@ fn restart_preserves_committed_state_and_rollback_hides_everything() {
         json!([])
     );
     assert_eq!(
-        run(
-            &reopened,
-            "state_fs",
-            json!({"action":"list","namespace":"a"})
-        )["entries"],
+        run(&reopened, "fs.list", json!({"namespace":"a"}))["entries"],
         json!([])
     );
 }
@@ -268,22 +243,19 @@ fn read_dependency_prevents_write_skew() {
     let mut first = store.begin().unwrap();
     let mut second = store.begin().unwrap();
     first
-        .dispatch("state_namespace", json!({"action":"get","namespace":"b"}))
+        .tool("namespace.get", json!({"namespace":"b"}))
         .unwrap();
     second
-        .dispatch(
-            "state_fs",
-            json!({"action":"write","namespace":"b","path":"/x","text":"2"}),
-        )
+        .tool("fs.write", json!({"namespace":"b","path":"/x","text":"2"}))
         .unwrap();
-    second.commit().unwrap();
+    second.commit_result().unwrap();
     first
-        .dispatch(
-            "state_fs",
-            json!({"action":"write","namespace":"a","path":"/x","text":"1"}),
-        )
+        .tool("fs.write", json!({"namespace":"a","path":"/x","text":"1"}))
         .unwrap();
-    assert_eq!(first.commit().unwrap_err().code, "CONFLICT");
+    assert_eq!(
+        first.commit_result().unwrap_err().code,
+        state_store::ErrorCode::Conflict
+    );
 }
 
 #[test]
@@ -297,8 +269,8 @@ fn migration_is_atomic_checksummed_and_ordered() {
     let apply = |migrations: Value| {
         run(
             &store,
-            "state_db",
-            json!({"action":"migrate","namespace":"a","database":"app","migrations":migrations}),
+            "db.migrate",
+            json!({"namespace":"a","database":"app","migrations":migrations}),
         )
     };
     assert_eq!(apply(migrations.clone())["applied"], 2);
@@ -310,17 +282,17 @@ fn migration_is_atomic_checksummed_and_ordered() {
     ] {
         let mut tx = store.begin().unwrap();
         assert_eq!(
-            tx.dispatch(
-                "state_db",
-                json!({"action":"migrate","namespace":"a","database":"app","migrations":invalid})
+            tx.tool(
+                "db.migrate",
+                json!({"namespace":"a","database":"app","migrations":invalid})
             )
             .unwrap_err()
             .code,
-            "MIGRATION_MISMATCH"
+            state_store::ErrorCode::MigrationMismatch
         );
     }
     let mut tx = store.begin().unwrap();
-    assert!(tx.dispatch("state_db",json!({"action":"migrate","namespace":"a","database":"app","migrations":[{"id":"003","sql":"CREATE TABLE uncommitted(x); BAD SQL"}]})).is_err());
+    assert!(tx.tool("db.migrate",json!({"namespace":"a","database":"app","migrations":[{"id":"003","sql":"CREATE TABLE uncommitted(x); BAD SQL"}]})).is_err());
     assert_eq!(
         sql(
             &store,
@@ -343,13 +315,13 @@ fn introspection_matches_schema_and_internal_ledger_is_invisible() {
     db(&store, "a");
     run(
         &store,
-        "state_db",
-        json!({"action":"migrate","namespace":"a","database":"app","migrations":[{"id":"001","sql":"CREATE TABLE p(id INTEGER PRIMARY KEY); CREATE TABLE c(id INTEGER PRIMARY KEY, p INTEGER REFERENCES p(id), title TEXT NOT NULL DEFAULT 'hello'); CREATE INDEX c_p ON c(p); CREATE VIEW cv AS SELECT title FROM c; CREATE TRIGGER ct AFTER INSERT ON p BEGIN INSERT INTO c(p) VALUES(new.id); END;"}]}),
+        "db.migrate",
+        json!({"namespace":"a","database":"app","migrations":[{"id":"001","sql":"CREATE TABLE p(id INTEGER PRIMARY KEY); CREATE TABLE c(id INTEGER PRIMARY KEY, p INTEGER REFERENCES p(id), title TEXT NOT NULL DEFAULT 'hello'); CREATE INDEX c_p ON c(p); CREATE VIEW cv AS SELECT title FROM c; CREATE TRIGGER ct AFTER INSERT ON p BEGIN INSERT INTO c(p) VALUES(new.id); END;"}]}),
     );
     let info = run(
         &store,
-        "state_db",
-        json!({"action":"inspect","namespace":"a","database":"app"}),
+        "db.inspect",
+        json!({"namespace":"a","database":"app"}),
     );
     let c = info["tables"]
         .as_array()
@@ -412,9 +384,9 @@ fn sql_cannot_attach_catalog_write_host_files_or_mutate_pragmas() {
         for action in ["query", "execute"] {
             let mut tx = store.begin().unwrap();
             assert!(
-                tx.dispatch(
-                    "state_db",
-                    json!({"action":action,"namespace":"a","database":"app","sql":statement})
+                tx.tool(
+                    &format!("db.{action}"),
+                    json!({"namespace":"a","database":"app","sql":statement})
                 )
                 .is_err(),
                 "{action}: {statement}"
@@ -436,9 +408,9 @@ fn read_only_query_and_single_statement_are_enforced() {
     ] {
         let mut tx = store.begin().unwrap();
         assert!(
-            tx.dispatch(
-                "state_db",
-                json!({"action":"query","namespace":"a","database":"app","sql":statement})
+            tx.tool(
+                "db.query",
+                json!({"namespace":"a","database":"app","sql":statement})
             )
             .is_err()
         );
@@ -456,56 +428,40 @@ fn endpoint_source_is_pinned_but_databases_can_be_dropped() {
     db(&store, "a");
     run(
         &store,
-        "state_fs",
-        json!({"action":"write","namespace":"a","path":"/api.py","text":"def f():\n return 1\n"}),
+        "fs.write",
+        json!({"namespace":"a","path":"/api.py","text":"def f():\n return 1\n"}),
     );
     let declaration = run(
         &store,
-        "state_function",
-        json!({"action":"declare","namespace":"a","name":"f","file":"/api.py","symbol":"f"}),
+        "function.declare",
+        json!({"namespace":"a","name":"f","file":"/api.py","symbol":"f"}),
     );
     run(
         &store,
-        "state_fs",
-        json!({"action":"write","namespace":"a","path":"/api.py","text":"def f():\n return 2\n"}),
+        "fs.write",
+        json!({"namespace":"a","path":"/api.py","text":"def f():\n return 2\n"}),
     );
     assert_eq!(
-        run(
-            &store,
-            "state_function",
-            json!({"action":"get","namespace":"a","name":"f"})
-        )["source"],
+        run(&store, "function.get", json!({"namespace":"a","name":"f"}))["source"],
         "def f():\n return 1\n"
     );
     run(
         &store,
-        "state_namespace",
-        json!({"action":"copy","namespace":"a","name":"b"}),
+        "namespace.copy",
+        json!({"namespace":"a","name":"b"}),
     );
     assert_eq!(
-        run(
-            &store,
-            "state_function",
-            json!({"action":"get","namespace":"b","name":"f"})
-        )["version"],
+        run(&store, "function.get", json!({"namespace":"b","name":"f"}))["version"],
         declaration["version"]
     );
+    run(&store, "db.drop", json!({"namespace":"a","database":"app"}));
     run(
         &store,
-        "state_db",
-        json!({"action":"drop","namespace":"a","database":"app"}),
-    );
-    run(
-        &store,
-        "state_db",
-        json!({"action":"create","namespace":"a","database":"app"}),
+        "db.create",
+        json!({"namespace":"a","database":"app"}),
     );
     assert_eq!(
-        run(
-            &store,
-            "state_function",
-            json!({"action":"get","namespace":"a","name":"f"})
-        )["version"],
+        run(&store, "function.get", json!({"namespace":"a","name":"f"}))["version"],
         declaration["version"]
     );
 }
@@ -517,16 +473,21 @@ fn receipts_commit_with_state_and_resolve_concurrent_duplicate() {
     let mut first = store.begin().unwrap();
     let mut duplicate = store.begin().unwrap();
     for tx in [&mut first, &mut duplicate] {
-        tx.dispatch(
-            "state_fs",
-            json!({"action":"write","namespace":"a","path":"/x","text":"once"}),
+        tx.tool(
+            "fs.write",
+            json!({"namespace":"a","path":"/x","text":"once"}),
         )
         .unwrap();
-        tx.set_receipt("owner", "key", "hash", json!({"ok":true}))
-            .unwrap();
+        tx.set_receipt(
+            "owner",
+            "key",
+            "hash",
+            state_store::records::ReceiptResult::Function(json!({"ok":true})),
+        )
+        .unwrap();
     }
-    first.commit().unwrap();
-    let replay = duplicate.commit().unwrap();
+    first.commit_result().unwrap();
+    let replay = duplicate.commit_result().unwrap();
     assert_eq!(replay["replayed"], true);
     assert_eq!(replay["result"], json!({"ok":true}));
     assert_eq!(
@@ -535,12 +496,25 @@ fn receipts_commit_with_state_and_resolve_concurrent_duplicate() {
     );
     let mut wrong = store.begin().unwrap();
     wrong
-        .set_receipt("owner", "key", "other", json!(1))
+        .set_receipt(
+            "owner",
+            "key",
+            "other",
+            state_store::records::ReceiptResult::Function(json!(1)),
+        )
         .unwrap();
-    assert_eq!(wrong.commit().unwrap_err().code, "IDEMPOTENCY_MISMATCH");
+    assert_eq!(
+        wrong.commit_result().unwrap_err().code,
+        state_store::ErrorCode::IdempotencyMismatch
+    );
     let mut dropped = store.begin().unwrap();
     dropped
-        .set_receipt("owner", "dropped", "hash", json!(1))
+        .set_receipt(
+            "owner",
+            "dropped",
+            "hash",
+            state_store::records::ReceiptResult::Function(json!(1)),
+        )
         .unwrap();
     drop(dropped);
     assert!(store.receipt("owner", "dropped").unwrap().is_none());
@@ -554,8 +528,8 @@ fn blobs_large_integers_duplicate_columns_and_returning_round_trip() {
     sql(&store, "a", "execute", "CREATE TABLE n(a,b)");
     let result = run(
         &store,
-        "state_db",
-        json!({"action":"execute","namespace":"a","database":"app","sql":"INSERT INTO n VALUES(?,?) RETURNING a AS x,b AS x","params":[{"$base64":"AAH/"},{"$integer":"9223372036854775807"}]}),
+        "db.execute",
+        json!({"namespace":"a","database":"app","sql":"INSERT INTO n VALUES(?,?) RETURNING a AS x,b AS x","params":[{"$base64":"AAH/"},{"$integer":"9223372036854775807"}]}),
     );
     assert_eq!(result["columns"], json!(["x", "x"]));
     assert_eq!(
@@ -571,12 +545,12 @@ fn excessive_output_and_sql_time_are_bounded() {
     namespace(&store, "a");
     db(&store, "a");
     let mut tx = store.begin().unwrap();
-    let err=tx.dispatch("state_db",json!({"action":"query","namespace":"a","database":"app","sql":"WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<11000) SELECT x FROM n"})).unwrap_err();
-    assert_eq!(err.code, "LIMIT_EXCEEDED");
+    let err=tx.tool("db.query",json!({"namespace":"a","database":"app","sql":"WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<11000) SELECT x FROM n"})).unwrap_err();
+    assert_eq!(err.code, state_store::ErrorCode::LimitExceeded);
     let start = std::time::Instant::now();
     let mut tx = store.begin().unwrap();
-    let err=tx.dispatch("state_db",json!({"action":"query","namespace":"a","database":"app","sql":"WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n) SELECT sum(x) FROM n"})).unwrap_err();
-    assert_eq!(err.code, "LIMIT_EXCEEDED");
+    let err=tx.tool("db.query",json!({"namespace":"a","database":"app","sql":"WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n) SELECT sum(x) FROM n"})).unwrap_err();
+    assert_eq!(err.code, state_store::ErrorCode::LimitExceeded);
     assert!(start.elapsed() < std::time::Duration::from_secs(5));
     assert_eq!(sql(&store, "a", "query", "SELECT 1")["rows"], json!([[1]]));
 }
@@ -586,16 +560,24 @@ fn stale_revision_and_missing_database_are_explicit_errors() {
     let (_dir, store) = setup();
     namespace(&store, "a");
     let mut tx = store.begin().unwrap();
-    assert_eq!(tx.dispatch("state_fs",json!({"action":"write","namespace":"a","path":"/x","text":"x","expected_revision":"stale"})).unwrap_err().code,"CONFLICT");
-    let mut tx = store.begin().unwrap();
     assert_eq!(
-        tx.dispatch(
-            "state_db",
-            json!({"action":"query","namespace":"a","database":"typo","sql":"SELECT 1"})
+        tx.tool(
+            "fs.write",
+            json!({"namespace":"a","path":"/x","text":"x","expected_revision":"stale"})
         )
         .unwrap_err()
         .code,
-        "NOT_FOUND"
+        state_store::ErrorCode::Conflict
+    );
+    let mut tx = store.begin().unwrap();
+    assert_eq!(
+        tx.tool(
+            "db.query",
+            json!({"namespace":"a","database":"typo","sql":"SELECT 1"})
+        )
+        .unwrap_err()
+        .code,
+        state_store::ErrorCode::NotFound
     );
 }
 
@@ -616,9 +598,9 @@ fn working_connection_preserves_temporary_state_and_copies_once() {
         "writes remain private until publication"
     );
     let query = |tx: &mut Transaction, source: &str| {
-        tx.dispatch(
-            "state_db",
-            json!({"action":"query","namespace":"a","database":"app","sql":source}),
+        tx.tool(
+            "db.query",
+            json!({"namespace":"a","database":"app","sql":source}),
         )
         .unwrap()
     };
@@ -626,17 +608,14 @@ fn working_connection_preserves_temporary_state_and_copies_once() {
         query(&mut tx, "SELECT last_insert_rowid()")["rows"],
         json!([[1]])
     );
-    tx.dispatch(
-        "state_namespace",
-        json!({"action":"copy","namespace":"a","name":"b"}),
-    )
-    .unwrap();
+    tx.tool("namespace.copy", json!({"namespace":"a","name":"b"}))
+        .unwrap();
     assert_eq!(
         query(&mut tx, "SELECT v FROM scratch")["rows"],
         json!([[42]])
     );
     txsql(&mut tx, "a", "UPDATE n SET x=8");
-    tx.commit().unwrap();
+    tx.commit_result().unwrap();
     assert_eq!(
         snapshot_count(&dir),
         before + 2,
@@ -661,25 +640,17 @@ fn exact_migration_replay_does_not_create_a_revision_or_snapshot() {
     let (dir, store) = setup();
     namespace(&store, "a");
     db(&store, "a");
-    let args = json!({"action":"migrate","namespace":"a","database":"app","migrations":[{"id":"1","sql":"CREATE TABLE n(x)"}]});
-    run(&store, "state_db", args.clone());
+    let args = json!({"namespace":"a","database":"app","migrations":[{"id":"1","sql":"CREATE TABLE n(x)"}]});
+    run(&store, "db.migrate", args.clone());
     let before = snapshot_count(&dir);
-    let ns = run(
-        &store,
-        "state_namespace",
-        json!({"action":"get","namespace":"a"}),
-    );
+    let ns = run(&store, "namespace.get", json!({"namespace":"a"}));
     let mut tx = store.begin().unwrap();
-    assert_eq!(tx.dispatch("state_db", args).unwrap()["applied"], 0);
-    assert_eq!(tx.commit().unwrap()["changed"], false);
+    assert_eq!(tx.tool("db.migrate", args).unwrap()["applied"], 0);
+    assert_eq!(tx.commit_result().unwrap()["changed"], false);
     assert_eq!(before, snapshot_count(&dir));
     assert_eq!(
         ns["revision"],
-        run(
-            &store,
-            "state_namespace",
-            json!({"action":"get","namespace":"a"})
-        )["revision"]
+        run(&store, "namespace.get", json!({"namespace":"a"}))["revision"]
     );
 }
 
@@ -693,15 +664,17 @@ fn crash_helper() {
     txsql(&mut tx, "a", "INSERT INTO n VALUES(1)");
     txsql(&mut tx, "b", "INSERT INTO n VALUES(2)");
     // A copy freezes staged bytes into snapshots, but does not publish them.
-    tx.dispatch(
-        "state_namespace",
-        json!({"action":"copy","namespace":"a","name":"copy"}),
+    tx.tool("namespace.copy", json!({"namespace":"a","name":"copy"}))
+        .unwrap();
+    tx.set_receipt(
+        "owner",
+        "crash-key",
+        "request",
+        state_store::records::ReceiptResult::Function(json!("committed")),
     )
     .unwrap();
-    tx.set_receipt("owner", "crash-key", "request", json!("committed"))
-        .unwrap();
     if std::env::var("STATE_STORE_CRASH_COMMIT").as_deref() == Ok("yes") {
-        tx.commit().unwrap();
+        tx.commit_result().unwrap();
     }
     std::process::exit(71);
 }
@@ -755,17 +728,14 @@ fn large_schema_inspection_stops_at_cumulative_result_budget() {
         .collect::<String>();
     run(
         &store,
-        "state_db",
-        json!({"action":"migrate","namespace":"a","database":"app","migrations":[{"id":"wide","sql":source}]}),
+        "db.migrate",
+        json!({"namespace":"a","database":"app","migrations":[{"id":"wide","sql":source}]}),
     );
     let mut tx = store.begin().unwrap();
     let error = tx
-        .dispatch(
-            "state_db",
-            json!({"action":"inspect","namespace":"a","database":"app"}),
-        )
+        .tool("db.inspect", json!({"namespace":"a","database":"app"}))
         .unwrap_err();
-    assert_eq!(error.code, "LIMIT_EXCEEDED");
+    assert_eq!(error.code, state_store::ErrorCode::LimitExceeded);
     assert!(error.message.contains("1 MiB"));
 }
 
@@ -776,11 +746,84 @@ fn explicit_temporary_tables_have_a_page_quota() {
     db(&store, "a");
     let mut tx = store.begin().unwrap();
     txsql(&mut tx, "a", "CREATE TEMP TABLE bounded(bytes BLOB)");
-    let error = tx.dispatch("state_db", json!({"action":"execute","namespace":"a","database":"app","sql":"WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM seq WHERE n<40) INSERT INTO bounded SELECT zeroblob(524288) FROM seq"})).unwrap_err();
-    assert_eq!(error.code, "LIMIT_EXCEEDED");
-    assert_eq!(tx.commit().unwrap_err().code, "TRANSACTION_ABORTED");
+    let error = tx.tool("db.execute", json!({"namespace":"a","database":"app","sql":"WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM seq WHERE n<40) INSERT INTO bounded SELECT zeroblob(524288) FROM seq"})).unwrap_err();
+    assert_eq!(error.code, state_store::ErrorCode::LimitExceeded);
+    assert_eq!(
+        tx.commit_result().unwrap_err().code,
+        state_store::ErrorCode::TransactionAborted
+    );
     assert_eq!(
         sql(&store, "a", "query", "SELECT name FROM sqlite_schema")["rows"],
         json!([])
+    );
+}
+
+#[test]
+fn typed_operations_abort_publication_after_a_caught_migration_failure() {
+    use state_store::inputs::{DbExecuteInput, DbMigrateInput, DbQueryInput, MigrationInput};
+    let (_directory, store) = setup();
+    namespace(&store, "typed");
+    db(&store, "typed");
+    sql(
+        &store,
+        "typed",
+        "execute",
+        "CREATE TABLE entries(value INTEGER)",
+    );
+    let mut tx = store.begin().unwrap();
+    tx.execute_database(&DbExecuteInput {
+        namespace: "typed".into(),
+        database: "app".into(),
+        sql: "INSERT INTO entries VALUES (1)".into(),
+        params: None,
+        expected_revision: None,
+    })
+    .unwrap();
+    let failure = tx
+        .migrate_database(&DbMigrateInput {
+            namespace: "typed".into(),
+            database: "app".into(),
+            expected_revision: None,
+            migrations: vec![
+                MigrationInput {
+                    id: "first".into(),
+                    sql: "INSERT INTO entries VALUES (2)".into(),
+                },
+                MigrationInput {
+                    id: "broken".into(),
+                    sql: "INSERT INTO missing VALUES (3)".into(),
+                },
+            ],
+        })
+        .unwrap_err();
+    assert_ne!(failure.code, state_store::ErrorCode::TransactionAborted);
+    let query = DbQueryInput {
+        namespace: "typed".into(),
+        database: "app".into(),
+        sql: "SELECT COUNT(*) FROM entries".into(),
+        params: None,
+    };
+    assert_eq!(
+        tx.query_database(&query).unwrap_err().code,
+        state_store::ErrorCode::TransactionAborted
+    );
+    assert_eq!(
+        tx.commit_result().unwrap_err().code,
+        state_store::ErrorCode::TransactionAborted
+    );
+    let mut fresh = store.begin().unwrap();
+    assert_eq!(
+        fresh.query_database(&query).unwrap().rows,
+        vec![vec![state_store::records::SqlCell::Integer(0)]]
+    );
+    assert!(
+        fresh
+            .database_migrations(&state_store::inputs::DbMigrationsInput {
+                namespace: "typed".into(),
+                database: "app".into()
+            })
+            .unwrap()
+            .migrations
+            .is_empty()
     );
 }

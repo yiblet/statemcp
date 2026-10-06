@@ -17,7 +17,7 @@ pub trait RuntimeBackend: Send + Sync {
         source: &str,
         modules: &ModuleSources,
         symbol: &str,
-        arguments: Value,
+        arguments: serde_json::Map<String, Value>,
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError>;
@@ -48,7 +48,7 @@ impl RuntimeBackend for EmbeddedBackend {
         source: &str,
         modules: &ModuleSources,
         symbol: &str,
-        arguments: Value,
+        arguments: serde_json::Map<String, Value>,
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
@@ -80,7 +80,7 @@ impl RuntimeBackend for WorkerConfig {
         source: &str,
         modules: &ModuleSources,
         symbol: &str,
-        arguments: Value,
+        arguments: serde_json::Map<String, Value>,
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {

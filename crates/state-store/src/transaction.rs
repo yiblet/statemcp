@@ -1,5 +1,5 @@
-//! Root invocation lifecycle, dispatch poisoning, and all-or-nothing publication.
-mod databases;
+//! Root invocation lifecycle, operation poisoning, and all-or-nothing publication.
+mod domain;
 mod files;
 mod functions;
 mod namespaces;
@@ -7,13 +7,10 @@ mod objects;
 mod snapshots;
 
 use self::snapshots::WorkingDatabase;
-use crate::{
-    Arguments, Error, Operation, Receipt, Result, Store, Tool, identity::id, model::Namespace, sql,
-};
-use serde_json::{Value, json};
+use crate::{Error, Receipt, Result, Store, identity::id, model::Namespace, sql};
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
-/// A consistent root invocation. Any failed dispatch poisons publication.
+/// A consistent root invocation. Any failed operation poisons publication.
 /// Dropping it discards all logical changes; unreachable sealed files are retained.
 pub struct Transaction {
     store: Store,
@@ -60,7 +57,7 @@ impl Transaction {
         principal: &str,
         key: &str,
         request_hash: &str,
-        result: Value,
+        result: crate::records::ReceiptResult,
     ) -> Result<()> {
         if principal.is_empty() || key.is_empty() || key.len() > 256 {
             self.poisoned = true;
@@ -82,87 +79,37 @@ impl Transaction {
         ));
         Ok(())
     }
-    pub fn dispatch(&mut self, tool: &str, args: Value) -> Result<Value> {
+    /// A failed operation permanently aborts this root transaction, including caught errors.
+    fn operation<T>(&mut self, action: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         if self.poisoned {
             return Err(Error::new(
-                "TRANSACTION_ABORTED",
+                crate::ErrorCode::TransactionAborted,
                 "a prior operation failed",
             ));
         }
-        let result = tool
-            .parse::<Tool>()
-            .map_err(|_| {
-                Error::new(
-                    "UNSUPPORTED_FEATURE",
-                    format!("storage does not handle {tool}"),
-                )
-            })
-            .and_then(|tool| tool.operation(&args))
-            .and_then(|operation| self.dispatch_operation(operation, args));
+        let result = action(self);
         if result.is_err() {
             self.poisoned = true;
         }
         result
     }
-    pub fn dispatch_operation(&mut self, operation: Operation, args: Value) -> Result<Value> {
+    pub fn commit(mut self) -> Result<crate::records::CommitOutcome> {
         if self.poisoned {
             return Err(Error::new(
-                "TRANSACTION_ABORTED",
-                "a prior operation failed",
-            ));
-        }
-        let result = (|| {
-            let mut args = args;
-            if let Some(action) = operation.action_name() {
-                args.as_object_mut()
-                    .ok_or_else(|| Error::invalid("arguments must be an object"))?
-                    .insert("action".into(), json!(action));
-            }
-            let request = Arguments::parse(operation.tool(), args)?;
-            self.dispatch_request(&request)
-        })();
-
-        if result.is_err() {
-            self.poisoned = true;
-        }
-        result
-    }
-    pub fn dispatch_request(&mut self, request: &Arguments) -> Result<Value> {
-        if self.poisoned {
-            return Err(Error::new(
-                "TRANSACTION_ABORTED",
-                "a prior operation failed",
-            ));
-        }
-        let result = match request {
-            Arguments::Namespace(args) => self.namespace(args),
-            Arguments::File(args) => self.file(args),
-            Arguments::Database(args) => self.database(args),
-            Arguments::Function(args) => self.function(args),
-            Arguments::Call(_) | Arguments::Execute(_) | Arguments::Describe(_) => Err(Error::new(
-                "UNSUPPORTED_FEATURE",
-                format!(
-                    "storage does not handle {}",
-                    request.operation().tool().as_str()
-                ),
-            )),
-        };
-        if result.is_err() {
-            self.poisoned = true;
-        }
-        result
-    }
-    pub fn commit(mut self) -> Result<Value> {
-        if self.poisoned {
-            return Err(Error::new(
-                "TRANSACTION_ABORTED",
+                crate::ErrorCode::TransactionAborted,
                 "a prior operation failed; no changes were published",
             ));
         }
         self.seal_working_databases()?;
         let changed = self.namespaces.values().any(|n| n.dirty);
         if !changed && self.receipt.is_none() {
-            return Ok(json!({"generation":self.generation,"revisions":{},"changed":false}));
+            return Ok(crate::records::CommitOutcome::Published(
+                crate::records::CommitMetadata {
+                    generation: self.generation,
+                    revisions: BTreeMap::new(),
+                    changed: false,
+                },
+            ));
         }
         self.store.publish(
             self.generation,

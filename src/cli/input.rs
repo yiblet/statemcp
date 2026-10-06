@@ -1,10 +1,8 @@
 //! Bounded CLI input loading and unambiguous merging of JSON and named flags.
-use super::Operation;
 use anyhow::{Context, Result, bail};
-use serde::Serialize;
-use serde_json::{Map, Value, json};
-use state_core::NamespaceAction;
-use statemcp::{Request, Tool, protocol::MAX_FRAME_BYTES};
+use serde::{Serialize, de::DeserializeOwned};
+use serde_json::{Map, Value};
+use statemcp::protocol::MAX_FRAME_BYTES;
 use std::{
     fs::File,
     io::{self, Read},
@@ -34,14 +32,13 @@ fn read(reader: impl Read) -> Result<String> {
     String::from_utf8(bytes).context("input is not UTF-8")
 }
 
-pub fn json_value(input: &str) -> Result<Value> {
+pub fn parse_json<T: DeserializeOwned>(input: &str) -> Result<T> {
     serde_json::from_str(&source(input)?).context("invalid JSON")
 }
-
 fn merge(input: Option<&str>, fields: &impl Serialize) -> Result<Map<String, Value>> {
     let mut map = match input {
         Some(input) => {
-            let Value::Object(map) = json_value(input)? else {
+            let Value::Object(map) = parse_json(input)? else {
                 bail!("--json must contain an object");
             };
             map
@@ -60,25 +57,51 @@ fn merge(input: Option<&str>, fields: &impl Serialize) -> Result<Map<String, Val
     Ok(map)
 }
 
-pub fn request(tool: Tool, input: Option<&str>, fields: &impl Serialize) -> Result<Request> {
-    Request::grouped(tool, Value::Object(merge(input, fields)?)).map_err(Into::into)
+/// Merge external JSON and CLI flags at this transport boundary, then retain only the concrete input.
+pub fn parse<T: DeserializeOwned>(input: Option<&str>, fields: &impl Serialize) -> Result<T> {
+    serde_json::from_value(Value::Object(merge(input, fields)?)).map_err(|e| {
+        state_core::Error::new(state_core::ErrorCode::InvalidArgument, e.to_string()).into()
+    })
+}
+pub fn parse_receipted<T: DeserializeOwned>(
+    input: Option<&str>,
+    fields: &impl Serialize,
+    tool: &str,
+) -> Result<(T, Option<state_core::ReceiptIdentity>)> {
+    let arguments = merge(input, fields)?;
+    let receipt = arguments
+        .get("idempotency_key")
+        .map(|key| {
+            state_core::ReceiptIdentity::for_arguments(
+                key.as_str().ok_or_else(|| {
+                    state_core::Error::new(
+                        state_core::ErrorCode::InvalidArgument,
+                        "idempotency_key must be a string",
+                    )
+                })?,
+                tool,
+                &arguments,
+            )
+        })
+        .transpose()?;
+    let input = serde_json::from_value(Value::Object(arguments)).map_err(|e| {
+        state_core::Error::new(state_core::ErrorCode::InvalidArgument, e.to_string())
+    })?;
+    Ok((input, receipt))
 }
 
-pub fn operation(args: &Operation, fields: &impl Serialize, tool: Tool) -> Result<Request> {
-    let mut map = merge(args.json.as_deref(), fields)?;
-    if let Some(action) = &args.action
-        && map.insert("action".into(), json!(action)).is_some()
-    {
-        bail!("action supplied both positionally and inside --json");
+pub fn discovery_mode(value: &str) -> Result<state_core::inputs::DiscoveryMode> {
+    use state_core::inputs::DiscoveryMode;
+    match value {
+        "overview" => Ok(DiscoveryMode::Overview),
+        "full" => Ok(DiscoveryMode::Full),
+        "runtime" => Ok(DiscoveryMode::Runtime),
+        "readme" => Ok(DiscoveryMode::Readme),
+        _ => bail!("unknown discovery mode"),
     }
-    if !map.contains_key("action") {
-        bail!("supply an action positionally or inside --json");
-    }
-    if tool == Tool::Namespace
-        && let Some(wire) = map["action"].as_str()
-        && let Ok(action) = wire.parse::<NamespaceAction>()
-    {
-        map.insert("action".into(), json!(action));
-    }
-    Request::grouped(tool, Value::Object(map)).map_err(Into::into)
 }
+
+/// One JSON array flag, distinct from Clap's repeated scalar arguments.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct JsonArray<T>(Vec<T>);

@@ -64,7 +64,7 @@ impl WorkerConfig {
         &self,
         source: &str,
         symbol: &str,
-        arguments: Value,
+        arguments: serde_json::Map<String, Value>,
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
@@ -81,7 +81,7 @@ impl WorkerConfig {
         &self,
         source: &str,
         symbol: &str,
-        arguments: Value,
+        arguments: serde_json::Map<String, Value>,
         modules: &ModuleSources,
         limits: &Limits,
         host: &mut HostCallback<'_>,
@@ -121,7 +121,7 @@ impl WorkerConfig {
             limits,
             &mut |_, _, _| {
                 Err(RuntimeError::new(
-                    "PERMISSION_DENIED",
+                    crate::ErrorCode::PermissionDenied,
                     "module initialization cannot call host functions",
                 ))
             },
@@ -137,7 +137,12 @@ impl WorkerConfig {
         validate_frame_limit(self.max_frame_bytes)?;
         let deadline = Instant::now()
             .checked_add(limits.max_duration)
-            .ok_or_else(|| RuntimeError::new("INVALID_ARGUMENT", "invalid execution duration"))?;
+            .ok_or_else(|| {
+                RuntimeError::new(
+                    crate::ErrorCode::InvalidArgument,
+                    "invalid execution duration",
+                )
+            })?;
         if operation.source().len() > limits.max_source_bytes {
             return Err(limit("source byte limit exceeded"));
         }
@@ -145,7 +150,7 @@ impl WorkerConfig {
         let memory = limits.max_memory.unwrap_or(self.default_memory_bytes);
         if memory == 0 || memory > usize::MAX - MAX_FRAME_BYTES {
             return Err(RuntimeError::new(
-                "INVALID_ARGUMENT",
+                crate::ErrorCode::InvalidArgument,
                 "invalid worker memory limit",
             ));
         }
@@ -153,7 +158,7 @@ impl WorkerConfig {
         limits.max_memory = Some(memory);
         // Serialize before spawning so an invalid/oversized request cannot leave a child.
         let request = encode(
-            &Request {
+            &WorkerCommand {
                 operation,
                 limits: limits.clone(),
             },
@@ -247,7 +252,7 @@ pub fn invoke_isolated(
     config: &WorkerConfig,
     source: &str,
     symbol: &str,
-    arguments: Value,
+    arguments: serde_json::Map<String, Value>,
     limits: &Limits,
     host: &mut HostCallback<'_>,
 ) -> Result<RunResult, RuntimeError> {
@@ -274,7 +279,7 @@ enum Operation {
         source: String,
         modules: ModuleSources,
         symbol: String,
-        arguments: Value,
+        arguments: serde_json::Map<String, Value>,
     },
     Validate {
         source: String,
@@ -300,7 +305,7 @@ impl Operation {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Request {
+struct WorkerCommand {
     operation: Operation,
     limits: Limits,
 }
@@ -332,14 +337,14 @@ pub fn worker_main(memory_bytes: usize, max_frame_bytes: usize) -> Result<(), Ru
     validate_frame_limit(max_frame_bytes)?;
     if memory_bytes == 0 || memory_bytes > usize::MAX - MAX_FRAME_BYTES {
         return Err(RuntimeError::new(
-            "INVALID_ARGUMENT",
+            crate::ErrorCode::InvalidArgument,
             "invalid worker memory limit",
         ));
     }
     crate::arm_worker_memory_limit(memory_bytes)?;
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
-    let mut request: Request = read_frame(&mut input, max_frame_bytes)?;
+    let mut request: WorkerCommand = read_frame(&mut input, max_frame_bytes)?;
     // The command-line ceiling is authoritative, including for malformed clients.
     request.limits.max_memory = Some(memory_bytes);
     let mut host = |name: &str, args: Vec<Value>, kwargs: Map<String, Value>| {
@@ -493,7 +498,7 @@ fn reap(child: &Mutex<Child>) -> Option<ExitStatus> {
 fn validate_frame_limit(max: usize) -> Result<(), RuntimeError> {
     if !(1024..=MAX_FRAME_BYTES).contains(&max) {
         Err(RuntimeError::new(
-            "INVALID_ARGUMENT",
+            crate::ErrorCode::InvalidArgument,
             "worker frame limit must be between 1 KiB and 64 MiB",
         ))
     } else {
@@ -551,13 +556,13 @@ fn write_bytes(output: &mut impl Write, bytes: &[u8]) -> Result<(), RuntimeError
     output.flush().map_err(io_error)
 }
 fn protocol(message: impl Into<String>) -> RuntimeError {
-    RuntimeError::new("WORKER_FAILED", message)
+    RuntimeError::new(crate::ErrorCode::WorkerFailed, message)
 }
 fn io_error(error: io::Error) -> RuntimeError {
     protocol(format!("worker I/O failed: {error}"))
 }
 fn limit(message: impl Into<String>) -> RuntimeError {
-    RuntimeError::new("LIMIT_EXCEEDED", message)
+    RuntimeError::new(crate::ErrorCode::LimitExceeded, message)
 }
 
 #[cfg(test)]
@@ -587,7 +592,7 @@ mod tests {
                     .err()
                     .unwrap()
                     .code,
-                "WORKER_FAILED"
+                crate::ErrorCode::WorkerFailed
             );
         }
     }

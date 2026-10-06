@@ -1,16 +1,17 @@
 # state-core
 
-The library service behind statemcp's seven fixed tools. It composes immutable
-storage and Monty through one dispatcher, with the same validation and permission
-checks for direct calls and Python host calls. No Python installation is needed.
+The typed service behind StateMCP’s 30 tools. Named methods receive concrete
+inputs, return concrete records, and compose storage and Monty in one transaction.
+No Python installation is needed.
 
 ```rust,no_run
-use serde_json::json;
-use state_core::State;
-let state = State::open("./state")?; // embedded Monty
-state.dispatch("state_namespace", json!({"action":"create", "name":"notes"}))?;
-let result = state.dispatch("state_execute", json!({"script":"inputs + 1", "inputs":41}))?;
-assert_eq!(result["value"], 42);
+use state_core::{State, inputs::NamespaceCreateInput};
+use state_store::DescriptionChange;
+let state = State::open("./state")?;
+let namespace = state.create_namespace(NamespaceCreateInput {
+    name: "notes".into(), description: DescriptionChange::Set("Shared notes".into()),
+})?;
+assert!(namespace.revision.is_some());
 # Ok::<(), state_core::Error>(())
 ```
 
@@ -22,12 +23,9 @@ the same trait for same-executable workers; the executable must install the
 runtime allocator and worker entrypoint as described in `state-runtime`.
 `State::with_limits(CoreLimits)` changes root/runtime budgets.
 
-`dispatch(tool, arguments)` uses the trusted `owner` identity. `dispatch_as`
-accepts an embedding-provided identity **only for receipt scoping**; it does not
-authenticate users or establish tenant permissions. Every root operation has
-local owner access. This v1 API is intended for trusted local builders; only
-published function bodies execute with access restricted to their own namespace. The `Store`
-accessor is similarly an owner API, not a restricted interface for untrusted code.
+`State::with_principal(identity)` scopes receipts to an embedding-provided identity.
+It does not authenticate users or establish tenant permissions. Root operations
+have owner access. Published function bodies are restricted to their own namespace.
 
 ## Fixed operations and results
 
@@ -35,35 +33,34 @@ accessor is similarly an owner API, not a restricted interface for untrusted cod
 JSON schemas that the service itself enforces. Unknown fields, actions, malformed
 argument types, and unknown host keyword arguments are errors. Storage operation
 shapes are documented in `state-store/README.md` and exposed through
-`state_describe`. The core supports all storage actions, including `state_fs`
-`stat`/`copy`, and `state_db` `drop`/`migrations`.
+`describe`. The core supports all storage actions, including `fs`
+`stat`/`copy`, and `db.query` `drop`/`migrations`.
 
-`state_call` takes `{namespace,function,arguments?,expected_version?,idempotency_key?}`
+`call` takes `{namespace,function,arguments?,expected_version?,idempotency_key?}`
 and returns the endpoint's JSON value directly. `arguments` defaults to `{}`.
-`state_execute` takes `{script,inputs?,namespace?,idempotency_key?}` and returns
+`execute` takes `{script,inputs?,namespace?,idempotency_key?}` and returns
 `{value,stdout}`. `inputs` defaults to null, and `namespace` selects the default
-namespace for helpers. Top-level scripts have owner access and may call all seven
+namespace for helpers. Top-level scripts have owner access and may call all 30
 tools; scripts nested through `mcp` retain that authority and share the root budget.
 Scripts nested inside functions inherit the function's namespace scope.
 
 There is no revision envelope around composable results. Root namespace
 create/copy/update results contain the actual committed revision; corresponding
 nested results omit a revision because their changes are still staged. Use
-`state_namespace get` in a subsequent root call to inspect a committed head.
+`namespace.get` in a subsequent root call to inspect a committed head.
 Nested SQL/file operations always operate on the root's private staged state.
 Python print output from an endpoint is bounded and discarded; script prints are
 returned in that script's `stdout` (nested script output is returned by its own
-`state_execute` call, not spliced into the outer print stream).
+`execute` call, not spliced into the outer print stream).
 
 ## Publication and namespace scope
 
-A declaration takes `action: declare|update`, `namespace`, `name`, `file`, and
+`function.declare` and `function.update` take `namespace`, `name`, `file`, and
 `symbol`. Optional fields are `description`, `input_schema`, `output_schema`,
 `expected_version`, and `expected_revision`.
 
 ```json
 {
-  "action": "declare",
   "namespace": "notes",
   "name": "add",
   "file": "/api.py",
@@ -115,7 +112,7 @@ returns host signatures, result shapes, namespace scope, ABI policy, and a runna
 endpoint example. `mode:"full"` returns full schemas; `tool:"db.create"` focuses discovery on one operation.
 
 Declaration/update responses contain `name`, `published`, and `version`;
-explicit `state_function get` retains source and diagnostic metadata. Database
+explicit `function.get` retains source and diagnostic metadata. Database
 creation omits UUID/snapshot metadata, which remains available through inspect.
 Direct mutations include their committed namespace revision when one is created.
 
@@ -134,7 +131,7 @@ write_text(path, text)
 Arguments can be positional or use these keyword names. Helpers use the default
 namespace of the script or the owning namespace of the endpoint. `call("self",
 ...)` and `mcp` namespace `self` resolve locally inside endpoint bodies. Use
-`mcp("state_db", {...})` for migrations, or to select an explicit namespace in an
+`mcp("db.query", {...})` for migrations, or to select an explicit namespace in an
 owner script. Database values remain bound parameters, never interpolated code.
 Imports resolve Python files and packages inside the selected namespace.
 There is no third-party package installer.
@@ -172,7 +169,7 @@ file therefore cannot silently succeed. Lists are bounded but unpaginated.
 History, old snapshots, and receipts remain until explicit storage maintenance.
 This service does not run automatic GC or receipt expiration.
 
-Only root `state_call`/`state_execute` accept `idempotency_key` (1..256 bytes).
+Only root `call`/`execute` accept `idempotency_key` (1..256 bytes).
 Nested keys are rejected. Receipts are scoped by trusted principal and a
 canonical hash of tool/arguments; identical retries return the exact committed
 result, changed requests return `IDEMPOTENCY_MISMATCH`. Concurrent duplicates

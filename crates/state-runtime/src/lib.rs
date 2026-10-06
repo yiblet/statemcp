@@ -10,6 +10,7 @@ use monty_types::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+pub use state_contract::ErrorCode;
 use std::{
     borrow::Cow,
     collections::BTreeMap,
@@ -97,14 +98,14 @@ impl Default for Limits {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeError {
-    pub code: String,
+    pub code: ErrorCode,
     pub message: String,
 }
 
 impl RuntimeError {
-    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
-            code: code.into(),
+            code,
             message: message.into(),
         }
     }
@@ -131,7 +132,7 @@ pub struct RunResult {
 /// on a fresh worker before parsing inputs; use one worker per root invocation.
 pub fn arm_worker_memory_limit(bytes: usize) -> Result<(), RuntimeError> {
     monty_alloc::set_hard_limit(monty_types::memory_limit_with_headroom(Some(bytes), false))
-        .map_err(|message| RuntimeError::new("UNSUPPORTED_FEATURE", message))
+        .map_err(|message| RuntimeError::new(crate::ErrorCode::UnsupportedFeature, message))
 }
 
 pub fn memory_tracking_active() -> bool {
@@ -194,7 +195,7 @@ pub fn execute_with_bindings_with_modules(
     for (name, value) in &bindings {
         if !identifier(name) || HOST_FUNCTIONS.contains(&name.as_str()) {
             return Err(RuntimeError::new(
-                "INVALID_ARGUMENT",
+                crate::ErrorCode::InvalidArgument,
                 "invalid or reserved binding name",
             ));
         }
@@ -233,7 +234,7 @@ pub fn validate_module_with_modules(
 pub fn invoke(
     source: &str,
     symbol: &str,
-    arguments: Value,
+    arguments: serde_json::Map<String, Value>,
     limits: &Limits,
     host: &mut HostCallback<'_>,
 ) -> Result<RunResult, RuntimeError> {
@@ -250,21 +251,18 @@ pub fn invoke(
 pub fn invoke_with_modules(
     source: &str,
     symbol: &str,
-    arguments: Value,
+    arguments: serde_json::Map<String, Value>,
     modules: &ModuleSources,
     limits: &Limits,
     host: &mut HostCallback<'_>,
 ) -> Result<RunResult, RuntimeError> {
-    if !arguments.is_object() {
-        return Err(RuntimeError::new(
-            "INVALID_ARGUMENT",
-            "endpoint arguments must be an object",
-        ));
-    }
     let mut session = Session::new(source, limits)?;
     let repl = session.module(source, symbol, modules)?;
     let mut inputs = NamedValues::new();
-    inputs.push("__state_arguments", session.to_monty(&arguments)?);
+    inputs.push(
+        "__state_arguments",
+        session.to_monty(&Value::Object(arguments))?,
+    );
     // Symbol syntax is restricted to one identifier before interpolation.
     let source = format!("{symbol}(**__state_arguments)");
     let progress = repl
@@ -329,7 +327,7 @@ impl<'a> Session<'a> {
         }
         if limits.max_memory.is_some() && !memory_tracking_active() {
             return Err(RuntimeError::new(
-                "UNSUPPORTED_FEATURE",
+                crate::ErrorCode::UnsupportedFeature,
                 "aggregate memory limits require an installed and armed LimitedAllocator in a dedicated worker",
             ));
         }
@@ -384,7 +382,7 @@ impl<'a> Session<'a> {
         modules.check_limit(self.limits)?;
         let mut inputs = host_inputs();
         let files = serde_json::to_value(&modules.files)
-            .map_err(|e| RuntimeError::new("INVALID_ARGUMENT", e.to_string()))?;
+            .map_err(|e| RuntimeError::new(crate::ErrorCode::InvalidArgument, e.to_string()))?;
         inputs.push("__state_sources", self.to_monty(&files)?);
         inputs.push("__state_modules", self.to_monty(&serde_json::json!({}))?);
         let root = modules
@@ -408,7 +406,7 @@ impl<'a> Session<'a> {
         if !identifier(symbol) || symbol == "__state_arguments" || HOST_FUNCTIONS.contains(&symbol)
         {
             return Err(RuntimeError::new(
-                "INVALID_ARGUMENT",
+                crate::ErrorCode::InvalidArgument,
                 "endpoint symbol must be a non-reserved Python identifier",
             ));
         }
@@ -420,7 +418,7 @@ impl<'a> Session<'a> {
         let (repl, _) = self.drive(progress, None)?;
         if !repl.has_function(symbol) {
             return Err(RuntimeError::new(
-                "INVALID_ARGUMENT",
+                crate::ErrorCode::InvalidArgument,
                 format!("module has no callable {symbol}"),
             ));
         }
@@ -439,7 +437,7 @@ impl<'a> Session<'a> {
                 ReplProgress::FunctionCall(call) => {
                     let Some(host) = host.as_mut() else {
                         return Err(RuntimeError::new(
-                            "PERMISSION_DENIED",
+                            crate::ErrorCode::PermissionDenied,
                             "module initialization cannot call host functions",
                         ));
                     };
@@ -447,7 +445,7 @@ impl<'a> Session<'a> {
                         || call.object_id.is_some()
                     {
                         return Err(RuntimeError::new(
-                            "PERMISSION_DENIED",
+                            crate::ErrorCode::PermissionDenied,
                             "unknown host function",
                         ));
                     }
@@ -482,19 +480,19 @@ impl<'a> Session<'a> {
                 }
                 ReplProgress::OsCall(_) => {
                     return Err(RuntimeError::new(
-                        "PERMISSION_DENIED",
+                        crate::ErrorCode::PermissionDenied,
                         "host filesystem and OS operations are disabled",
                     ));
                 }
                 ReplProgress::NameLookup(call) => {
                     return Err(RuntimeError::new(
-                        "PYTHON_ERROR",
+                        crate::ErrorCode::PythonError,
                         format!("undefined name: {}", call.name),
                     ));
                 }
                 ReplProgress::ResolveFutures(_) => {
                     return Err(RuntimeError::new(
-                        "UNSUPPORTED_FEATURE",
+                        crate::ErrorCode::UnsupportedFeature,
                         "unresolved asynchronous host futures are unsupported",
                     ));
                 }
@@ -532,16 +530,18 @@ fn repl_error(error: Box<monty::ReplStartError>) -> RuntimeError {
 }
 fn python_error(error: MontyException) -> RuntimeError {
     let code = match error.exc_type() {
-        ExcType::MemoryError | ExcType::TimeoutError | ExcType::RecursionError => "LIMIT_EXCEEDED",
-        _ => "PYTHON_ERROR",
+        ExcType::MemoryError | ExcType::TimeoutError | ExcType::RecursionError => {
+            crate::ErrorCode::LimitExceeded
+        }
+        _ => crate::ErrorCode::PythonError,
     };
     RuntimeError::new(code, error.to_string())
 }
 fn limit_error(message: impl Into<String>) -> RuntimeError {
-    RuntimeError::new("LIMIT_EXCEEDED", message)
+    RuntimeError::new(crate::ErrorCode::LimitExceeded, message)
 }
 fn invalid_result(message: impl Into<String>) -> RuntimeError {
-    RuntimeError::new("INVALID_ARGUMENT", message)
+    RuntimeError::new(crate::ErrorCode::InvalidArgument, message)
 }
 
 struct JsonBudget {

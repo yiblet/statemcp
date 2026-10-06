@@ -1,4 +1,5 @@
 //! Application connections never open or attach the catalog.
+use crate::records::{BinaryCell, IntegerCell, SqlCell};
 use crate::{Error, Result};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rusqlite::{
@@ -7,7 +8,6 @@ use rusqlite::{
     limits::Limit,
     types::{Value as SqlValue, ValueRef},
 };
-use serde_json::{Value, json};
 use std::{
     path::Path,
     time::{Duration, Instant},
@@ -150,72 +150,62 @@ pub(crate) fn open(path: &Path, writable: bool) -> Result<Connection> {
     Ok(conn)
 }
 
-fn parameter(value: &Value) -> Result<SqlValue> {
+fn parameter(value: &SqlCell) -> Result<SqlValue> {
     Ok(match value {
-        Value::Null => SqlValue::Null,
-        Value::Bool(b) => SqlValue::Integer(i64::from(*b)),
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                SqlValue::Integer(i)
-            } else if n.is_u64() {
-                return Err(Error::new(
-                    "INVALID_ARGUMENT",
-                    "integer parameter exceeds SQLite signed 64-bit range",
-                ));
-            } else {
-                SqlValue::Real(n.as_f64().ok_or_else(|| Error::invalid("invalid number"))?)
-            }
+        SqlCell::Null(()) => SqlValue::Null,
+        SqlCell::Boolean(value) => SqlValue::Integer(i64::from(*value)),
+        SqlCell::Integer(value) => SqlValue::Integer(*value),
+        SqlCell::Unsigned(value) => {
+            SqlValue::Integer(i64::try_from(*value).map_err(|_| {
+                Error::invalid("integer parameter exceeds SQLite signed 64-bit range")
+            })?)
         }
-        Value::String(s) => SqlValue::Text(s.clone()),
-        Value::Object(m) if m.len() == 1 && m.contains_key("$base64") => SqlValue::Blob(
+        SqlCell::Real(value) if value.is_finite() => SqlValue::Real(*value),
+        SqlCell::Real(_) => return Err(Error::invalid("non-finite SQL parameter")),
+        SqlCell::Text(value) => SqlValue::Text(value.clone()),
+        SqlCell::Binary(value) => SqlValue::Blob(
             STANDARD
-                .decode(
-                    m["$base64"]
-                        .as_str()
-                        .ok_or_else(|| Error::invalid("$base64 must be a string"))?,
-                )
+                .decode(&value.base64)
                 .map_err(|_| Error::invalid("invalid base64 parameter"))?,
         ),
-        Value::Object(m) if m.len() == 1 && m.contains_key("$integer") => SqlValue::Integer(
-            m["$integer"]
-                .as_str()
-                .ok_or_else(|| Error::invalid("$integer must be a string"))?
+        SqlCell::LargeInteger(value) => SqlValue::Integer(
+            value
+                .integer
                 .parse()
                 .map_err(|_| Error::invalid("invalid signed integer parameter"))?,
         ),
-        _ => {
-            return Err(Error::invalid(
-                "SQL parameters must be scalar values or tagged $base64/$integer objects",
-            ));
-        }
     })
 }
-
-fn output(value: ValueRef<'_>) -> Result<Value> {
+fn output(value: ValueRef<'_>) -> Result<SqlCell> {
     Ok(match value {
-        ValueRef::Null => Value::Null,
-        ValueRef::Integer(i) if !(-9_007_199_254_740_991..=9_007_199_254_740_991).contains(&i) => {
-            json!({"$integer":i.to_string()})
+        ValueRef::Null => SqlCell::Null(()),
+        ValueRef::Integer(integer)
+            if !(-9_007_199_254_740_991..=9_007_199_254_740_991).contains(&integer) =>
+        {
+            SqlCell::LargeInteger(IntegerCell {
+                integer: integer.to_string(),
+            })
         }
-        ValueRef::Integer(i) => json!(i),
-        ValueRef::Real(f) => serde_json::Number::from_f64(f)
-            .map(Value::Number)
-            .ok_or_else(|| Error::invalid("non-finite SQL result"))?,
-        ValueRef::Text(bytes) => Value::String(
+        ValueRef::Integer(integer) => SqlCell::Integer(integer),
+        ValueRef::Real(real) if real.is_finite() => SqlCell::Real(real),
+        ValueRef::Real(_) => return Err(Error::invalid("non-finite SQL result")),
+        ValueRef::Text(bytes) => SqlCell::Text(
             std::str::from_utf8(bytes)
                 .map_err(|_| Error::invalid("SQL text result is not UTF-8"))?
-                .to_string(),
+                .to_owned(),
         ),
-        ValueRef::Blob(bytes) => json!({"$base64":STANDARD.encode(bytes)}),
+        ValueRef::Blob(bytes) => SqlCell::Binary(BinaryCell {
+            base64: STANDARD.encode(bytes),
+        }),
     })
 }
 
-pub(crate) fn run(
+pub(crate) fn run_typed(
     conn: &Connection,
     sql: &str,
-    params: &[Value],
+    params: &[SqlCell],
     read_only: bool,
-) -> Result<Value> {
+) -> Result<crate::records::SqlResult> {
     reset_deadline(conn)?;
     if sql.len() > MAX_RESULT {
         return Err(Error::limit("SQL exceeds 1 MiB"));
@@ -224,7 +214,7 @@ pub(crate) fn run(
     let mut stmt = conn.prepare(sql)?;
     if read_only && !stmt.readonly() {
         return Err(Error::new(
-            "PERMISSION_DENIED",
+            crate::ErrorCode::PermissionDenied,
             "query requires a read-only SQL statement",
         ));
     }
@@ -235,7 +225,7 @@ pub(crate) fn run(
     let mut rows = Vec::new();
     let mut bytes = serde_json::to_vec(&columns)?.len();
     while let Some(row) = cursor.next()? {
-        let cells: Vec<Value> = (0..count)
+        let cells: Vec<SqlCell> = (0..count)
             .map(|i| output(row.get_ref(i)?))
             .collect::<Result<_>>()?;
         bytes += serde_json::to_vec(&cells)?.len();
@@ -244,7 +234,11 @@ pub(crate) fn run(
         }
         rows.push(cells);
     }
-    Ok(json!({"columns":columns,"rows":rows,"rows_affected":conn.total_changes()-before}))
+    Ok(crate::records::SqlResult {
+        columns,
+        rows,
+        rows_affected: conn.total_changes() - before,
+    })
 }
 
 pub(crate) fn batch(conn: &Connection, sql: &str) -> Result<()> {
@@ -256,9 +250,26 @@ pub(crate) fn batch(conn: &Connection, sql: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn inspect(conn: &Connection) -> Result<Value> {
+pub(crate) fn inspect_typed(conn: &Connection) -> Result<crate::records::SchemaInspection> {
+    use crate::records::{IndexInspection, SchemaInspection, SchemaObjectKind, TableInspection};
+    fn text(value: &SqlCell) -> Result<&str> {
+        value.as_text().ok_or_else(|| {
+            Error::new(
+                crate::ErrorCode::CorruptStore,
+                "unexpected SQLite inspection text",
+            )
+        })
+    }
+    fn integer(value: &SqlCell) -> Result<i64> {
+        value.as_integer().ok_or_else(|| {
+            Error::new(
+                crate::ErrorCode::CorruptStore,
+                "unexpected SQLite inspection integer",
+            )
+        })
+    }
     let started = Instant::now();
-    let schema = run(
+    let schema = run_typed(
         conn,
         "SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type,name",
         &[],
@@ -266,52 +277,90 @@ pub(crate) fn inspect(conn: &Connection) -> Result<Value> {
     )?;
     let mut bytes = serde_json::to_vec(&schema)?.len();
     let mut tables = Vec::new();
-    for row in schema["rows"].as_array().expect("query rows") {
+    for row in &schema.rows {
         if started.elapsed() > Duration::from_secs(2) {
             return Err(Error::limit("schema inspection exceeds two seconds"));
         }
-        if row[0] != "table" && row[0] != "view" {
+        let [kind_cell, name_cell, _table_cell, sql_cell] = row.as_slice() else {
+            return Err(Error::new(
+                crate::ErrorCode::CorruptStore,
+                "unexpected SQLite schema row",
+            ));
+        };
+        let kind = SchemaObjectKind::parse(text(kind_cell)?)?;
+        if !matches!(kind, SchemaObjectKind::Table | SchemaObjectKind::View) {
             continue;
         }
-        let name = &row[1];
-        let columns = run(
+        let name = text(name_cell)?.to_owned();
+        let columns = run_typed(
             conn,
             "SELECT cid,name,type,\"notnull\",dflt_value,pk,hidden FROM pragma_table_xinfo(?)",
-            std::slice::from_ref(name),
+            std::slice::from_ref(name_cell),
             true,
         )?;
-        let indexes = run(
+        let indexes = run_typed(
             conn,
             "SELECT seq,name,\"unique\",origin,partial FROM pragma_index_list(?)",
-            std::slice::from_ref(name),
+            std::slice::from_ref(name_cell),
             true,
         )?;
         bytes += serde_json::to_vec(&columns)?.len();
         inspection_budget(bytes)?;
         let mut index_details = Vec::new();
-        for idx in indexes["rows"].as_array().expect("query rows") {
+        for idx in &indexes.rows {
+            let [_sequence, index_name, unique, origin, partial] = idx.as_slice() else {
+                return Err(Error::new(
+                    crate::ErrorCode::CorruptStore,
+                    "unexpected SQLite index row",
+                ));
+            };
             if started.elapsed() > Duration::from_secs(2) {
                 return Err(Error::limit("schema inspection exceeds two seconds"));
             }
-            let detail = json!({"name":idx[1], "unique":idx[2], "origin":idx[3], "partial":idx[4], "columns":run(conn,"SELECT seqno,cid,name,desc,coll,key FROM pragma_index_xinfo(?)",std::slice::from_ref(&idx[1]),true)?});
+            let detail = IndexInspection {
+                name: text(index_name)?.to_owned(),
+                unique: integer(unique)?,
+                origin: text(origin)?.to_owned(),
+                partial: integer(partial)?,
+                columns: run_typed(
+                    conn,
+                    "SELECT seqno,cid,name,desc,coll,key FROM pragma_index_xinfo(?)",
+                    std::slice::from_ref(index_name),
+                    true,
+                )?,
+            };
             bytes += serde_json::to_vec(&detail)?.len();
             inspection_budget(bytes)?;
             index_details.push(detail);
         }
-        let foreign_keys = run(
+        let foreign_keys = run_typed(
             conn,
             "SELECT id,seq,\"table\",\"from\",\"to\",on_update,on_delete,\"match\" FROM pragma_foreign_key_list(?)",
-            std::slice::from_ref(name),
+            std::slice::from_ref(name_cell),
             true,
         )?;
-        // Check incrementally: waiting until the entire schema is assembled can
-        // allocate far beyond the advertised result bound for many wide tables.
-        bytes += serde_json::to_vec(&foreign_keys)?.len() + serde_json::to_vec(&row[3])?.len();
+        let sql = if matches!(sql_cell, SqlCell::Null(())) {
+            None
+        } else {
+            Some(text(sql_cell)?.to_owned())
+        };
+        bytes += serde_json::to_vec(&foreign_keys)?.len() + serde_json::to_vec(&sql)?.len();
         inspection_budget(bytes)?;
-        tables.push(json!({"name":name,"type":row[0],"sql":row[3],"columns":columns,"indexes":index_details,"foreign_keys":foreign_keys}));
+        tables.push(TableInspection {
+            name,
+            kind,
+            sql,
+            columns,
+            indexes: index_details,
+            foreign_keys,
+        });
     }
     let fingerprint = crate::identity::hash(&serde_json::to_vec(&schema)?);
-    let result = json!({"schema":schema,"tables":tables,"schema_fingerprint":fingerprint});
+    let result = SchemaInspection {
+        schema,
+        tables,
+        schema_fingerprint: fingerprint,
+    };
     if serde_json::to_vec(&result)?.len() > MAX_RESULT {
         return Err(Error::limit("schema inspection exceeds 1 MiB"));
     }
