@@ -14,32 +14,8 @@ fn deny(_: &str, _: Vec<Value>, _: Map<String, Value>) -> Result<Value, RuntimeE
 }
 
 #[test]
-fn embedded_bindings_share_one_budget_including_names_and_escaping() {
-    let limits = Limits {
-        max_output_bytes: 128,
-        ..Limits::default()
-    };
-    for bindings in [
-        json!({"a": "x".repeat(60), "b": "x".repeat(60), "c": "x".repeat(60)}),
-        json!({"a": "\0".repeat(30)}),
-        json!({"a".repeat(128): null}),
-    ] {
-        assert_eq!(
-            state_runtime::execute_with_bindings(
-                "mcp('effect', {})",
-                bindings.as_object().unwrap().clone(),
-                &limits,
-                &mut deny,
-            )
-            .unwrap_err()
-            .code,
-            state_core::ErrorCode::LimitExceeded
-        );
-    }
-}
-
-#[test]
 fn escaped_callback_arguments_and_results_cannot_bypass_json_byte_budget() {
+    let _serial = super::common::serial();
     let limits = Limits {
         max_output_bytes: 128,
         ..Limits::default()
@@ -67,6 +43,7 @@ fn escaped_callback_arguments_and_results_cannot_bypass_json_byte_budget() {
 
 #[test]
 fn worker_denies_files_network_processes_and_sleep_before_later_effects() {
+    let _serial = super::common::serial();
     for source in [
         "from pathlib import Path\nPath('/etc/passwd').read_text()",
         "from pathlib import Path\nPath('/tmp/state-runtime-audit-denied').write_text('bad')",
@@ -88,6 +65,7 @@ fn worker_denies_files_network_processes_and_sleep_before_later_effects() {
 
 #[test]
 fn module_default_arguments_cannot_hide_initialization_effects() {
+    let _serial = super::common::serial();
     let source = "def endpoint(value=mcp('effect')):\n    return value";
     let error = worker()
         .invoke(
@@ -107,6 +85,7 @@ fn write_frame(input: &mut impl Write, value: &Value) {
     input.write_all(&body).unwrap();
     input.flush().unwrap();
 }
+
 fn read_frame(output: &mut impl Read) -> Value {
     let mut header = [0; 4];
     output.read_exact(&mut header).unwrap();
@@ -119,6 +98,7 @@ fn read_frame(output: &mut impl Read) -> Value {
 
 #[test]
 fn malformed_host_reply_ends_worker_without_a_second_callback() {
+    let _serial = super::common::serial();
     for reply in [
         json!({"type": "host_result", "value": null, "extra": true}),
         json!({"type": "complete", "result": {"value": null, "stdout": ""}}),
@@ -150,59 +130,4 @@ fn malformed_host_reply_ends_worker_without_a_second_callback() {
         assert!(remaining.is_empty());
         assert!(child.wait().unwrap().success());
     }
-}
-
-#[test]
-fn source_limits_apply_before_spawning_and_nested_values_before_host_dispatch() {
-    // A missing executable proves this rejection happens in the parent first.
-    let error = WorkerConfig::new("/nonexistent/statemcp-runtime-audit")
-        .execute(
-            "12345",
-            Value::Null,
-            &Limits {
-                max_source_bytes: 4,
-                ..Limits::default()
-            },
-            &mut deny,
-        )
-        .unwrap_err();
-    assert_eq!(error.code, state_core::ErrorCode::LimitExceeded);
-    let limits = Limits {
-        max_json_depth: 2,
-        ..Limits::default()
-    };
-    for (source, inputs) in [
-        ("mcp('later')", json!([[[[null]]]])),
-        ("mcp([[[[None]]]])", Value::Null),
-    ] {
-        assert_eq!(
-            worker()
-                .execute(source, inputs, &limits, &mut deny)
-                .unwrap_err()
-                .code,
-            state_core::ErrorCode::LimitExceeded
-        );
-    }
-}
-
-#[test]
-fn imported_sources_are_bounded_before_spawning_the_worker() {
-    let modules = state_runtime::ModuleSources {
-        entry_path: "/api.py".into(),
-        files: std::collections::BTreeMap::from([("/helper.py".into(), "x".repeat(100))]),
-    };
-    let limits = Limits {
-        max_source_bytes: 64,
-        ..Limits::default()
-    };
-    let error = WorkerConfig::new("/nonexistent/statemcp-import-audit")
-        .execute_with_modules(
-            "42",
-            Value::Null,
-            &modules,
-            &limits,
-            &mut |_, _, _| unreachable!(),
-        )
-        .unwrap_err();
-    assert_eq!(error.code, state_core::ErrorCode::LimitExceeded);
 }

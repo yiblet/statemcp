@@ -27,8 +27,16 @@ resolver = "3"
 exclude = ["vendor/monty"]
 
 [dev-dependencies]
+tempfile = "3"
+state-fs = { path = "crates/state-fs" }
+state-store = { path = "crates/state-store" }
+state-domain = { path = "crates/state-domain" }
 rmcp = { version = "3.5.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 tower = { version = "0.5", features = ["util"] }
 
 [patch.crates-io]
 monty = { path = "vendor/monty" }
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/mod.rs"

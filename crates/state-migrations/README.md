@@ -25,3 +25,13 @@ Filesystem effects outside the catalog require retry-safe migration code.
 All APIs are blocking. Run them on a dedicated thread or with `spawn_blocking`
 when called from async code. No coordination with the old store's lock is provided;
 the initial transition assumes there are no concurrent old-store users.
+
+## Tests
+
+Tests live in crate-local `#[cfg(test)]` modules under `src/`. They use
+in-memory storage and embedded execution where applicable; they do not create
+host files, bind sockets, or launch processes.
+
+```sh
+cargo test -p state-migrations
+```

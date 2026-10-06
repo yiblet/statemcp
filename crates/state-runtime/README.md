@@ -79,8 +79,8 @@ Checks: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and
 `cargo test --all-targets` from this crate (or use `--manifest-path`). The tests
 exercise actual Monty execution, callback JSON fidelity, pinned-source function
 invocation, effect-free initialization, uncatchable host errors, budgets,
-filesystem denial, fresh scopes, JSON rejection, and an isolated cumulative
-allocator limit probe.
+filesystem denial, fresh scopes, JSON rejection, and rejection of unsupported
+aggregate memory limits without allocator tracking.
 
 
 ## Same-executable isolated execution
@@ -118,8 +118,18 @@ owner must impose deadlines on blocking operations; dispatch returns the timeout
 when that callback returns. Each nested worker gets the limits supplied by its
 caller; the State service must carry root budgets across nested operations.
 
-The actual-binary integration suite covers execute/invoke/validation, recursive
-workers, callback failures and panics, time/memory/recursion/output recovery,
-malformed/oversized frames, and operation with an empty PATH (no Python needed).
-Unit tests additionally verify an uncooperative child is killed and reaped while
-the parent is blocked and that dropping its guard reaps immediately.
+Tests live in crate-local `#[cfg(test)]` modules under `src/` and use no
+external I/O. Worker sessions read and write memory buffers; watchdog and drop
+cleanup use a fake process implementation. Tests cover framed execution,
+invocation and validation, callback replies, malformed/oversized frames,
+pre-spawn rejection, timeout cleanup, and memory-exit error classification.
+
+These unit checks exercise the shared session and lifecycle code without launching
+workers or arming the process-global allocator. Embedded execution uses real Monty.
+
+The workspace [end-to-end suite](../../tests/e2e/README.md) launches real workers
+and tests execute/invoke/validation, recursive callbacks, timeout and error cleanup,
+allocator ceilings and fatal allocator exits, malformed frames, and empty-PATH
+startup. On Linux it also observes `/proc` to verify actual worker reaping during
+a blocked callback and after a host error. Run it with `cargo test --test e2e`
+from the workspace root.

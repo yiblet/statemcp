@@ -150,3 +150,10 @@ pub(crate) fn remaining(start: Instant, limits: &Limits) -> Result<Limits> {
         .ok_or_else(|| Error::limit("root invocation deadline exceeded"))?;
     Ok(runtime)
 }
+
+#[cfg(test)]
+mod budgets_receipts_tests;
+#[cfg(test)]
+mod service_tests;
+#[cfg(test)]
+mod test_support;

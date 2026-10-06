@@ -24,6 +24,7 @@ fn healthy(config: &WorkerConfig) {
 
 #[test]
 fn isolated_execute_invoke_and_validate() {
+    let _serial = super::common::serial();
     let config = worker();
     let result = config
         .execute(
@@ -77,6 +78,7 @@ fn isolated_execute_invoke_and_validate() {
 
 #[test]
 fn callbacks_and_recursive_workers_have_no_pool_deadlock() {
+    let _serial = super::common::serial();
     let config = worker();
     let mut names = Vec::new();
     let result = config
@@ -112,6 +114,7 @@ fn callbacks_and_recursive_workers_have_no_pool_deadlock() {
 
 #[test]
 fn timeout_memory_recursion_and_output_limits_recover() {
+    let _serial = super::common::serial();
     let config = worker();
     let cases = [
         (
@@ -156,6 +159,7 @@ fn timeout_memory_recursion_and_output_limits_recover() {
 
 #[test]
 fn callback_errors_and_panics_reap_workers() {
+    let _serial = super::common::serial();
     let config = worker();
     let error = config
         .execute(
@@ -185,6 +189,7 @@ fn callback_errors_and_panics_reap_workers() {
 
 #[test]
 fn callback_time_counts_toward_deadline() {
+    let _serial = super::common::serial();
     let config = worker();
     let limits = Limits {
         max_duration: Duration::from_millis(150),
@@ -211,6 +216,7 @@ fn callback_time_counts_toward_deadline() {
 
 #[test]
 fn frames_are_bounded_and_malformed_workers_fail_closed() {
+    let _serial = super::common::serial();
     let mut config = worker();
     config.max_frame_bytes = 1024;
     assert_eq!(
@@ -245,6 +251,7 @@ fn frames_are_bounded_and_malformed_workers_fail_closed() {
 
 #[test]
 fn worker_does_not_need_python_or_modify_parent_allocator() {
+    let _serial = super::common::serial();
     assert!(!state_runtime::memory_tracking_active());
     healthy(&worker());
     assert!(!state_runtime::memory_tracking_active());
@@ -276,6 +283,7 @@ fn worker_does_not_need_python_or_modify_parent_allocator() {
 
 #[test]
 fn fatal_allocator_exit_during_frame_decode_recovers() {
+    let _serial = super::common::serial();
     let config = worker();
     // Frame allocation precedes Monty initialization and exceeds the small
     // budget plus exception headroom, exercising actual child exit code 65.
@@ -298,6 +306,7 @@ fn fatal_allocator_exit_during_frame_decode_recovers() {
 
 #[test]
 fn workers_preserve_namespace_modules_and_shared_globals() {
+    let _serial = super::common::serial();
     let config = worker();
     let modules = state_runtime::ModuleSources {
         entry_path: "/api.py".into(),

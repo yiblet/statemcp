@@ -240,3 +240,7 @@ async fn check_host_and_origin(
     }
     next.run(request).await
 }
+
+#[cfg(test)]
+#[path = "http_tests.rs"]
+mod tests;

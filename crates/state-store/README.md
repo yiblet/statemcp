@@ -107,9 +107,9 @@ Tests cover actual SQLite commit/rollback behavior, multi-database publication,
 small updates, VACUUM/truncation, temporary tables, database deletion/recreation,
 root locking, invalid paths/sidecars, corrupt journal handling, and injected I/O
 failures before and after the commit decision and during multi-file publication.
-All store tests use the in-memory filesystem. Only `state-fs` physical adapter
-tests access disk, including cross-process locks and symlink metadata. The store
-suite tests recovery logic rather than process crashes or physical power loss.
+All store tests live in crate-local `#[cfg(test)]` modules and use the in-memory
+filesystem. The suite tests recovery logic and injected failures; it does not
+exercise OS locks, process crashes, or physical power loss.
 
 ```sh
 cargo test -p state-store
@@ -149,7 +149,8 @@ let reopened = Store::builder().with_fs(fs).open("/state")?;
 Custom wrappers can inject I/O failures. Clones of `MemoryFs` share state;
 independent instances are isolated. Memory paths are rooted at `/` and reject
 `..`. Sync operations are no-ops; this backend tests recovery logic and injected
-failures, while tests of the physical filesystem adapter use disk.
+failures. Physical file and cross-process lock behavior is covered by the workspace
+[end-to-end suite](../../tests/e2e/README.md); physical power loss is not simulated.
 
 Migrations receive the injected filesystem through `Context::fs()`. Their direct
 file side effects remain outside overlay publication and must be retry-safe.

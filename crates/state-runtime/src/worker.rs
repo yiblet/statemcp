@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 use std::{
     io::{self, Read, Write},
     path::PathBuf,
-    process::{Child, Command, ExitStatus, Stdio},
+    process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -347,9 +347,20 @@ pub fn worker_main(memory_bytes: usize, max_frame_bytes: usize) -> Result<(), Ru
     let mut request: WorkerCommand = read_frame(&mut input, max_frame_bytes)?;
     // The command-line ceiling is authoritative, including for malformed clients.
     request.limits.max_memory = Some(memory_bytes);
+    serve_command(request, &mut input, &mut output, max_frame_bytes)
+}
+
+// The shell installs the process-global allocator and chooses the authoritative
+// memory ceiling. This framed session owns no OS handles and can use byte buffers.
+fn serve_command(
+    request: WorkerCommand,
+    input: &mut impl Read,
+    output: &mut impl Write,
+    max_frame_bytes: usize,
+) -> Result<(), RuntimeError> {
     let mut host = |name: &str, args: Vec<Value>, kwargs: Map<String, Value>| {
         write_frame(
-            &mut output,
+            output,
             &Message::HostCall {
                 name: name.into(),
                 args,
@@ -357,7 +368,7 @@ pub fn worker_main(memory_bytes: usize, max_frame_bytes: usize) -> Result<(), Ru
             },
             max_frame_bytes,
         )?;
-        let HostReply::HostResult { value } = read_frame(&mut input, max_frame_bytes)?;
+        let HostReply::HostResult { value } = read_frame(input, max_frame_bytes)?;
         Ok(value)
     };
     let result = match request.operation {
@@ -396,22 +407,48 @@ pub fn worker_main(memory_bytes: usize, max_frame_bytes: usize) -> Result<(), Ru
     };
     // An oversized final frame becomes a small structured error when possible.
     match encode(&message, max_frame_bytes) {
-        Ok(bytes) => write_bytes(&mut output, &bytes),
-        Err(error) => write_frame(&mut output, &Message::Error { error }, max_frame_bytes),
+        Ok(bytes) => write_bytes(output, &bytes),
+        Err(error) => write_frame(output, &Message::Error { error }, max_frame_bytes),
     }
 }
 
-struct WorkerGuard {
-    child: Arc<Mutex<Child>>,
+/// Process lifecycle operations used by the watchdog and cleanup guard.
+/// Keep exit-code interpretation at the OS boundary.
+trait WorkerProcess: Send + 'static {
+    fn kill(&mut self) -> io::Result<()>;
+    fn wait(&mut self) -> io::Result<WorkerExit>;
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkerExit {
+    MemoryLimit,
+    Other,
+}
+impl WorkerProcess for Child {
+    fn kill(&mut self) -> io::Result<()> {
+        Child::kill(self)
+    }
+    fn wait(&mut self) -> io::Result<WorkerExit> {
+        Child::wait(self).map(|status| {
+            if status.code() == Some(65) {
+                WorkerExit::MemoryLimit
+            } else {
+                WorkerExit::Other
+            }
+        })
+    }
+}
+
+struct WorkerGuard<P: WorkerProcess = Child> {
+    child: Arc<Mutex<P>>,
     expired: Arc<AtomicBool>,
     cancel: Option<mpsc::Sender<()>>,
     watchdog: Option<JoinHandle<()>>,
     reader: Option<JoinHandle<()>>,
     messages: Option<mpsc::Receiver<Result<Message, RuntimeError>>>,
 }
-impl WorkerGuard {
+impl<P: WorkerProcess> WorkerGuard<P> {
     fn new(
-        child: Child,
+        child: P,
         mut output: impl Read + Send + 'static,
         max: usize,
         deadline: Instant,
@@ -466,14 +503,14 @@ impl WorkerGuard {
         let status = reap(&self.child);
         if self.expired.load(Ordering::Acquire) {
             limit("execution deadline exceeded")
-        } else if status.is_some_and(|status| status.code() == Some(65)) {
+        } else if status == Some(WorkerExit::MemoryLimit) {
             limit("worker memory limit exceeded")
         } else {
             original
         }
     }
 }
-impl Drop for WorkerGuard {
+impl<P: WorkerProcess> Drop for WorkerGuard<P> {
     fn drop(&mut self) {
         drop(self.messages.take());
         reap(&self.child);
@@ -488,10 +525,12 @@ impl Drop for WorkerGuard {
         }
     }
 }
-fn reap(child: &Mutex<Child>) -> Option<ExitStatus> {
+fn reap<P: WorkerProcess>(child: &Mutex<P>) -> Option<WorkerExit> {
     let mut child = child
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Cleanup is best-effort: the process may already be gone. If reaping fails,
+    // retain the original execution/protocol error rather than inventing an exit.
     let _ = child.kill();
     child.wait().ok()
 }
@@ -597,56 +636,253 @@ mod tests {
         }
     }
 
-    fn stubborn_child() -> (Child, std::process::ChildStdout) {
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "worker::tests::stubborn_child_entry",
-                "--nocapture",
-            ])
-            .env("STATE_RUNTIME_STUBBORN_CHILD", "1")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        let output = child.stdout.take().unwrap();
-        (child, output)
+    #[derive(Default)]
+    struct ProcessState {
+        killed: bool,
+        reaped: bool,
+    }
+    struct FakeProcess {
+        state: Arc<Mutex<ProcessState>>,
+        exit: WorkerExit,
+    }
+    impl WorkerProcess for FakeProcess {
+        fn kill(&mut self) -> io::Result<()> {
+            self.state
+                .lock()
+                .map_err(|_| io::Error::other("poisoned fake process"))?
+                .killed = true;
+            Ok(())
+        }
+        fn wait(&mut self) -> io::Result<WorkerExit> {
+            self.state
+                .lock()
+                .map_err(|_| io::Error::other("poisoned fake process"))?
+                .reaped = true;
+            Ok(self.exit)
+        }
+    }
+    fn fake(exit: WorkerExit) -> (FakeProcess, Arc<Mutex<ProcessState>>) {
+        let state = Arc::new(Mutex::new(ProcessState::default()));
+        (
+            FakeProcess {
+                state: state.clone(),
+                exit,
+            },
+            state,
+        )
     }
     #[test]
-    fn stubborn_child_entry() {
-        if std::env::var_os("STATE_RUNTIME_STUBBORN_CHILD").is_some() {
-            std::thread::sleep(Duration::from_secs(30));
+    fn watchdog_reaps_without_dispatch_or_callback_progress()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (child, state) = fake(WorkerExit::Other);
+        let mut guard = WorkerGuard::new(child, io::Cursor::new(Vec::new()), 1024, Instant::now())?;
+        let watchdog = guard.watchdog.take().ok_or("missing watchdog")?;
+        watchdog.join().map_err(|_| "watchdog panicked")?;
+        assert!(guard.expired.load(Ordering::Acquire));
+        let state = state.lock().map_err(|_| "poisoned fake process")?;
+        assert!(state.killed && state.reaped);
+        drop(state);
+        assert_eq!(
+            guard.failure(protocol("original")).code,
+            crate::ErrorCode::LimitExceeded
+        );
+        Ok(())
+    }
+    #[test]
+    fn dropping_guard_kills_reaps_and_cancels_watchdog() -> Result<(), Box<dyn std::error::Error>> {
+        let (child, state) = fake(WorkerExit::Other);
+        let guard = WorkerGuard::new(
+            child,
+            io::Cursor::new(Vec::new()),
+            1024,
+            Instant::now() + Duration::from_secs(30),
+        )?;
+        drop(guard);
+        let state = state.lock().map_err(|_| "poisoned fake process")?;
+        assert!(state.killed && state.reaped);
+        Ok(())
+    }
+    #[test]
+    fn memory_exit_maps_to_limit_error_and_other_exits_preserve_original()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for exit in [WorkerExit::MemoryLimit, WorkerExit::Other] {
+            let (child, _) = fake(exit);
+            let guard = WorkerGuard::new(
+                child,
+                io::Cursor::new(Vec::new()),
+                1024,
+                Instant::now() + Duration::from_secs(30),
+            )?;
+            let error = guard.failure(protocol("original"));
+            assert_eq!(
+                error.code,
+                match exit {
+                    WorkerExit::MemoryLimit => crate::ErrorCode::LimitExceeded,
+                    WorkerExit::Other => crate::ErrorCode::WorkerFailed,
+                }
+            );
+        }
+        Ok(())
+    }
+
+    fn command(source: &str) -> WorkerCommand {
+        WorkerCommand {
+            operation: Operation::Execute {
+                source: source.into(),
+                inputs: Value::Null,
+                modules: ModuleSources::default(),
+            },
+            limits: Limits::default(),
         }
     }
     #[test]
-    fn watchdog_kills_and_reaps_without_cooperative_vm_or_callback() {
-        let (child, output) = stubborn_child();
-        let guard = WorkerGuard::new(
-            child,
-            output,
-            1024,
-            Instant::now() + Duration::from_millis(30),
-        )
-        .unwrap();
-        // Simulates a parent callback that has not returned control to dispatch.
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(guard.expired.load(Ordering::Acquire));
-        assert!(guard.child.lock().unwrap().try_wait().unwrap().is_some());
+    fn framed_execute_invoke_and_validation_roundtrip() -> Result<(), RuntimeError> {
+        let operations = [
+            (
+                command("print('captured')\n42").operation,
+                serde_json::json!(42),
+                "captured\n",
+            ),
+            (
+                Operation::Invoke {
+                    source: "def add(a, b):\n    return a + b".into(),
+                    symbol: "add".into(),
+                    arguments: Map::from_iter([
+                        ("a".into(), Value::from(2)),
+                        ("b".into(), Value::from(3)),
+                    ]),
+                    modules: ModuleSources::default(),
+                },
+                serde_json::json!(5),
+                "",
+            ),
+            (
+                Operation::Validate {
+                    source: "def add():\n    return 42".into(),
+                    symbol: "add".into(),
+                    modules: ModuleSources::default(),
+                },
+                Value::Null,
+                "",
+            ),
+        ];
+        for (operation, expected, stdout) in operations {
+            let request = WorkerCommand {
+                operation,
+                limits: Limits::default(),
+            };
+            let mut encoded = Vec::new();
+            write_frame(&mut encoded, &request, 1024)?;
+            let decoded = read_frame(&mut encoded.as_slice(), 1024)?;
+            let mut output = Vec::new();
+            serve_command(decoded, &mut io::empty(), &mut output, 1024)?;
+            let Message::Complete { result } = read_frame(&mut output.as_slice(), 1024)? else {
+                return Err(protocol("expected completion"));
+            };
+            assert_eq!(result.value, expected);
+            assert_eq!(result.stdout, stdout);
+        }
+        Ok(())
     }
     #[test]
-    fn dropping_guard_reaps_stubborn_child_immediately() {
-        let (child, output) = stubborn_child();
-        let guard = WorkerGuard::new(
-            child,
-            output,
+    fn malformed_host_reply_ends_session_without_second_callback() -> Result<(), RuntimeError> {
+        for reply in [
+            serde_json::json!({"type":"host_result","value":null,"extra":true}),
+            serde_json::json!({"type":"complete","result":{"value":null,"stdout":""}}),
+        ] {
+            let mut input = Vec::new();
+            write_frame(&mut input, &reply, 1024)?;
+            let mut output = Vec::new();
+            serve_command(
+                command("try:\n    mcp('first')\nexcept Exception:\n    pass\nmcp('later')"),
+                &mut input.as_slice(),
+                &mut output,
+                1024,
+            )?;
+            let mut frames = output.as_slice();
+            let Message::HostCall { name, args, .. } = read_frame(&mut frames, 1024)? else {
+                return Err(protocol("expected host call"));
+            };
+            assert_eq!(name, "mcp");
+            assert_eq!(args, vec![Value::from("first")]);
+            let Message::Error { error } = read_frame(&mut frames, 1024)? else {
+                return Err(protocol("expected error"));
+            };
+            assert_eq!(error.code, crate::ErrorCode::WorkerFailed);
+            assert!(frames.is_empty());
+        }
+        Ok(())
+    }
+    #[test]
+    fn host_results_and_oversized_completion_are_framed() -> Result<(), RuntimeError> {
+        let mut input = Vec::new();
+        write_frame(
+            &mut input,
+            &HostReply::HostResult {
+                value: Value::from(41),
+            },
             1024,
-            Instant::now() + Duration::from_secs(30),
-        )
-        .unwrap();
-        let child = guard.child.clone();
-        let started = Instant::now();
-        drop(guard);
-        assert!(started.elapsed() < Duration::from_secs(2));
-        assert!(child.lock().unwrap().try_wait().unwrap().is_some());
+        )?;
+        let mut output = Vec::new();
+        serve_command(
+            command("mcp('answer') + 1"),
+            &mut input.as_slice(),
+            &mut output,
+            1024,
+        )?;
+        let mut frames = output.as_slice();
+        assert!(matches!(
+            read_frame::<Message>(&mut frames, 1024)?,
+            Message::HostCall { .. }
+        ));
+        let Message::Complete { result } = read_frame(&mut frames, 1024)? else {
+            return Err(protocol("expected completion"));
+        };
+        assert_eq!(result.value, Value::from(42));
+        assert!(frames.is_empty());
+        let mut output = Vec::new();
+        serve_command(command("'x' * 2048"), &mut io::empty(), &mut output, 1024)?;
+        let Message::Error { error } = read_frame(&mut output.as_slice(), 1024)? else {
+            return Err(protocol("expected frame error"));
+        };
+        assert_eq!(error.code, crate::ErrorCode::LimitExceeded);
+        Ok(())
+    }
+    #[test]
+    fn invalid_and_oversized_requests_fail_before_process_spawn() {
+        let config = WorkerConfig::new("/not-used");
+        let no_host = &mut |_: &str, _: Vec<Value>, _: Map<String, Value>| {
+            Err(protocol("unexpected callback"))
+        };
+        let error = config
+            .execute(
+                "12345",
+                Value::Null,
+                &Limits {
+                    max_source_bytes: 4,
+                    ..Limits::default()
+                },
+                no_host,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, crate::ErrorCode::LimitExceeded);
+        let mut config = config;
+        config.max_frame_bytes = 1024;
+        let error = config
+            .execute(
+                "inputs",
+                Value::from("x".repeat(2048)),
+                &Limits::default(),
+                no_host,
+            )
+            .unwrap_err();
+        assert_eq!(error.code, crate::ErrorCode::LimitExceeded);
+        config.default_memory_bytes = 0;
+        let error = config
+            .execute("42", Value::Null, &Limits::default(), no_host)
+            .unwrap_err();
+        assert_eq!(error.code, crate::ErrorCode::InvalidArgument);
+        assert!(validate_frame_limit(1023).is_err());
+        assert!(validate_frame_limit(MAX_FRAME_BYTES + 1).is_err());
     }
 }

@@ -174,3 +174,13 @@ Nested keys are rejected. Receipts are scoped by trusted principal and a
 canonical hash of tool/arguments; identical retries return the exact committed
 result, changed requests return `IDEMPOTENCY_MISMATCH`. Concurrent invocations return `CONFLICT` while another invocation holds the root;
 retrying then returns the committed receipt and publishes once. Failed runs leave no receipt.
+
+## Tests
+
+Tests live in crate-local `#[cfg(test)]` modules under `src/`. They use
+in-memory storage and embedded execution where applicable; they do not create
+host files, bind sockets, or launch processes.
+
+```sh
+cargo test -p state-core
+```

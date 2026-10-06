@@ -5,6 +5,3 @@ edition = "2024"
 rust-version = "1.96"
 license = "MIT"
 description = "Minimal blocking filesystem interface with an in-memory test backend"
-
-[dev-dependencies]
-tempfile = "3"

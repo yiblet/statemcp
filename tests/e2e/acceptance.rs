@@ -102,16 +102,16 @@ impl Drop for Client {
 }
 
 fn install(client: &mut Client) {
-    let fixtures: Value = serde_json::from_str(include_str!("../examples/setup.json")).unwrap();
+    let fixtures: Value = serde_json::from_str(include_str!("../../examples/setup.json")).unwrap();
     for fixture in fixtures.as_array().unwrap() {
         let namespace = &fixture["namespace"];
         client.tool("namespace.create", json!({"name":namespace}));
         client.tool("db.create", json!({"namespace":namespace,"database":"app"}));
         client.tool("db.migrate", json!({"namespace":namespace,"database":"app","migrations":[{"id":"initial","sql":fixture["sql"]}]}));
         let source = match fixture["file"].as_str().unwrap() {
-            "notes.py" => include_str!("../examples/notes.py"),
-            "todos.py" => include_str!("../examples/todos.py"),
-            "chat.py" => include_str!("../examples/chat.py"),
+            "notes.py" => include_str!("../../examples/notes.py"),
+            "todos.py" => include_str!("../../examples/todos.py"),
+            "chat.py" => include_str!("../../examples/chat.py"),
             other => panic!("unknown example {other}"),
         };
         client.tool(
@@ -129,6 +129,7 @@ fn install(client: &mut Client) {
 
 #[test]
 fn real_stdio_notes_todos_chat_persist_and_compose() {
+    let _serial = super::common::serial();
     let directory = Directory::new();
     let mut first = Client::open(&directory.0);
     install(&mut first);

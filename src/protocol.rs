@@ -388,3 +388,7 @@ impl ServerHandler for Server {
 pub fn tool_definitions() -> Vec<rmcp::model::Tool> {
     Server::tool_router().list_all()
 }
+
+#[cfg(test)]
+#[path = "protocol_tests.rs"]
+mod tests;

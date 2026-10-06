@@ -1,5 +1,5 @@
+use crate::{Limits, RuntimeError, execute, invoke, validate_module};
 use serde_json::{Value, json};
-use state_runtime::{Limits, RuntimeError, execute, invoke, validate_module};
 use std::time::Duration;
 
 fn no_host(
@@ -25,7 +25,7 @@ fn execute_returns_final_value_and_captures_prints() {
 
 #[test]
 fn all_host_callbacks_roundtrip_json_and_keywords() {
-    for name in state_runtime::HOST_FUNCTIONS {
+    for name in crate::HOST_FUNCTIONS {
         let mut seen = false;
         let result = execute(
             &format!("{name}(inputs, mode='read')"),
@@ -56,7 +56,7 @@ fn module_initialization_cannot_mutate_even_when_python_catches_error() {
         validate_module(source, "run", &Limits::default())
             .unwrap_err()
             .code,
-        state_runtime::ErrorCode::PermissionDenied
+        crate::ErrorCode::PermissionDenied
     );
     assert_eq!(
         invoke(
@@ -68,7 +68,7 @@ fn module_initialization_cannot_mutate_even_when_python_catches_error() {
         )
         .unwrap_err()
         .code,
-        state_runtime::ErrorCode::PermissionDenied
+        crate::ErrorCode::PermissionDenied
     );
 }
 
@@ -108,14 +108,11 @@ fn host_errors_cannot_be_caught_and_followed_by_effects() {
         &Limits::default(),
         &mut |_, _, _| {
             calls += 1;
-            Err(RuntimeError::new(
-                state_runtime::ErrorCode::SqlError,
-                "failed",
-            ))
+            Err(RuntimeError::new(crate::ErrorCode::SqlError, "failed"))
         },
     )
     .unwrap_err();
-    assert_eq!(error.code, state_runtime::ErrorCode::SqlError);
+    assert_eq!(error.code, crate::ErrorCode::SqlError);
     assert_eq!(calls, 1);
 }
 
@@ -136,7 +133,7 @@ fn host_call_budget_is_enforced_before_dispatch() {
         },
     )
     .unwrap_err();
-    assert_eq!(error.code, state_runtime::ErrorCode::LimitExceeded);
+    assert_eq!(error.code, crate::ErrorCode::LimitExceeded);
     assert_eq!(calls, 2);
 }
 
@@ -147,11 +144,7 @@ fn timeout_then_fresh_execution_succeeds() {
         ..Limits::default()
     };
     let error = execute("while True:\n    pass", Value::Null, &limits, &mut no_host).unwrap_err();
-    assert_eq!(
-        error.code,
-        state_runtime::ErrorCode::LimitExceeded,
-        "{error}"
-    );
+    assert_eq!(error.code, crate::ErrorCode::LimitExceeded, "{error}");
     assert_eq!(
         execute("6 * 7", Value::Null, &Limits::default(), &mut no_host)
             .unwrap()
@@ -169,11 +162,7 @@ fn recursion_and_large_allocation_are_bounded() {
     };
     for code in ["def f():\n    return f()\nf()", "'x' * 10000000"] {
         let error = execute(code, Value::Null, &limits, &mut no_host).unwrap_err();
-        assert_eq!(
-            error.code,
-            state_runtime::ErrorCode::LimitExceeded,
-            "{error}"
-        );
+        assert_eq!(error.code, crate::ErrorCode::LimitExceeded, "{error}");
     }
 }
 
@@ -187,7 +176,7 @@ fn unarmed_aggregate_memory_limit_is_explicitly_rejected() {
         execute("1", Value::Null, &limits, &mut no_host)
             .unwrap_err()
             .code,
-        state_runtime::ErrorCode::UnsupportedFeature
+        crate::ErrorCode::UnsupportedFeature
     );
 }
 
@@ -200,7 +189,7 @@ fn host_filesystem_access_is_denied() {
         &mut no_host,
     )
     .unwrap_err();
-    assert_eq!(error.code, state_runtime::ErrorCode::PermissionDenied);
+    assert_eq!(error.code, crate::ErrorCode::PermissionDenied);
 }
 
 #[test]
@@ -230,13 +219,13 @@ fn output_and_input_depth_are_bounded() {
         execute("print('x' * 31)", Value::Null, &limits, &mut no_host)
             .unwrap_err()
             .code,
-        state_runtime::ErrorCode::LimitExceeded
+        crate::ErrorCode::LimitExceeded
     );
     assert_eq!(
         execute("inputs", json!([[[[[]]]]]), &limits, &mut no_host)
             .unwrap_err()
             .code,
-        state_runtime::ErrorCode::LimitExceeded
+        crate::ErrorCode::LimitExceeded
     );
 }
 
@@ -247,7 +236,7 @@ fn endpoint_symbol_injection_and_missing_symbol_are_rejected() {
             validate_module("def run():\n    return 1", symbol, &Limits::default())
                 .unwrap_err()
                 .code,
-            state_runtime::ErrorCode::InvalidArgument
+            crate::ErrorCode::InvalidArgument
         );
     }
 }
@@ -259,7 +248,7 @@ fn globals_do_not_persist_across_executions() {
         execute("secret", Value::Null, &Limits::default(), &mut no_host)
             .unwrap_err()
             .code,
-        state_runtime::ErrorCode::PythonError
+        crate::ErrorCode::PythonError
     );
 }
 
@@ -276,5 +265,5 @@ fn caught_print_overflow_still_aborts_execution() {
         &mut no_host,
     )
     .unwrap_err();
-    assert_eq!(error.code, state_runtime::ErrorCode::LimitExceeded);
+    assert_eq!(error.code, crate::ErrorCode::LimitExceeded);
 }

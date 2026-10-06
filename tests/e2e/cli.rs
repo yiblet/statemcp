@@ -68,6 +68,7 @@ impl Drop for Workspace {
 
 #[test]
 fn direct_cli_tools_publish_invoke_and_manipulate_state() {
+    let _serial = super::common::serial();
     let workspace = Workspace::new();
     workspace.ok("namespace.create", &["--name", "notes"]);
     workspace.ok("db.create", &["--namespace", "notes", "--database", "app"]);
@@ -216,6 +217,7 @@ fn direct_cli_tools_publish_invoke_and_manipulate_state() {
 
 #[test]
 fn raw_json_file_and_stdin_match_service_results_and_cli_failures_roll_back() {
+    let _serial = super::common::serial();
     let workspace = Workspace::new();
     workspace.ok("namespace.create", &["--json", r#"{"name":"raw"}"#]);
     let input = workspace.0.join("request.json");
@@ -272,6 +274,7 @@ fn raw_json_file_and_stdin_match_service_results_and_cli_failures_roll_back() {
 
 #[test]
 fn cli_commands_cover_mcp_tools_and_paths_are_required() {
+    let _serial = super::common::serial();
     let workspace = Workspace::new();
     let descriptions = workspace.ok("describe", &[]);
     let groups: std::collections::BTreeSet<_> = descriptions["tools"]

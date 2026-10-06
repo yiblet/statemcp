@@ -1,63 +1,18 @@
-mod support;
-use support::ToolCalls;
-mod common;
 use serde_json::{Value, json};
-fn tool_value(result: &Value) -> Value {
-    assert!(result.get("structuredContent").is_none());
-    serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
-}
-
 use statemcp::State;
 use std::{
     fs,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[tokio::test]
-async fn embedded_service_dispatches_through_mcp_and_rolls_back_failed_scripts() {
-    let path = std::env::temp_dir().join(format!(
-        "statemcp-wire-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let state = State::open(&path).unwrap();
-    let client = common::connect(state.clone()).await;
-    let response = client
-        .call_tool(common::request("namespace.create", json!({"name":"app"})))
-        .await
-        .unwrap();
-    assert_eq!(common::value(&response)["name"], "app");
-    let response = client
-        .call_tool(common::request(
-            "execute",
-            json!({"namespace":"app","script":"write_text('/failed.txt', 'rollback')\n1 / 0"}),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(response.is_error, Some(true));
-    assert!(
-        state
-            .tool("fs.read", json!({"namespace":"app","path":"/failed.txt"}))
-            .is_err()
-    );
-    let result = state.tool("execute", json!({"namespace":"app","script":"write_text('/ok.txt', 'saved')\nread_text('/ok.txt')"})).unwrap();
-    assert_eq!(result["value"], "saved");
-    client.cancel().await.unwrap();
-    drop(state);
-    let reopened = State::open(&path).unwrap();
-    let file: Value = reopened
-        .tool("fs.read", json!({"namespace":"app","path":"/ok.txt"}))
-        .unwrap();
-    assert_eq!(file["text"], "saved");
-    drop(reopened);
-    fs::remove_dir_all(path).unwrap();
+fn tool_value(result: &Value) -> Value {
+    assert!(result.get("structuredContent").is_none());
+    serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
 }
 
 #[test]
-fn executable_runs_real_worker_callbacks_and_explicit_maintenance() {
+fn executable_runs_real_worker_callbacks_and_explicit_maintenance() -> anyhow::Result<()> {
+    let _serial = super::common::serial();
     use std::{
         io::{BufRead, BufReader, Write},
         process::{Command, Stdio},
@@ -107,11 +62,12 @@ fn executable_runs_real_worker_callbacks_and_explicit_maintenance() {
     assert_eq!(responses[1]["result"]["isError"], false, "{}", responses[1]);
     assert_eq!(tool_value(&responses[1]["result"])["value"], 42);
     let state = State::open(&path).unwrap();
-    assert_eq!(
-        state
-            .tool("fs.read", json!({"namespace":"cli","path":"/value.txt"}))
-            .unwrap()["text"],
-        "persisted"
+    let file = state.read_file(state_core::inputs::FsReadInput {
+        namespace: "cli".into(),
+        path: "/value.txt".into(),
+    })?;
+    assert!(
+        matches!(file, state_core::records::FileContents::Text { text, .. } if text == "persisted")
     );
     drop(state);
     let maintenance = Command::new(env!("CARGO_BIN_EXE_statemcp"))
@@ -126,5 +82,6 @@ fn executable_runs_real_worker_callbacks_and_explicit_maintenance() {
     );
     let report: Value = serde_json::from_slice(&maintenance.stdout).unwrap();
     assert!(report["revisions_removed"].is_number());
-    fs::remove_dir_all(path).unwrap();
+    fs::remove_dir_all(path)?;
+    Ok(())
 }

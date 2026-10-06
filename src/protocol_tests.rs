@@ -1,20 +1,17 @@
-mod common;
-use common::{Directory, connect, request, tool, value};
-use rmcp::{ServiceExt, transport::TokioChildProcess};
+use crate::test_support as common;
+use common::{Fixture, connect, request, tool, value};
 use serde_json::{Value, json};
-use statemcp::State;
 fn tool_definitions() -> Vec<Value> {
-    statemcp::tool_definitions()
+    crate::tool_definitions()
         .into_iter()
         .map(|tool| serde_json::to_value(tool).unwrap())
         .collect()
 }
-use std::process::Command;
 
 #[tokio::test]
 async fn official_sdk_client_discovers_and_calls_tools() {
-    let directory = Directory::new();
-    let client = connect(State::open(&directory.0).unwrap()).await;
+    let directory = Fixture::new();
+    let client = connect(directory.state_async().await.unwrap()).await;
     assert_eq!(
         client
             .peer_info()
@@ -48,8 +45,8 @@ async fn official_sdk_client_discovers_and_calls_tools() {
 
 #[tokio::test]
 async fn wire_results_preserve_json_values_and_application_errors() {
-    let directory = Directory::new();
-    let client = connect(State::open(&directory.0).unwrap()).await;
+    let directory = Fixture::new();
+    let client = connect(directory.state_async().await.unwrap()).await;
     let created = tool(
         &client,
         "namespace.create",
@@ -122,21 +119,6 @@ async fn wire_results_preserve_json_values_and_application_errors() {
     client.cancel().await.unwrap();
 }
 
-#[tokio::test]
-async fn official_sdk_client_launches_binary_over_stdio() {
-    let directory = Directory::new();
-    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_statemcp"));
-    command.arg("stdio").arg(&directory.0);
-    let transport = TokioChildProcess::new(command).unwrap();
-    let client = common::config().serve(transport).await.unwrap();
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 30);
-    assert_eq!(
-        tool(&client, "execute", json!({"script":"40 + 2"})).await["value"],
-        42
-    );
-    client.cancel().await.unwrap();
-}
-
 #[test]
 fn reference_schemas_match_the_advertised_tools() {
     let reference = include_str!("../reference.md");
@@ -196,40 +178,6 @@ fn schemas_advertise_exact_fixed_surface_and_required_properties() {
 }
 
 #[test]
-fn binary_cli_help_version_and_argument_errors() {
-    let binary = env!("CARGO_BIN_EXE_statemcp");
-    for argument in ["--help", "--version"] {
-        let output = Command::new(binary).arg(argument).output().unwrap();
-        assert!(output.status.success());
-        assert!(
-            String::from_utf8(output.stdout)
-                .unwrap()
-                .contains("statemcp")
-        );
-    }
-    for arguments in [
-        vec![],
-        vec!["stdio"],
-        vec!["http"],
-        vec!["--unknown"],
-        vec!["--data-dir"],
-        vec!["stdio", "/unused", "--auth-bearer", "x"],
-        vec!["http", "/unused", "--auth-key", "x"],
-        vec!["http", "/unused", "--auth-bearer", ""],
-        vec!["http", "/unused", "--http-prefix", "/bad//prefix"],
-        vec!["--worker"],
-        vec!["--worker", "invalid", "1024"],
-        vec!["--worker", "1024", "-1"],
-        vec!["--worker", "1024", "1024", "unexpected"],
-    ] {
-        let output = Command::new(binary).args(arguments).output().unwrap();
-        assert!(!output.status.success());
-        assert!(output.stdout.is_empty());
-        assert!(!output.stderr.is_empty());
-    }
-}
-
-#[test]
 fn sdk_macros_and_core_validate_the_same_tool_contracts() {
     let sdk = tool_definitions();
     let core: Vec<Value> = state_core::tool_definitions()
@@ -248,8 +196,8 @@ fn sdk_macros_and_core_validate_the_same_tool_contracts() {
 
 #[tokio::test]
 async fn sdk_routing_preserves_original_idempotency_inputs() {
-    let directory = Directory::new();
-    let client = connect(State::open(&directory.0).unwrap()).await;
+    let directory = Fixture::new();
+    let client = connect(directory.state_async().await.unwrap()).await;
     let args = json!({"script":"inputs", "idempotency_key":"original-wire-input"});
     assert_eq!(
         tool(&client, "execute", args.clone()).await,
@@ -264,4 +212,87 @@ async fn sdk_routing_preserves_original_idempotency_inputs() {
         .unwrap();
     assert_eq!(value(&changed)["error"]["code"], "IDEMPOTENCY_MISMATCH");
     client.cancel().await.unwrap();
+}
+
+#[derive(Default)]
+struct Gate {
+    released: std::sync::Mutex<bool>,
+    wake: std::sync::Condvar,
+}
+impl Gate {
+    fn wait(&self) -> state_core::Result<()> {
+        let mut released = self.released.lock().map_err(|_| {
+            state_core::Error::new(state_core::ErrorCode::WorkerFailed, "poisoned gate")
+        })?;
+        while !*released {
+            released = self.wake.wait(released).map_err(|_| {
+                state_core::Error::new(state_core::ErrorCode::WorkerFailed, "poisoned gate")
+            })?;
+        }
+        Ok(())
+    }
+}
+struct ReleaseGate(std::sync::Arc<Gate>);
+impl Drop for ReleaseGate {
+    fn drop(&mut self) {
+        let mut released = self
+            .0
+            .released
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *released = true;
+        self.0.wake.notify_all();
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invocation_limit_is_shared_by_session_clones_and_recovers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new();
+    let server = super::Server::new(fixture.state_async().await?);
+    let other_session = server.clone();
+    let gate = std::sync::Arc::new(Gate::default());
+    let release = ReleaseGate(gate.clone());
+    let (started, mut entered) = tokio::sync::mpsc::unbounded_channel();
+    let mut calls = Vec::new();
+    for _ in 0..16 {
+        let server = server.clone();
+        let gate = gate.clone();
+        let started = started.clone();
+        calls.push(tokio::spawn(async move {
+            server
+                .run_blocking(move |_| {
+                    started.send(()).map_err(|_| {
+                        state_core::Error::new(
+                            state_core::ErrorCode::WorkerFailed,
+                            "closed start channel",
+                        )
+                    })?;
+                    gate.wait()?;
+                    Ok(42)
+                })
+                .await
+        }));
+    }
+    // Every arrival is retained by the channel, even if several jobs start
+    // before the async test polls again. No sleep or polling race is needed.
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        for _ in 0..16 {
+            entered.recv().await.ok_or("closed start channel")?;
+        }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+    .await??;
+    let busy = other_session.run_blocking(|_| Ok(0)).await?;
+    assert_eq!(busy.is_error, Some(true));
+    assert_eq!(common::value(&busy)["error"]["code"], "BUSY");
+    drop(release);
+    for call in calls {
+        assert_eq!(common::value(&call.await??), 42);
+    }
+    assert_eq!(
+        common::value(&other_session.run_blocking(|_| Ok(42)).await?),
+        42
+    );
+    Ok(())
 }

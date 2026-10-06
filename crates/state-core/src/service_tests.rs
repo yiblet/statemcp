@@ -1,6 +1,6 @@
-mod support;
+use crate::test_support as support;
+use crate::{CoreLimits, State};
 use serde_json::{Value, json};
-use state_core::{CoreLimits, State};
 use state_fs::MemoryFs;
 use std::time::Duration;
 use support::ToolCalls;
@@ -166,7 +166,7 @@ fn input_and_output_contracts_are_authoritative_before_publication() {
                 json!({"namespace":"n","function":"bad","arguments":arguments}),
             )
             .unwrap_err();
-        assert_eq!(error.code, state_core::ErrorCode::SchemaValidation);
+        assert_eq!(error.code, crate::ErrorCode::SchemaValidation);
         assert_eq!(rows(&state, "n"), json!([]));
     }
 }
@@ -187,7 +187,7 @@ fn module_initialization_is_effect_free_at_declare_and_every_invoke() {
             json!({"namespace":"n","name":"bad","file":"/bad.py","symbol":"endpoint"}),
         )
         .unwrap_err();
-    assert_eq!(error.code, state_core::ErrorCode::PermissionDenied);
+    assert_eq!(error.code, crate::ErrorCode::PermissionDenied);
     assert!(
         state
             .tool("fs.read", json!({"namespace":"n","path":"/evil"}))
@@ -354,7 +354,7 @@ fn namespace_scope_follows_renames_and_clones_and_blocks_external_ids() {
                 .tool("call", json!({"namespace":ns,"function":"escape"}))
                 .unwrap_err()
                 .code,
-            state_core::ErrorCode::PermissionDenied
+            crate::ErrorCode::PermissionDenied
         );
     }
 }
@@ -397,7 +397,7 @@ fn functions_cannot_escape_through_mcp_or_nested_scripts() {
                 .tool("call", json!({"namespace":"a","function":name}))
                 .unwrap_err()
                 .code,
-            state_core::ErrorCode::PermissionDenied,
+            crate::ErrorCode::PermissionDenied,
             "{name}"
         );
     }
@@ -423,7 +423,7 @@ fn schemas_reject_external_references_and_support_local_defs() {
         json!({"$id":"https://example.invalid/"}),
         json!({"type":123}),
     ] {
-        assert_eq!(state.tool("function.declare",json!({"namespace":"n","name":"test","file":"/api.py","symbol":"endpoint","input_schema":schema})).unwrap_err().code,state_core::ErrorCode::InvalidArgument);
+        assert_eq!(state.tool("function.declare",json!({"namespace":"n","name":"test","file":"/api.py","symbol":"endpoint","input_schema":schema})).unwrap_err().code,crate::ErrorCode::InvalidArgument);
     }
     run(
         &state,
@@ -460,7 +460,7 @@ fn strict_tool_and_host_validation_and_discovery_share_the_same_surface() {
     ] {
         assert_eq!(
             state.tool(tool, args).unwrap_err().code,
-            state_core::ErrorCode::InvalidArgument
+            crate::ErrorCode::InvalidArgument
         );
     }
     for script in [
@@ -474,7 +474,7 @@ fn strict_tool_and_host_validation_and_discovery_share_the_same_surface() {
                 .tool("execute", json!({"script":script}))
                 .unwrap_err()
                 .code,
-            state_core::ErrorCode::InvalidArgument
+            crate::ErrorCode::InvalidArgument
         );
     }
     let result = run(
@@ -483,7 +483,7 @@ fn strict_tool_and_host_validation_and_discovery_share_the_same_surface() {
         json!({"script":"mcp('describe')['tools']"}),
     );
     assert_eq!(result["value"].as_array().unwrap().len(), 30);
-    assert_eq!(state_core::tool_definitions().len(), 30);
+    assert_eq!(crate::tool_definitions().len(), 30);
 }
 
 #[test]
@@ -506,7 +506,7 @@ fn shared_depth_and_operation_budgets_abort_recursion_and_loops() {
             .tool("call", json!({"namespace":"n","function":"recursive"}))
             .unwrap_err()
             .code,
-        state_core::ErrorCode::LimitExceeded
+        crate::ErrorCode::LimitExceeded
     );
     assert!(
         state
@@ -516,7 +516,7 @@ fn shared_depth_and_operation_budgets_abort_recursion_and_loops() {
     let mut limits = CoreLimits::default();
     limits.runtime.max_calls = 4;
     let limited = state.clone().with_limits(limits);
-    assert_eq!(limited.tool("execute",json!({"namespace":"n","script":"for i in range(10):\n    write_text('/loop', 'x')\n"})).unwrap_err().code,state_core::ErrorCode::LimitExceeded);
+    assert_eq!(limited.tool("execute",json!({"namespace":"n","script":"for i in range(10):\n    write_text('/loop', 'x')\n"})).unwrap_err().code,crate::ErrorCode::LimitExceeded);
     assert!(
         state
             .tool("fs.read", json!({"namespace":"n","path":"/loop"}))
@@ -530,7 +530,7 @@ fn shared_depth_and_operation_budgets_abort_recursion_and_loops() {
             .tool("execute", json!({"script":"while True:\n    pass"}))
             .unwrap_err()
             .code,
-        state_core::ErrorCode::LimitExceeded
+        crate::ErrorCode::LimitExceeded
     );
 }
 
@@ -543,7 +543,7 @@ fn receipt_replays_exact_result_and_scopes_keys_by_trusted_principal() {
     let result = run(&state, "execute", args.clone());
     assert_eq!(run(&state, "execute", args.clone()), result);
     let input = serde_json::from_value(args.clone()).unwrap();
-    let identity = state_core::ReceiptIdentity::for_arguments("k", "execute", &args).unwrap();
+    let identity = crate::ReceiptIdentity::for_arguments("k", "execute", &args).unwrap();
     assert_eq!(
         serde_json::to_value(state.execute_script(input, Some(identity)).unwrap()).unwrap(),
         result
@@ -553,7 +553,7 @@ fn receipt_replays_exact_result_and_scopes_keys_by_trusted_principal() {
     changed["script"] = json!("42");
     assert_eq!(
         state.tool("execute", changed).unwrap_err().code,
-        state_core::ErrorCode::IdempotencyMismatch
+        crate::ErrorCode::IdempotencyMismatch
     );
     state
         .clone()
@@ -570,7 +570,7 @@ fn receipt_replays_exact_result_and_scopes_keys_by_trusted_principal() {
             )
             .unwrap_err()
             .code,
-        state_core::ErrorCode::InvalidArgument
+        crate::ErrorCode::InvalidArgument
     );
 }
 
@@ -592,7 +592,7 @@ fn direct_large_files_remain_readable_and_runtime_writes_respect_bridge_limits()
             )
             .unwrap_err()
             .code,
-        state_core::ErrorCode::LimitExceeded
+        crate::ErrorCode::LimitExceeded
     );
     let mut limits = CoreLimits::default();
     limits.runtime.max_output_bytes = 1024;
@@ -605,7 +605,7 @@ fn direct_large_files_remain_readable_and_runtime_writes_respect_bridge_limits()
             )
             .unwrap_err()
             .code,
-        state_core::ErrorCode::LimitExceeded
+        crate::ErrorCode::LimitExceeded
     );
     assert!(
         state
@@ -638,7 +638,7 @@ fn migration_introspection_and_version_checks_are_enforced() {
             json!({"namespace":"n","function":"migration","expected_version":"stale"}),
         )
         .unwrap_err();
-    assert_eq!(stale.code, state_core::ErrorCode::Conflict);
+    assert_eq!(stale.code, crate::ErrorCode::Conflict);
     run(
         &state,
         "call",
@@ -690,7 +690,7 @@ fn discovery_guide_runs_and_acknowledgments_keep_actionable_tokens() {
     ] {
         assert_eq!(
             state.tool("describe", args).unwrap_err().code,
-            state_core::ErrorCode::InvalidArgument
+            crate::ErrorCode::InvalidArgument
         );
     }
     let guide = run(&state, "describe", json!({"mode":"runtime"}));
@@ -756,7 +756,7 @@ fn dotted_tools_imply_actions_and_keep_namespace_scope() {
             )
             .unwrap_err()
             .code,
-        state_core::ErrorCode::InvalidArgument
+        crate::ErrorCode::InvalidArgument
     );
     let result = run(
         &state,
@@ -785,7 +785,7 @@ fn discovery_includes_bundled_readme_and_public_validation_errors() {
     let error = state
         .tool("db.query", json!({"namespace":"n"}))
         .unwrap_err();
-    assert_eq!(error.code, state_core::ErrorCode::InvalidArgument);
+    assert_eq!(error.code, crate::ErrorCode::InvalidArgument);
     assert!(error.message.contains("database"));
     assert!(!error.message.contains("db.query"));
     assert!(!error.message.contains("oneOf"));
@@ -811,7 +811,7 @@ fn rename_invalidates_namespace_revision() {
     );
     assert_eq!(created["id"], renamed["id"]);
     assert_ne!(created["revision"], renamed["revision"]);
-    assert_eq!(state.tool("namespace.update", json!({"namespace":created["id"],"name":"stale","expected_revision":created["revision"]})).unwrap_err().code, state_core::ErrorCode::Conflict);
+    assert_eq!(state.tool("namespace.update", json!({"namespace":created["id"],"name":"stale","expected_revision":created["revision"]})).unwrap_err().code, crate::ErrorCode::Conflict);
 }
 
 #[test]
@@ -825,7 +825,7 @@ fn obsolete_grant_fields_are_rejected_before_publication() {
         args[field] = json!([]);
         assert_eq!(
             state.tool("function.declare", args).unwrap_err().code,
-            state_core::ErrorCode::InvalidArgument
+            crate::ErrorCode::InvalidArgument
         );
     }
     assert_eq!(
@@ -988,7 +988,7 @@ fn imports_are_lazy_cached_and_isolated_and_failed_imports_can_retry() {
             .tool("execute", json!({"namespace":"n","script":"import bad"}))
             .unwrap_err()
             .code,
-        state_core::ErrorCode::PythonError
+        crate::ErrorCode::PythonError
     );
 }
 
@@ -1025,14 +1025,14 @@ fn imported_helpers_use_host_callbacks_and_import_initialization_remains_effect_
             )
             .unwrap_err()
             .code,
-        state_core::ErrorCode::PermissionDenied
+        crate::ErrorCode::PermissionDenied
     );
     assert_eq!(
         state
             .tool("fs.read", json!({"namespace":"n","path":"/effect"}))
             .unwrap_err()
             .code,
-        state_core::ErrorCode::NotFound
+        crate::ErrorCode::NotFound
     );
     assert_eq!(
         run(
@@ -1135,7 +1135,7 @@ fn namespace_descriptions_persist_copy_and_obey_revision_guards() {
     );
     assert_eq!(updated["name"], "memory");
     assert_ne!(updated["revision"], renamed["revision"]);
-    assert_eq!(state.tool("namespace.update", json!({"namespace":"memory", "description":null, "expected_revision":renamed["revision"]})).unwrap_err().code, state_core::ErrorCode::Conflict);
+    assert_eq!(state.tool("namespace.update", json!({"namespace":"memory", "description":null, "expected_revision":renamed["revision"]})).unwrap_err().code, crate::ErrorCode::Conflict);
     let copied = run(
         &state,
         "namespace.copy",

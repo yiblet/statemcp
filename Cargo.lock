@@ -2821,9 +2821,6 @@ dependencies = [
 [[package]]
 name = "state-fs"
 version = "0.1.0"
-dependencies = [
- "tempfile",
-]
 
 [[package]]
 name = "state-migrations"
@@ -2871,8 +2868,12 @@ dependencies = [
  "serde",
  "serde_json",
  "state-core",
+ "state-domain",
+ "state-fs",
  "state-runtime",
+ "state-store",
  "subtle",
+ "tempfile",
  "tokio",
  "tower",
  "tower-http",

@@ -136,3 +136,35 @@ same tools and state.
 
 See [the tool reference](reference.md) for exact tool names, arguments, results,
 and Python helpers.
+
+## Workspace crates and tests
+
+- [state-contract](crates/state-contract/README.md): stable shared error categories.
+- [state-fs](crates/state-fs/README.md): blocking physical and in-memory filesystem adapters.
+- [state-migrations](crates/state-migrations/README.md): ordered Rust catalog migrations.
+- [state-store](crates/state-store/README.md): SQLite overlays, publication, and recovery.
+- [state-domain](crates/state-domain/README.md): typed resources and transactions.
+- [state-runtime](crates/state-runtime/README.md): Monty execution and framed workers.
+- [state-core](crates/state-core/README.md): service operations, authorization, and root budgets.
+
+Unit tests live under each crate's `src/` in `#[cfg(test)]` modules,
+including the root package. They use in-memory filesystems, byte buffers,
+Tokio duplex streams, and direct HTTP router requests. They do not read or write
+host files, bind sockets, or launch child processes. Example fixtures and the
+reference schemas are embedded at compile time.
+
+```sh
+cargo test --workspace --lib --bins  # in-memory unit tests
+cargo test --test e2e                # real I/O end-to-end tests
+cargo test --workspace --all-targets # both suites
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+```
+
+The [end-to-end suite](tests/e2e/README.md) lives under `tests/e2e/`, with one
+Cargo integration target. It exercises physical filesystem operations,
+cross-process locks, real CLI/stdio executables, HTTP sockets and listener
+cleanup, worker isolation, and aggregate allocator limits. Real-I/O scenarios
+run serially to avoid transient inherited-lock contention during process spawning.
+
+The scripts under [`test/`](test/README.md) remain manual executable checks.

@@ -954,3 +954,6 @@ impl PreparedCommand {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

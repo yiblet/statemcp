@@ -127,3 +127,13 @@ SQL statement/value/result/receipt, 10,000 SQL result rows, and a two-second SQL
 progress deadline. The overlay additionally bounds changed blocks to 64 MiB per
 invocation. Domain tests use the memory filesystem; disk is tested only by the
 physical filesystem adapter.
+
+## Tests
+
+Tests live in crate-local `#[cfg(test)]` modules under `src/`. They use
+in-memory storage and embedded execution where applicable; they do not create
+host files, bind sockets, or launch processes.
+
+```sh
+cargo test -p state-domain
+```

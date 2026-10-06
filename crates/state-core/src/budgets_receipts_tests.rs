@@ -1,6 +1,6 @@
-mod support;
+use crate::test_support as support;
+use crate::{CoreLimits, EmbeddedBackend, RuntimeBackend, State};
 use serde_json::{Map, Value, json};
-use state_core::{CoreLimits, EmbeddedBackend, RuntimeBackend, State};
 use state_runtime::{HostCallback, Limits, RunResult, RuntimeError};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
@@ -126,7 +126,7 @@ fn core_poisoning_survives_a_backend_that_swallows_host_errors() {
             .tool("execute", json!({"script":"ignored"}))
             .unwrap_err()
             .code,
-        state_core::ErrorCode::InvalidArgument
+        crate::ErrorCode::InvalidArgument
     );
     assert_eq!(
         state.tool("namespace.list", json!({})).unwrap()["namespaces"],
@@ -147,12 +147,8 @@ impl RuntimeBackend for RacingBackend {
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
-        let failure = || {
-            RuntimeError::new(
-                state_core::ErrorCode::WorkerFailed,
-                "test coordination failed",
-            )
-        };
+        let failure =
+            || RuntimeError::new(crate::ErrorCode::WorkerFailed, "test coordination failed");
         self.entered.send(()).map_err(|_| failure())?;
         self.release
             .lock()
@@ -208,8 +204,8 @@ fn concurrent_receipts_conflict_then_retry_replays_the_committed_result()
     entered_rx.recv_timeout(std::time::Duration::from_secs(5))?;
     assert!(matches!(
         state.tool("execute", args.clone()),
-        Err(state_core::Error {
-            code: state_core::ErrorCode::Conflict,
+        Err(crate::Error {
+            code: crate::ErrorCode::Conflict,
             ..
         })
     ));

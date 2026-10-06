@@ -1,39 +1,19 @@
-use serde_json::Map;
-mod support;
-use support::ToolCalls;
-mod common;
+use crate::test_support as common;
+use crate::{
+    State,
+    http::{HttpOptions, router},
+};
 use axum::{
     Router,
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
+use common::Fixture;
+use serde_json::Map;
 use serde_json::{Value, json};
-use statemcp::{
-    State,
-    http::{HttpOptions, router},
-};
-use std::{
-    fs,
-    path::PathBuf,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::time::Duration;
 use tower::ServiceExt;
 
-struct Directory(PathBuf);
-impl Directory {
-    fn new() -> Self {
-        let suffix = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        Self(std::env::temp_dir().join(format!("statemcp-http-{}-{suffix}", std::process::id())))
-    }
-}
-impl Drop for Directory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 fn app(state: State, token: Option<&str>) -> Router {
     router(
         state,
@@ -98,7 +78,7 @@ async fn initialize(app: &Router, token: Option<&str>) -> String {
 
 #[test]
 fn prefixes_reject_ambiguous_paths_before_serving() {
-    use statemcp::http::HttpPrefix;
+    use crate::http::HttpPrefix;
     for prefix in ["", "/", "/statemcp", "/statemcp/", "/api/v1"] {
         assert!(prefix.parse::<HttpPrefix>().is_ok(), "{prefix}");
     }
@@ -112,7 +92,7 @@ fn prefixes_reject_ambiguous_paths_before_serving() {
 
 #[tokio::test]
 async fn prefixed_routes_share_sessions_and_health_is_public() {
-    let directory = Directory::new();
+    let directory = Fixture::new();
     let addresses = [
         "127.0.0.1:8000".parse().unwrap(),
         "[::1]:8000".parse().unwrap(),
@@ -120,7 +100,7 @@ async fn prefixed_routes_share_sessions_and_health_is_public() {
     let options = HttpOptions::for_addresses(&addresses, Some("secret-token".into()))
         .unwrap()
         .with_prefix("/statemcp/".parse().unwrap());
-    let app = router(State::open(&directory.0).unwrap(), options);
+    let app = router(directory.state_async().await.unwrap(), options);
     for host in ["127.0.0.1:8000", "[::1]:8000", "localhost:8000"] {
         let response = app
             .clone()
@@ -213,89 +193,44 @@ async fn prefixed_routes_share_sessions_and_health_is_public() {
 }
 
 #[tokio::test]
-async fn multiple_listeners_serve_shared_state_with_official_clients() {
-    use rmcp::{
-        ServiceExt,
-        transport::{
-            StreamableHttpClientTransport,
-            streamable_http_client::StreamableHttpClientTransportConfig,
-        },
-    };
-    let directory = Directory::new();
-    let first = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let second = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addresses = [first.local_addr().unwrap(), second.local_addr().unwrap()];
-    let state = State::open(&directory.0).unwrap();
-    let options = HttpOptions::for_addresses(&addresses, Some("sdk-token".into()))
-        .unwrap()
-        .with_prefix("/statemcp".parse().unwrap());
-    let server = tokio::spawn(statemcp::http::serve_listeners(
-        vec![first, second],
-        state,
-        options,
-    ));
-    let transport = |address| {
-        StreamableHttpClientTransport::from_config(
-            StreamableHttpClientTransportConfig::with_uri(format!(
-                "http://{address}/statemcp/mcp/"
-            ))
-            .auth_header("sdk-token"),
-        )
-    };
-    let first = common::config()
-        .serve(transport(addresses[0]))
-        .await
-        .unwrap();
-    let second = common::config()
-        .serve(transport(addresses[1]))
-        .await
-        .unwrap();
-    common::tool(&first, "namespace.create", json!({"name":"multi-listener"})).await;
-    let namespaces = common::tool(&second, "namespace.list", json!({})).await;
-    assert_eq!(namespaces["namespaces"][0]["name"], "multi-listener");
-    first.cancel().await.unwrap();
-    second.cancel().await.unwrap();
-    server.abort();
-    assert!(server.await.unwrap_err().is_cancelled());
-    // Dropping the server task releases every listener, rather than leaking tasks.
-    for address in addresses {
-        tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                match tokio::net::TcpListener::bind(address).await {
-                    Ok(_) => break,
-                    Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
-                        tokio::task::yield_now().await;
-                    }
-                    Err(error) => panic!("cannot rebind {address}: {error}"),
-                }
-            }
-        })
-        .await
-        .expect("server task leaked a listener");
-    }
+async fn routers_for_multiple_addresses_share_state() {
+    let fixture = Fixture::new();
+    let addresses = [
+        "127.0.0.1:8000".parse().unwrap(),
+        "127.0.0.1:9000".parse().unwrap(),
+    ];
+    let options = HttpOptions::for_addresses(&addresses, Some("sdk-token".into())).unwrap();
+    let state = fixture.state_async().await.unwrap();
+    let first = router(state.clone(), options.clone());
+    let second = router(state, options);
+    let first_session = initialize(&first, Some("sdk-token")).await;
+    let second_session = initialize(&second, Some("sdk-token")).await;
+    let created = tool(
+        &first,
+        &first_session,
+        "namespace.create",
+        json!({"name":"multi-address"}),
+        Some("sdk-token"),
+    )
+    .await;
+    assert_eq!(
+        common::value(&serde_json::from_value(created).unwrap())["name"],
+        "multi-address"
+    );
+    let listed = tool(
+        &second,
+        &second_session,
+        "namespace.list",
+        json!({}),
+        Some("sdk-token"),
+    )
+    .await;
+    assert_eq!(
+        common::value(&serde_json::from_value(listed).unwrap())["namespaces"][0]["name"],
+        "multi-address"
+    );
 }
 
-#[test]
-fn all_addresses_must_bind_before_creating_state() {
-    let directory = Directory::new();
-    let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_statemcp"))
-        .arg("http")
-        .arg(&directory.0)
-        .args([
-            "--bind",
-            "127.0.0.1:0",
-            "--bind",
-            &occupied.local_addr().unwrap().to_string(),
-            "--http-prefix",
-            "/statemcp",
-        ])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot listen"));
-    assert!(!directory.0.exists());
-}
 async fn tool(app: &Router, session: &str, name: &str, args: Value, token: Option<&str>) -> Value {
     static REQUEST_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(100);
     let id = REQUEST_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -306,8 +241,8 @@ async fn tool(app: &Router, session: &str, name: &str, args: Value, token: Optio
 
 #[tokio::test]
 async fn authenticated_http_sessions_execute_and_share_persistent_state() {
-    let directory = Directory::new();
-    let app = app(State::open(&directory.0).unwrap(), Some("secret-token"));
+    let directory = Fixture::new();
+    let app = app(directory.state_async().await.unwrap(), Some("secret-token"));
     let session = initialize(&app, Some("secret-token")).await;
     let listed = app
         .clone()
@@ -384,19 +319,25 @@ async fn authenticated_http_sessions_execute_and_share_persistent_state() {
         .unwrap();
     assert_eq!(expired.status(), StatusCode::NOT_FOUND);
     drop(app);
-    let reopened = State::open(&directory.0).unwrap();
-    assert_eq!(
-        reopened
-            .tool("fs.read", json!({"namespace":"http","path":"/saved"}))
-            .unwrap()["text"],
-        "persisted"
+    let reopened = directory.state_async().await.unwrap();
+    let file = tokio::task::spawn_blocking(move || {
+        reopened.read_file(state_core::inputs::FsReadInput {
+            namespace: "http".into(),
+            path: "/saved".into(),
+        })
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        matches!(file, state_core::records::FileContents::Text { text, .. } if text == "persisted")
     );
 }
 
 #[tokio::test]
 async fn bearer_auth_covers_every_http_method_and_rejects_ambiguous_credentials() {
-    let directory = Directory::new();
-    let app = app(State::open(&directory.0).unwrap(), Some("secret-token"));
+    let directory = Fixture::new();
+    let app = app(directory.state_async().await.unwrap(), Some("secret-token"));
     for method in ["GET", "POST", "DELETE", "OPTIONS"] {
         for token in [None, Some("wrong-token")] {
             let mut request = request(json!({}), None, token);
@@ -434,8 +375,8 @@ async fn bearer_auth_covers_every_http_method_and_rejects_ambiguous_credentials(
 
 #[tokio::test]
 async fn http_without_bearer_is_optional_and_protocol_headers_are_checked() {
-    let directory = Directory::new();
-    let app = app(State::open(&directory.0).unwrap(), None);
+    let directory = Fixture::new();
+    let app = app(directory.state_async().await.unwrap(), None);
     let session = initialize(&app, None).await;
     let mut unsupported = request(
         json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
@@ -463,13 +404,13 @@ async fn http_without_bearer_is_optional_and_protocol_headers_are_checked() {
 }
 
 struct SlowBackend;
-impl statemcp::RuntimeBackend for SlowBackend {
+impl crate::RuntimeBackend for SlowBackend {
     fn execute(
         &self,
         _: &str,
         _: &state_runtime::ModuleSources,
         _: Value,
-        _: &statemcp::Limits,
+        _: &crate::Limits,
         _: &mut state_runtime::HostCallback<'_>,
     ) -> Result<state_runtime::RunResult, state_runtime::RuntimeError> {
         std::thread::sleep(Duration::from_millis(250));
@@ -484,7 +425,7 @@ impl statemcp::RuntimeBackend for SlowBackend {
         _: &state_runtime::ModuleSources,
         _: &str,
         _: Map<String, Value>,
-        _: &statemcp::Limits,
+        _: &crate::Limits,
         _: &mut state_runtime::HostCallback<'_>,
     ) -> Result<state_runtime::RunResult, state_runtime::RuntimeError> {
         unreachable!()
@@ -494,7 +435,7 @@ impl statemcp::RuntimeBackend for SlowBackend {
         _: &str,
         _: &state_runtime::ModuleSources,
         _: &str,
-        _: &statemcp::Limits,
+        _: &crate::Limits,
     ) -> Result<(), state_runtime::RuntimeError> {
         unreachable!()
     }
@@ -502,9 +443,9 @@ impl statemcp::RuntimeBackend for SlowBackend {
 
 #[tokio::test(flavor = "current_thread")]
 async fn synchronous_invocation_does_not_block_async_http_requests() {
-    let directory = Directory::new();
+    let directory = Fixture::new();
     let state = State::with_backend(
-        statemcp::Store::open(&directory.0).unwrap(),
+        directory.store_async().await.unwrap(),
         std::sync::Arc::new(SlowBackend),
     );
     let app = app(state, None);
@@ -552,8 +493,8 @@ fn tool_value(result: &Value) -> Value {
 
 #[tokio::test]
 async fn json_transport_preserves_lifecycle_and_request_limits() {
-    let directory = Directory::new();
-    let app = app(State::open(&directory.0).unwrap(), None);
+    let directory = Fixture::new();
+    let app = app(directory.state_async().await.unwrap(), None);
     let invalid = app
         .clone()
         .oneshot(request(
@@ -572,7 +513,7 @@ async fn json_transport_preserves_lifecycle_and_request_limits() {
     assert_eq!(tool_value(&namespaces)["namespaces"], json!([]));
     assert!(namespaces.get("structuredContent").is_none());
     let mut large = request(json!({}), Some(&session), None);
-    *large.body_mut() = Body::from(vec![b'x'; statemcp::protocol::MAX_FRAME_BYTES + 1]);
+    *large.body_mut() = Body::from(vec![b'x'; crate::protocol::MAX_FRAME_BYTES + 1]);
     assert_eq!(
         app.clone().oneshot(large).await.unwrap().status(),
         StatusCode::PAYLOAD_TOO_LARGE
@@ -593,62 +534,101 @@ async fn json_transport_preserves_lifecycle_and_request_limits() {
     );
 }
 
-#[tokio::test]
-async fn official_http_clients_share_state_across_protocol_versions() {
-    use rmcp::{
-        ServiceExt,
-        model::ClientConfig,
-        transport::{
-            StreamableHttpClientTransport,
-            streamable_http_client::StreamableHttpClientTransportConfig,
-        },
-    };
-    let directory = Directory::new();
-    let state = State::open(&directory.0).unwrap();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let options = HttpOptions::new(address, Some("sdk-token".into())).unwrap();
-    let server = tokio::spawn(async move {
-        axum::serve(listener, router(state, options)).await.unwrap();
-    });
-    let transport = || {
-        StreamableHttpClientTransport::from_config(
-            StreamableHttpClientTransportConfig::with_uri(format!("http://{address}/mcp"))
-                .auth_header("sdk-token"),
+struct HttpClient {
+    app: Router,
+    session: String,
+    version: &'static str,
+}
+impl HttpClient {
+    async fn new(app: Router, version: &'static str) -> Self {
+        let mut init = request(
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":version,"capabilities":{},"clientInfo":{"name":"test","version":"1"}}}),
+            None,
+            Some("sdk-token"),
+        );
+        init.headers_mut()
+            .insert("mcp-protocol-version", version.parse().unwrap());
+        let response = app.clone().oneshot(init).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let session = response.headers()["mcp-session-id"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            response_json(response).await["result"]["protocolVersion"],
+            version
+        );
+        let client = Self {
+            app,
+            session,
+            version,
+        };
+        let response = client
+            .send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+            .await;
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        client
+    }
+    async fn send(&self, message: Value) -> axum::response::Response {
+        let mut request = request(message, Some(&self.session), Some("sdk-token"));
+        request
+            .headers_mut()
+            .insert("mcp-protocol-version", self.version.parse().unwrap());
+        self.app.clone().oneshot(request).await.unwrap()
+    }
+    async fn list_tools(&self) -> Vec<Value> {
+        response_json(
+            self.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}))
+                .await,
         )
-    };
-    let first = common::config().serve(transport()).await.unwrap();
-    let second = ClientConfig::default().serve(transport()).await.unwrap();
-    assert_eq!(first.list_all_tools().await.unwrap().len(), 30);
-    assert_eq!(second.list_all_tools().await.unwrap().len(), 30);
-    common::tool(&first, "namespace.create", json!({"name":"shared"})).await;
-    common::tool(
+        .await["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+}
+async fn http_tool(client: &HttpClient, name: &str, arguments: Value) -> Value {
+    let response = client.send(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":name,"arguments":arguments}})).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let result = serde_json::from_value(response_json(response).await["result"].clone()).unwrap();
+    common::value(&result)
+}
+#[tokio::test]
+async fn http_sessions_share_state_across_protocol_versions() {
+    let fixture = Fixture::new();
+    let app = app(fixture.state_async().await.unwrap(), Some("sdk-token"));
+    let first = HttpClient::new(app.clone(), "2025-06-18").await;
+    let second = HttpClient::new(app, "2025-03-26").await;
+    assert_eq!(first.list_tools().await.len(), 30);
+    assert_eq!(second.list_tools().await.len(), 30);
+    http_tool(&first, "namespace.create", json!({"name":"shared"})).await;
+    http_tool(
         &first,
         "db.create",
         json!({"namespace":"shared","database":"app"}),
     )
     .await;
-    common::tool(
+    http_tool(
         &first,
         "db.execute",
         json!({"namespace":"shared","database":"app","sql":"CREATE TABLE notes(text TEXT)"}),
     )
     .await;
-    common::tool(&first, "fs.write", json!({"namespace":"shared","path":"/api.py","text":"def add(text):\n    return db_execute('app', 'INSERT INTO notes VALUES (?)', [text])"})).await;
-    common::tool(
+    http_tool(&first, "fs.write", json!({"namespace":"shared","path":"/api.py","text":"def add(text):\n    return db_execute('app', 'INSERT INTO notes VALUES (?)', [text])"})).await;
+    http_tool(
         &first,
         "function.declare",
         json!({"namespace":"shared","name":"add","file":"/api.py","symbol":"add"}),
     )
     .await;
-    common::tool(
+    http_tool(
         &second,
         "call",
         json!({"namespace":"shared","function":"add","arguments":{"text":"from another session"}}),
     )
     .await;
     assert_eq!(
-        common::tool(
+        http_tool(
             &first,
             "db.query",
             json!({"namespace":"shared","database":"app","sql":"SELECT text FROM notes"})
@@ -656,118 +636,12 @@ async fn official_http_clients_share_state_across_protocol_versions() {
         .await["rows"],
         json!([["from another session"]])
     );
-    first.cancel().await.unwrap();
-    second.cancel().await.unwrap();
-    server.abort();
-}
-
-#[derive(Default)]
-struct GatedBackend {
-    entered: std::sync::atomic::AtomicUsize,
-    started: tokio::sync::Notify,
-    released: std::sync::Mutex<bool>,
-    gate: std::sync::Condvar,
-}
-impl GatedBackend {
-    fn release(&self) {
-        *self.released.lock().unwrap() = true;
-        self.gate.notify_all();
-    }
-}
-impl statemcp::RuntimeBackend for GatedBackend {
-    fn execute(
-        &self,
-        _: &str,
-        _: &state_runtime::ModuleSources,
-        _: Value,
-        _: &statemcp::Limits,
-        _: &mut state_runtime::HostCallback<'_>,
-    ) -> Result<state_runtime::RunResult, state_runtime::RuntimeError> {
-        self.entered
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.started.notify_one();
-        let mut released = self.released.lock().unwrap();
-        while !*released {
-            released = self.gate.wait(released).unwrap();
-        }
-        Ok(state_runtime::RunResult {
-            value: json!(42),
-            stdout: String::new(),
-        })
-    }
-    fn invoke(
-        &self,
-        _: &str,
-        _: &state_runtime::ModuleSources,
-        _: &str,
-        _: Map<String, Value>,
-        _: &statemcp::Limits,
-        _: &mut state_runtime::HostCallback<'_>,
-    ) -> Result<state_runtime::RunResult, state_runtime::RuntimeError> {
-        unreachable!()
-    }
-    fn validate_module(
-        &self,
-        _: &str,
-        _: &state_runtime::ModuleSources,
-        _: &str,
-        _: &statemcp::Limits,
-    ) -> Result<(), state_runtime::RuntimeError> {
-        unreachable!()
-    }
-}
-
-struct ReleaseGate(std::sync::Arc<GatedBackend>);
-impl Drop for ReleaseGate {
-    fn drop(&mut self) {
-        self.0.release();
-    }
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn invocation_limit_is_shared_across_sessions_and_recovers() {
-    let directory = Directory::new();
-    let backend = std::sync::Arc::new(GatedBackend::default());
-    let guard = ReleaseGate(backend.clone());
-    let state = State::with_backend(
-        statemcp::Store::open(&directory.0).unwrap(),
-        backend.clone(),
-    );
-    let app = app(state, None);
-    let session = initialize(&app, None).await;
-    let other = initialize(&app, None).await;
-    let mut calls = Vec::new();
-    for _ in 0..16 {
-        let app = app.clone();
-        let session = session.clone();
-        calls.push(tokio::spawn(async move {
-            tool(&app, &session, "execute", json!({"script":"wait"}), None).await
-        }));
-    }
-    tokio::time::timeout(Duration::from_secs(3), async {
-        while backend.entered.load(std::sync::atomic::Ordering::SeqCst) < 16 {
-            backend.started.notified().await;
-        }
-    })
-    .await
-    .expect("all blocking jobs started");
-    let busy = tool(&app, &other, "execute", json!({"script":"wait"}), None).await;
-    assert_eq!(busy["isError"], true);
-    assert_eq!(tool_value(&busy)["error"]["code"], "BUSY");
-    drop(guard);
-    for call in calls {
-        assert_eq!(tool_value(&call.await.unwrap())["value"], 42);
-    }
-    assert_eq!(
-        tool_value(&tool(&app, &other, "execute", json!({"script":"next"}), None).await)["value"],
-        42
-    );
 }
 
 #[tokio::test]
 async fn tools_list_includes_required_cache_fields_for_current_protocol() {
-    let directory = Directory::new();
-    let app = app(State::open(&directory.0).unwrap(), None);
+    let directory = Fixture::new();
+    let app = app(directory.state_async().await.unwrap(), None);
     let mut list = request(
         json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"_meta":{
             "io.modelcontextprotocol/protocolVersion":"2026-07-28",

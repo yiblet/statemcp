@@ -688,3 +688,12 @@ fn check_json_size(value: &impl Serialize, max: usize) -> Result<(), RuntimeErro
     }
     serde_json::to_writer(Budget(max), value).map_err(|error| limit_error(error.to_string()))
 }
+
+#[cfg(test)]
+mod runtime_tests;
+
+#[cfg(test)]
+mod audit_tests;
+
+#[cfg(test)]
+mod composition_tests;

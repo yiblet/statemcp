@@ -1,13 +1,16 @@
-//! Allocator ceilings are process-global, so exercise them only in a child.
-use state_runtime::{LimitedAllocator, Limits, arm_worker_memory_limit, execute};
-
-#[global_allocator]
-static ALLOCATOR: LimitedAllocator = LimitedAllocator;
+//! Actual aggregate allocator limits are armed only in an isolated test child.
+use state_runtime::{Limits, arm_worker_memory_limit, execute};
 
 #[test]
 fn cumulative_memory_is_bounded_in_an_armed_worker() {
+    let _serial = super::common::serial();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "allocator_child", "--nocapture"])
+        .args([
+            "--ignored",
+            "--exact",
+            "allocator::allocator_child",
+            "--nocapture",
+        ])
         .env("STATE_RUNTIME_ALLOCATOR_CHILD", "1")
         .output()
         .unwrap();
@@ -23,7 +26,9 @@ fn cumulative_memory_is_bounded_in_an_armed_worker() {
 }
 
 #[test]
+#[ignore = "subprocess entry point; arms a process-global allocator limit"]
 fn allocator_child() {
+    let _serial = super::common::serial();
     if std::env::var_os("STATE_RUNTIME_ALLOCATOR_CHILD").is_none() {
         return;
     }
