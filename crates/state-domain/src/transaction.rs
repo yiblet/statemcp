@@ -1,56 +1,40 @@
 //! Root invocation lifecycle, operation poisoning, and all-or-nothing publication.
+pub(crate) mod databases;
 mod domain;
 mod files;
 mod functions;
 mod namespaces;
 mod objects;
-mod snapshots;
 
-use self::snapshots::WorkingDatabase;
-use crate::{Error, Receipt, Result, Store, identity::id, model::Namespace, sql};
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use crate::{Error, Receipt, Result, model::Namespace, sql};
+use std::collections::{BTreeMap, BTreeSet};
 
-/// A consistent root invocation. Any failed operation poisons publication.
-/// Dropping it discards all logical changes; unreachable sealed files are retained.
+/// Domain invocation. Any failed operation poisons publication. Dropping it
+/// discards both catalog and resource database changes through the overlay.
 pub struct Transaction {
-    store: Store,
-    // Held through publication and the Drop implementation's staging cleanup.
-    _root_guard: std::fs::File,
+    backing: state_store::Transaction,
     generation: i64,
     namespaces: BTreeMap<String, Namespace>,
     objects: BTreeMap<String, Vec<u8>>,
-    staging: PathBuf,
     poisoned: bool,
-    working_databases: BTreeMap<(String, String), WorkingDatabase>,
+    changed_databases: BTreeSet<String>,
     receipt: Option<(String, String, Receipt)>,
 }
-impl Drop for Transaction {
-    fn drop(&mut self) {
-        self.working_databases.clear();
-        let _ = fs::remove_dir_all(&self.staging);
-    }
-}
-
 impl Transaction {
     pub(crate) fn new(
-        store: Store,
+        backing: state_store::Transaction,
         generation: i64,
         namespaces: BTreeMap<String, Namespace>,
-        guard: std::fs::File,
-    ) -> Result<Self> {
-        let staging = store.root().join("staging").join(id());
-        fs::create_dir(&staging)?;
-        Ok(Transaction {
-            store,
-            _root_guard: guard,
+    ) -> Self {
+        Self {
+            backing,
             generation,
             namespaces,
             objects: BTreeMap::new(),
-            staging,
             poisoned: false,
-            working_databases: BTreeMap::new(),
+            changed_databases: BTreeSet::new(),
             receipt: None,
-        })
+        }
     }
     pub fn set_receipt(
         &mut self,
@@ -93,14 +77,13 @@ impl Transaction {
         }
         result
     }
-    pub fn commit(mut self) -> Result<crate::records::CommitOutcome> {
+    pub fn commit(self) -> Result<crate::records::CommitOutcome> {
         if self.poisoned {
             return Err(Error::new(
                 crate::ErrorCode::TransactionAborted,
                 "a prior operation failed; no changes were published",
             ));
         }
-        self.seal_working_databases()?;
         let changed = self.namespaces.values().any(|n| n.dirty);
         if !changed && self.receipt.is_none() {
             return Ok(crate::records::CommitOutcome::Published(
@@ -111,11 +94,20 @@ impl Transaction {
                 },
             ));
         }
-        self.store.publish(
-            self.generation,
-            &self.namespaces,
-            &self.objects,
-            &self.receipt,
-        )
+        let outcome = {
+            let catalog = self.backing.connect(&crate::store::catalog::name()?)?;
+            catalog.execute_batch("PRAGMA foreign_keys=ON")?;
+            crate::store::catalog::publish(
+                &catalog,
+                self.generation,
+                &self.namespaces,
+                &self.objects,
+                &self.receipt,
+            )?
+        };
+        if matches!(outcome, crate::records::CommitOutcome::Published(_)) {
+            self.backing.commit()?;
+        }
+        Ok(outcome)
     }
 }

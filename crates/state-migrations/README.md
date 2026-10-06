@@ -16,7 +16,7 @@ injected filesystem. Standalone `Service::run` uses `PhysicalFs`;
 `Service::run_with_fs` accepts an explicit filesystem.
 
 An ordinary SQLite catalog commits each migration's changes and history together,
-retaining earlier successes if a later migration fails. With `state-sqlite-vfs`,
+retaining earlier successes if a later migration fails. With `state-store`,
 use `Store::open_with_migrations` or `Store::migrate`: these hold `overlay.lock`
 exclusively and publish the whole pending batch through the redo journal. Any
 failure before publication discards the whole pending batch, including its history.

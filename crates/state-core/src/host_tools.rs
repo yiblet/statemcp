@@ -274,127 +274,129 @@ enum HostTool {
 }
 impl HostTool {
     fn parse(name: &str, arguments: Value) -> Result<Self> {
-        Ok(match state_store::Operation::from_public_name(name)? {
-            state_store::Operation::Namespace(state_store::NamespaceAction::Create) => {
+        Ok(match state_domain::Operation::from_public_name(name)? {
+            state_domain::Operation::Namespace(state_domain::NamespaceAction::Create) => {
                 Self::NamespaceCreate(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 )
             }
-            state_store::Operation::Namespace(state_store::NamespaceAction::List) => {
+            state_domain::Operation::Namespace(state_domain::NamespaceAction::List) => {
                 Self::NamespaceList(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 )
             }
-            state_store::Operation::Namespace(state_store::NamespaceAction::Get) => {
+            state_domain::Operation::Namespace(state_domain::NamespaceAction::Get) => {
                 Self::NamespaceGet(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 )
             }
-            state_store::Operation::Namespace(state_store::NamespaceAction::Update) => {
+            state_domain::Operation::Namespace(state_domain::NamespaceAction::Update) => {
                 Self::NamespaceUpdate(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 )
             }
-            state_store::Operation::Namespace(state_store::NamespaceAction::Copy) => {
+            state_domain::Operation::Namespace(state_domain::NamespaceAction::Copy) => {
                 Self::NamespaceCopy(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 )
             }
-            state_store::Operation::Namespace(state_store::NamespaceAction::Delete) => {
+            state_domain::Operation::Namespace(state_domain::NamespaceAction::Delete) => {
                 Self::NamespaceDelete(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 )
             }
-            state_store::Operation::File(state_store::FileAction::Read) => Self::FsRead(
+            state_domain::Operation::File(state_domain::FileAction::Read) => Self::FsRead(
                 serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
             ),
-            state_store::Operation::File(state_store::FileAction::Stat) => Self::FsStat(
+            state_domain::Operation::File(state_domain::FileAction::Stat) => Self::FsStat(
                 serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
             ),
-            state_store::Operation::File(state_store::FileAction::List) => Self::FsList(
+            state_domain::Operation::File(state_domain::FileAction::List) => Self::FsList(
                 serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
             ),
-            state_store::Operation::File(state_store::FileAction::Write) => Self::FsWrite(
+            state_domain::Operation::File(state_domain::FileAction::Write) => Self::FsWrite(
                 serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
             ),
-            state_store::Operation::File(state_store::FileAction::Append) => Self::FsAppend(
+            state_domain::Operation::File(state_domain::FileAction::Append) => Self::FsAppend(
                 serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
             ),
-            state_store::Operation::File(state_store::FileAction::Move) => Self::FsMove(
+            state_domain::Operation::File(state_domain::FileAction::Move) => Self::FsMove(
                 serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
             ),
-            state_store::Operation::File(state_store::FileAction::Copy) => Self::FsCopy(
+            state_domain::Operation::File(state_domain::FileAction::Copy) => Self::FsCopy(
                 serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
             ),
-            state_store::Operation::File(state_store::FileAction::Delete) => Self::FsDelete(
+            state_domain::Operation::File(state_domain::FileAction::Delete) => Self::FsDelete(
                 serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
             ),
-            state_store::Operation::Database(state_store::DatabaseAction::List) => Self::DbList(
+            state_domain::Operation::Database(state_domain::DatabaseAction::List) => Self::DbList(
                 serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
             ),
-            state_store::Operation::Database(state_store::DatabaseAction::Create) => {
+            state_domain::Operation::Database(state_domain::DatabaseAction::Create) => {
                 Self::DbCreate(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 )
             }
-            state_store::Operation::Database(state_store::DatabaseAction::Drop) => Self::DbDrop(
+            state_domain::Operation::Database(state_domain::DatabaseAction::Drop) => Self::DbDrop(
                 serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
             ),
-            state_store::Operation::Database(state_store::DatabaseAction::Query) => Self::DbQuery(
-                serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-            ),
-            state_store::Operation::Database(state_store::DatabaseAction::Execute) => {
+            state_domain::Operation::Database(state_domain::DatabaseAction::Query) => {
+                Self::DbQuery(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                )
+            }
+            state_domain::Operation::Database(state_domain::DatabaseAction::Execute) => {
                 Self::DbExecute(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 )
             }
-            state_store::Operation::Database(state_store::DatabaseAction::Inspect) => {
+            state_domain::Operation::Database(state_domain::DatabaseAction::Inspect) => {
                 Self::DbInspect(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 )
             }
-            state_store::Operation::Database(state_store::DatabaseAction::Migrations) => {
+            state_domain::Operation::Database(state_domain::DatabaseAction::Migrations) => {
                 Self::DbMigrations(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 )
             }
-            state_store::Operation::Database(state_store::DatabaseAction::Migrate) => {
+            state_domain::Operation::Database(state_domain::DatabaseAction::Migrate) => {
                 Self::DbMigrate(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 )
             }
-            state_store::Operation::Function(state_store::FunctionAction::List) => {
+            state_domain::Operation::Function(state_domain::FunctionAction::List) => {
                 Self::FunctionList(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 )
             }
-            state_store::Operation::Function(state_store::FunctionAction::Get) => {
+            state_domain::Operation::Function(state_domain::FunctionAction::Get) => {
                 Self::FunctionGet(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 )
             }
-            state_store::Operation::Function(state_store::FunctionAction::Declare) => {
+            state_domain::Operation::Function(state_domain::FunctionAction::Declare) => {
                 Self::FunctionDeclare(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 )
             }
-            state_store::Operation::Function(state_store::FunctionAction::Update) => {
+            state_domain::Operation::Function(state_domain::FunctionAction::Update) => {
                 Self::FunctionUpdate(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 )
             }
-            state_store::Operation::Function(state_store::FunctionAction::Remove) => {
+            state_domain::Operation::Function(state_domain::FunctionAction::Remove) => {
                 Self::FunctionRemove(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 )
             }
-            state_store::Operation::Call => Self::Call(
+            state_domain::Operation::Call => Self::Call(
                 serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
             ),
-            state_store::Operation::Execute => Self::Execute(
+            state_domain::Operation::Execute => Self::Execute(
                 serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
             ),
-            state_store::Operation::Describe => Self::Describe(
+            state_domain::Operation::Describe => Self::Describe(
                 serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
             ),
         })

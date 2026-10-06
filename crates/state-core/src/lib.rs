@@ -5,7 +5,7 @@ mod discovery;
 mod execution;
 pub use discovery::Discovery;
 mod hosts;
-pub use state_store::{inputs, records};
+pub use state_domain::{inputs, records};
 mod host_tools;
 mod receipt;
 pub use receipt::ReceiptIdentity;
@@ -16,10 +16,10 @@ mod selectors;
 
 pub use runtime::{EmbeddedBackend, RuntimeBackend};
 pub use schemas::tool_definitions;
-pub use state_runtime::{Limits, WorkerConfig};
-pub use state_store::{
+pub use state_domain::{
     DatabaseAction, FileAction, FunctionAction, NamespaceAction, Operation, Store, Tool,
 };
+pub use state_runtime::{Limits, WorkerConfig};
 
 use serde::{Deserialize, Serialize};
 use std::{fmt, path::Path, sync::Arc, time::Instant};
@@ -57,8 +57,8 @@ impl fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
-impl From<state_store::Error> for Error {
-    fn from(e: state_store::Error) -> Self {
+impl From<state_domain::Error> for Error {
+    fn from(e: state_domain::Error) -> Self {
         Self::new(e.code, e.message)
     }
 }

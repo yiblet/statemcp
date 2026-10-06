@@ -60,3 +60,45 @@ impl From<rusqlite::Error> for Error {
         Self::new(code, e.to_string())
     }
 }
+
+impl From<state_migrations::Error> for Error {
+    fn from(error: state_migrations::Error) -> Self {
+        match error {
+            state_migrations::Error::Sqlite(source) => source.into(),
+            state_migrations::Error::Forward { migration, source } => {
+                if let Some(error) = source.downcast_ref::<Self>() {
+                    return error.clone();
+                }
+                Self::new(
+                    ErrorCode::MigrationMismatch,
+                    format!("migration {} failed: {source}", migration.name()),
+                )
+            }
+            state_migrations::Error::HistoryMismatch => {
+                Self::new(ErrorCode::MigrationMismatch, error.to_string())
+            }
+            state_migrations::Error::Definition(_) => Self::invalid(error.to_string()),
+        }
+    }
+}
+impl From<state_store::Error> for Error {
+    fn from(error: state_store::Error) -> Self {
+        use state_store::Error as StorageError;
+        let code = match &error {
+            StorageError::Busy | StorageError::ConnectionsOpen => ErrorCode::Conflict,
+            StorageError::ReadOnly => ErrorCode::PermissionDenied,
+            StorageError::InvalidName(_) => ErrorCode::InvalidArgument,
+            StorageError::Io(_) | StorageError::RecoveryRequired(_) => ErrorCode::IoError,
+            StorageError::Registration(_) | StorageError::Sqlite(_) => ErrorCode::SqlError,
+            StorageError::CorruptJournal(_) => ErrorCode::CorruptStore,
+            StorageError::Limit(_) => ErrorCode::LimitExceeded,
+            StorageError::Aborted => ErrorCode::TransactionAborted,
+            StorageError::Migration(_) => ErrorCode::MigrationMismatch,
+        };
+        match error {
+            StorageError::Sqlite(source) => source.into(),
+            StorageError::Migration(source) => source.into(),
+            error => Self::new(code, error.to_string()),
+        }
+    }
+}

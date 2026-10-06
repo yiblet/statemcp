@@ -2796,9 +2796,26 @@ dependencies = [
  "serde_json",
  "sha2",
  "state-contract",
+ "state-domain",
+ "state-fs",
  "state-runtime",
  "state-store",
- "tempfile",
+]
+
+[[package]]
+name = "state-domain"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "rusqlite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "state-contract",
+ "state-migrations",
+ "state-store",
+ "uuid",
 ]
 
 [[package]]
@@ -2830,7 +2847,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "state-sqlite-vfs"
+name = "state-store"
 version = "0.1.0"
 dependencies = [
  "bindgen",
@@ -2840,21 +2857,6 @@ dependencies = [
  "state-fs",
  "state-migrations",
  "thiserror",
- "uuid",
-]
-
-[[package]]
-name = "state-store"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "rusqlite",
- "schemars",
- "serde",
- "serde_json",
- "sha2",
- "state-contract",
- "tempfile",
  "uuid",
 ]
 

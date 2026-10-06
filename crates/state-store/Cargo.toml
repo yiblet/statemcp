@@ -2,18 +2,20 @@
 name = "state-store"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.96"
 license = "MIT"
-description = "Immutable namespace storage with isolated SQLite database snapshots"
+description = "Transaction-local SQLite VFS overlays with recoverable multi-file publication"
 
 [dependencies]
-state-contract = { path = "../state-contract" }
-base64 = "0.22"
-rusqlite = { version = "0.38", features = ["bundled", "hooks", "limits", "extra_check"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-schemars = "1"
+state-fs = { path = "../state-fs" }
+state-migrations = { path = "../state-migrations" }
+rusqlite = { version = "0.38", features = ["bundled", "backup"] }
+sqlite-plugin = "0.11"
 sha2 = "0.10"
+thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 
-[dev-dependencies]
-tempfile = "3"
+[build-dependencies]
+# sqlite-plugin generates bindings. Runtime discovery also accepts versioned
+# libclang libraries on hosts without a development-package libclang.so symlink.
+bindgen = { version = "0.72", default-features = false, features = ["runtime"] }

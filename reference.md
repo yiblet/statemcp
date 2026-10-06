@@ -1341,9 +1341,10 @@ scalars, `{"$base64":"..."}` for blobs, and `{"$integer":"..."}` for signed
 Previously applied IDs must match stored checksums and order. Each named database
 is a separate SQLite file; application SQL cannot access the private catalog.
 
-`db.inspect.snapshot` is an opaque immutable file reference, not a concurrency
-token or content hash. `staged: true` means pending writes are not represented
-by that snapshot. There is no historical read/restore API using snapshot IDs.
+`db.inspect.snapshot` is an opaque backing database file identity, not a
+concurrency token or content hash. `staged: true` reports pending writes in the
+current invocation. Namespace copies use independent files. There is no
+historical read/restore API using this identity.
 
 ### Working example
 
@@ -1438,4 +1439,4 @@ and `describe({"mode":"runtime"})` for the Python authoring guide.
 
 The canonical schemas and runtime guide are in
 [schemas.rs](crates/state-core/src/schemas.rs). Storage behavior is documented
-in [state-store](crates/state-store/README.md).
+in [state-domain](crates/state-domain/README.md).

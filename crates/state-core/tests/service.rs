@@ -1,13 +1,13 @@
 mod support;
 use serde_json::{Value, json};
 use state_core::{CoreLimits, State};
+use state_fs::MemoryFs;
 use std::time::Duration;
 use support::ToolCalls;
-use tempfile::TempDir;
 
-fn service() -> (TempDir, State) {
-    let dir = tempfile::tempdir().unwrap();
-    let state = State::open(dir.path()).unwrap();
+fn service() -> (MemoryFs, State) {
+    let dir = MemoryFs::new();
+    let state = support::memory_state(&dir).unwrap();
     (dir, state)
 }
 fn run(state: &State, tool: &str, args: Value) -> Value {
@@ -142,7 +142,7 @@ fn code_is_pinned_and_shared_db_bindings_follow_clones_and_renames() {
     assert_eq!(call(&state, "a", "list", json!({})), "edited");
     drop(state);
     assert_eq!(
-        rows(&State::open(dir.path()).unwrap(), "renamed"),
+        rows(&support::memory_state(&dir).unwrap(), "renamed"),
         json!([["original"], ["fork"]])
     );
 }
@@ -921,7 +921,7 @@ fn sibling_imports_share_module_globals_and_pin_sources() {
         json!([41, 42, 42, true])
     );
     drop(state);
-    let state = State::open(dir.path()).unwrap();
+    let state = support::memory_state(&dir).unwrap();
     assert_eq!(
         call(&state, "n", "api", json!({})),
         json!([41, 42, 42, true])
@@ -1150,7 +1150,7 @@ fn namespace_descriptions_persist_copy_and_obey_revision_guards() {
     assert_eq!(cleared_copy["description"], Value::Null);
     assert!(state.tool("execute", json!({"script":"mcp('namespace.update', {'namespace':'memory', 'description':'rolled back'})\n1 / 0"})).is_err());
     drop(state);
-    let state = State::open(dir.path()).unwrap();
+    let state = support::memory_state(&dir).unwrap();
     assert_eq!(
         run(&state, "namespace.get", json!({"namespace":"memory"}))["description"],
         "Shared memory"

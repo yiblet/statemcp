@@ -107,7 +107,7 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_schema: Option<state_store::Schema>,
+    pub input_schema: Option<state_domain::Schema>,
 }
 pub(crate) fn typed_tool_definitions(full: bool) -> Vec<ToolDefinition> {
     use crate::{DatabaseAction, FileAction, FunctionAction, NamespaceAction};
@@ -265,7 +265,7 @@ fn examples() -> Vec<ExampleCall> {
         ("additionalProperties".into(), Value::Bool(false)),
     ]));
     vec![
-        ExampleCall::NamespaceCreate(NamespaceCreateInput { name:"demo".into(), description:state_store::DescriptionChange::Unchanged }),
+        ExampleCall::NamespaceCreate(NamespaceCreateInput { name:"demo".into(), description:state_domain::DescriptionChange::Unchanged }),
         ExampleCall::DbCreate(DbCreateInput { namespace:"demo".into(),database:"app".into(),expected_revision:None }),
         ExampleCall::DbExecute(DbExecuteInput { namespace:"demo".into(),database:"app".into(),sql:"CREATE TABLE notes(id INTEGER PRIMARY KEY, text TEXT)".into(),params:None,expected_revision:None }),
         ExampleCall::FsWrite(FsWriteInput::Text(FileTextInput { namespace:"demo".into(),path:"/api.py".into(),text:"def add(text):\n    return db_execute('app', 'INSERT INTO notes(text) VALUES (?) RETURNING id, text', [text])['rows'][0]\n".into(),expected_revision:None })),
@@ -284,7 +284,7 @@ execution: "Endpoint arguments are keyword arguments to the pinned Python symbol
 hosts: vec![HostGuide { signature: "mcp(name, arguments={})".into(), returns: "The selected state tool result; function namespace isolation still applies.".into() },HostGuide { signature: "call(namespace, function, arguments={})".into(), returns: "Endpoint JSON value.".into() },HostGuide { signature: "db_query(database, sql, params=[])".into(), returns: "{columns: [string], rows: [[value]], rows_affected: integer}; one read-only statement.".into() },HostGuide { signature: "db_execute(database, sql, params=[])".into(), returns: "{columns: [string], rows: [[value]], rows_affected: integer}; one statement, supports RETURNING.".into() },HostGuide { signature: "db_inspect(database)".into(), returns: "Database name, id, snapshot, staged flag, schema_fingerprint, migrations, schema query result, and tables with columns/indexes/foreign_keys.".into() },HostGuide { signature: "read_text(path)".into(), returns: "UTF-8 string.".into() },HostGuide { signature: "write_text(path, text)".into(), returns: "File write metadata.".into() }],
 scope: "Published functions can access all files, databases, and functions in their own namespace, including creating databases, publishing functions, and running nested scripts. self resolves to the calling function namespace. Namespace names and UUIDs must resolve to that same namespace. Functions cannot access another namespace or create, copy, or list namespaces. Root scripts have owner access.".into(),
 transactions: "Nested host calls share the root transaction. Failure rolls back staged effects. Use expected_revision for namespace concurrency and expected_version for endpoint concurrency.".into(),
-snapshot: "An opaque immutable SQLite file identifier, not a content hash or namespace revision. inspect reports the referenced snapshot; staged=true means pending writes are not represented by that snapshot. Unreferenced snapshots can be removed by maintenance. No historical read or restore API accepts this identifier.".into(),
+snapshot: "An opaque backing SQLite database file identifier, not a content hash or namespace revision. staged=true reports pending writes in the current invocation. Copies use independent files. No historical read or restore API accepts this identifier.".into(),
 example: examples()
     }).clone()
 }

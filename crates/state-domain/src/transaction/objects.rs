@@ -6,7 +6,14 @@ impl Transaction {
         if let Some(bytes) = self.objects.get(hash) {
             return Ok(bytes.clone());
         }
-        self.store.object(hash)
+        use rusqlite::OptionalExtension;
+        let catalog = self.backing.connect(&crate::store::catalog::name()?)?;
+        catalog
+            .query_row("SELECT bytes FROM objects WHERE hash=?", [hash], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .ok_or_else(|| Error::new(crate::ErrorCode::CorruptStore, "file object is missing"))
     }
     pub(super) fn put_bytes(&mut self, bytes: Vec<u8>) -> Result<String> {
         if bytes.len() > 8 * 1024 * 1024 {

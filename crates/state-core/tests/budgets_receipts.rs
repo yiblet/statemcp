@@ -1,8 +1,8 @@
 mod support;
 use serde_json::{Map, Value, json};
-use state_core::{CoreLimits, EmbeddedBackend, RuntimeBackend, State, Store};
+use state_core::{CoreLimits, EmbeddedBackend, RuntimeBackend, State};
 use state_runtime::{HostCallback, Limits, RunResult, RuntimeError};
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 use support::ToolCalls;
 
@@ -58,14 +58,14 @@ impl RuntimeBackend for ObservingBackend {
 
 #[test]
 fn nested_execution_gets_only_remaining_root_wall_budget() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = state_fs::MemoryFs::new();
     let backend = Arc::new(ObservingBackend {
         seen: Mutex::new(Vec::new()),
     });
     let mut limits = CoreLimits::default();
     limits.runtime.max_duration = Duration::from_secs(1);
-    let state =
-        State::with_backend(Store::open(dir.path()).unwrap(), backend.clone()).with_limits(limits);
+    let state = State::with_backend(support::memory_store(&dir).unwrap(), backend.clone())
+        .with_limits(limits);
     state.tool("execute", json!({"script":"outer"})).unwrap();
     let seen = backend.seen.lock().unwrap();
     assert_eq!(seen.len(), 2);
@@ -116,8 +116,11 @@ impl RuntimeBackend for CatchingBackend {
 }
 #[test]
 fn core_poisoning_survives_a_backend_that_swallows_host_errors() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = State::with_backend(Store::open(dir.path()).unwrap(), Arc::new(CatchingBackend));
+    let dir = state_fs::MemoryFs::new();
+    let state = State::with_backend(
+        support::memory_store(&dir).unwrap(),
+        Arc::new(CatchingBackend),
+    );
     assert_eq!(
         state
             .tool("execute", json!({"script":"ignored"}))
@@ -132,7 +135,8 @@ fn core_poisoning_survives_a_backend_that_swallows_host_errors() {
 }
 
 struct RacingBackend {
-    barrier: Barrier,
+    entered: mpsc::Sender<()>,
+    release: Mutex<mpsc::Receiver<()>>,
 }
 impl RuntimeBackend for RacingBackend {
     fn execute(
@@ -143,8 +147,18 @@ impl RuntimeBackend for RacingBackend {
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
-        // TODO(audit): replace unbounded rendezvous with a timeout so early peer failure cannot hang this test.
-        self.barrier.wait();
+        let failure = || {
+            RuntimeError::new(
+                state_core::ErrorCode::WorkerFailed,
+                "test coordination failed",
+            )
+        };
+        self.entered.send(()).map_err(|_| failure())?;
+        self.release
+            .lock()
+            .map_err(|_| failure())?
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| failure())?;
         EmbeddedBackend.execute(source, modules, inputs, limits, host)
     }
     fn invoke(
@@ -169,37 +183,47 @@ impl RuntimeBackend for RacingBackend {
     }
 }
 #[test]
-fn concurrent_identical_receipts_publish_once_and_return_the_winners_result() {
-    let dir = tempfile::tempdir().unwrap();
+fn concurrent_receipts_conflict_then_retry_replays_the_committed_result()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let dir = state_fs::MemoryFs::new();
     let state = State::with_backend(
-        Store::open(dir.path()).unwrap(),
+        support::memory_store(&dir)?,
         Arc::new(RacingBackend {
-            barrier: Barrier::new(2),
+            entered: entered_tx,
+            release: Mutex::new(release_rx),
         }),
     );
-    state.tool("namespace.create", json!({"name":"n"})).unwrap();
-    state
-        .tool("db.create", json!({"namespace":"n","database":"app"}))
-        .unwrap();
-    state
-        .tool(
-            "db.execute",
-            json!({"namespace":"n","database":"app","sql":"CREATE TABLE writes(value TEXT)"}),
-        )
-        .unwrap();
+    state.tool("namespace.create", json!({"name":"n"}))?;
+    state.tool("db.create", json!({"namespace":"n","database":"app"}))?;
+    state.tool(
+        "db.execute",
+        json!({"namespace":"n","database":"app","sql":"CREATE TABLE writes(value TEXT)"}),
+    )?;
     let args = json!({"namespace":"n","idempotency_key":"same","script":"db_execute('app', \"INSERT INTO writes VALUES ('one') RETURNING value\")"});
     let left = state.clone();
     let left_args = args.clone();
     let thread = std::thread::spawn(move || left.tool("execute", left_args));
-    let right = state.tool("execute", args).unwrap();
-    assert_eq!(thread.join().unwrap().unwrap(), right);
+    entered_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+    assert!(matches!(
+        state.tool("execute", args.clone()),
+        Err(state_core::Error {
+            code: state_core::ErrorCode::Conflict,
+            ..
+        })
+    ));
+    release_tx.send(())?;
+    let left = thread
+        .join()
+        .map_err(|_| "receipt test thread panicked")??;
+    assert_eq!(state.tool("execute", args)?, left);
     assert_eq!(
-        state
-            .tool(
-                "db.query",
-                json!({"namespace":"n","database":"app","sql":"SELECT count(*) FROM writes"})
-            )
-            .unwrap()["rows"],
+        state.tool(
+            "db.query",
+            json!({"namespace":"n","database":"app","sql":"SELECT count(*) FROM writes"})
+        )?["rows"],
         json!([[1]])
     );
+    Ok(())
 }

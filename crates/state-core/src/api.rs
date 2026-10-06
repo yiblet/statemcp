@@ -2,7 +2,7 @@
 use crate::{Error, Result, State, execution::Root, inputs, policy::Access};
 use serde::Serialize;
 use serde_json::Value;
-use state_store::records::*;
+use state_domain::records::*;
 
 impl State {
     fn transaction<T: Serialize>(
@@ -151,7 +151,7 @@ impl State {
     pub fn get_function(
         &self,
         input: inputs::FunctionGetInput,
-    ) -> Result<state_store::FunctionDeclaration> {
+    ) -> Result<state_domain::FunctionDeclaration> {
         self.transaction(|root| Ok(root.tx.get_function(&input)?))
             .map(|(result, _)| result)
     }

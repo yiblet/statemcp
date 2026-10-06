@@ -3,18 +3,14 @@ use crate::records::{BinaryCell, IntegerCell, SqlCell};
 use crate::{Error, Result};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rusqlite::{
-    Connection, OpenFlags,
+    Connection,
     hooks::{AuthAction, AuthContext, Authorization},
     limits::Limit,
     types::{Value as SqlValue, ValueRef},
 };
-use std::{
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 pub(crate) const MAX_RESULT: usize = 1024 * 1024;
-pub(crate) const MAX_DB: u64 = 256 * 1024 * 1024;
 
 // Classify SQLite names at the authorizer boundary without allocating lowercase copies.
 #[derive(Clone, Copy)]
@@ -90,18 +86,13 @@ impl VirtualTableModule {
     }
 }
 
-pub(crate) fn open(path: &Path, writable: bool) -> Result<Connection> {
-    let flags = if writable {
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE
-    } else {
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-    };
-    let conn = Connection::open_with_flags(path, flags | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+pub(crate) fn configure(conn: &Connection) -> Result<()> {
+    conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
     conn.busy_timeout(Duration::from_secs(2))?;
     conn.execute_batch(
         "PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA temp_store=MEMORY; PRAGMA temp.page_size=4096; PRAGMA temp.max_page_count=4096;",
     )?;
-    if writable {
+    {
         conn.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA page_size=4096; PRAGMA max_page_count=65536;")?;
     }
     conn.set_limit(Limit::SQLITE_LIMIT_LENGTH, MAX_RESULT as i32)?;
@@ -147,7 +138,7 @@ pub(crate) fn open(path: &Path, writable: bool) -> Result<Connection> {
         }
         _ => Authorization::Allow,
     }))?;
-    Ok(conn)
+    Ok(())
 }
 
 fn parameter(value: &SqlCell) -> Result<SqlValue> {

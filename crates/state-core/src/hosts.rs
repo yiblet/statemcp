@@ -4,7 +4,7 @@ use crate::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
-use state_store::records::{FileContents, SqlCell};
+use state_domain::records::{FileContents, SqlCell};
 
 /// Consume external Python arguments in signature order, retaining typed field values.
 struct HostArguments {

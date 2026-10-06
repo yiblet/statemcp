@@ -2,8 +2,8 @@ use crate::{
     CoreLimits, Error, Result, RuntimeBackend, bounded, policy::Access, remaining, schemas,
 };
 use serde_json::Value;
+use state_domain::Transaction;
 use state_runtime::ModuleSources;
-use state_store::Transaction;
 use std::{sync::Arc, time::Instant};
 
 pub(crate) struct Root {

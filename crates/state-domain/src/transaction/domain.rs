@@ -243,7 +243,7 @@ impl Transaction {
         let new_name = name(&input.name)?;
         self.available(&new_name)?;
         let mut ns = self.staged_namespace(&key)?.clone();
-        self.freeze_databases(&key, &mut ns.manifest)?;
+        self.copy_databases(&mut ns.manifest)?;
         ns.id = id();
         ns.name = new_name;
         input.description.apply(&mut ns.manifest.description);
@@ -255,6 +255,10 @@ impl Transaction {
     fn delete_namespace_inner(&mut self, input: &NamespaceDeleteInput) -> Result<NamespaceDeleted> {
         let key =
             self.namespace_for_change(&input.namespace, input.expected_revision.as_deref())?;
+        for database in self.staged_namespace(&key)?.manifest.databases.values() {
+            self.backing
+                .delete_database(&super::databases::filename(database)?)?;
+        }
         self.staged_namespace_mut(&key)?.deleted = true;
         self.staged_namespace_mut(&key)?.dirty = true;
         Ok(NamespaceDeleted {
@@ -546,17 +550,22 @@ impl Transaction {
                 "database already exists",
             ));
         }
-        let path = self.working(None)?;
-        let conn = sql::open(&path, true)?;
-        conn.execute_batch(
-            "CREATE TABLE _state_initialization(x); DROP TABLE _state_initialization;",
-        )?;
-        conn.close().map_err(|(_, error)| error)?;
+        let identity = id();
         let db = Database {
-            id: id(),
-            snapshot: self.seal(&path)?,
+            id: identity.clone(),
+            snapshot: identity,
             migrations: Vec::new(),
         };
+        self.backing.with_connection(
+            &super::databases::filename(&db)?,
+            |connection| -> Result<()> {
+                sql::configure(connection)?;
+                connection.execute_batch(
+                    "CREATE TABLE _state_initialization(x); DROP TABLE _state_initialization;",
+                )?;
+                Ok(())
+            },
+        )?;
         let ns = self.staged_namespace_mut(&key)?;
         ns.manifest.databases.insert(name.clone(), db);
         ns.dirty = true;
@@ -566,12 +575,14 @@ impl Transaction {
         })
     }
     fn drop_database_inner(&mut self, input: &DbDropInput) -> Result<DatabaseDropped> {
-        let (key, name, _db) = self.selected_database(
+        let (key, name, db) = self.selected_database(
             &input.namespace,
             &input.database,
             input.expected_revision.as_deref(),
         )?;
-        self.working_databases.remove(&(key.clone(), name.clone()));
+        self.backing
+            .delete_database(&super::databases::filename(&db)?)?;
+        self.changed_databases.remove(&db.id);
         let ns = self.staged_namespace_mut(&key)?;
         ns.manifest.databases.remove(&name);
         ns.dirty = true;
@@ -583,14 +594,11 @@ impl Transaction {
         database: &str,
         action: impl FnOnce(&rusqlite::Connection, &Database, bool, String) -> Result<T>,
     ) -> Result<T> {
-        let (key, name, db) = self.selected_database(namespace, database, None)?;
-        if let Some(working) = self.working_databases.get(&(key, name.clone())) {
-            action(&working.connection, &db, true, name)
-        } else {
-            let conn = sql::open(&self.snapshot_path(&db.snapshot), false)?;
-            action(&conn, &db, false, name)
-        }
+        let (_, name, db) = self.selected_database(namespace, database, None)?;
+        let staged = self.changed_databases.contains(&db.id);
+        self.database(&db, |connection| action(connection, &db, staged, name))
     }
+
     fn query_database_inner(&self, input: &DbQueryInput) -> Result<SqlResult> {
         self.read_database(&input.namespace, &input.database, |conn, _, _, _| {
             sql::run_typed(
@@ -618,18 +626,20 @@ impl Transaction {
         )
     }
     fn execute_database_inner(&mut self, input: &DbExecuteInput) -> Result<SqlResult> {
-        let (key, name, db) = self.selected_database(
+        let (key, _, db) = self.selected_database(
             &input.namespace,
             &input.database,
             input.expected_revision.as_deref(),
         )?;
-        let conn = self.ensure_working(&key, &name, &db)?;
-        let result = sql::run_typed(
-            conn,
-            &input.sql,
-            input.params.as_deref().unwrap_or(&[]),
-            false,
-        )?;
+        let result = self.database(&db, |conn| {
+            sql::run_typed(
+                conn,
+                &input.sql,
+                input.params.as_deref().unwrap_or(&[]),
+                false,
+            )
+        })?;
+        self.changed_databases.insert(db.id);
         self.staged_namespace_mut(&key)?.dirty = true;
         Ok(result)
     }
@@ -690,10 +700,13 @@ impl Transaction {
             prefix_position = db.migrations.len();
         }
         if !pending.is_empty() {
-            let conn = self.ensure_working(&key, &name, &db)?;
-            for sql in &pending {
-                sql::batch(conn, sql)?;
-            }
+            self.database(&db, |conn| {
+                for sql in &pending {
+                    sql::batch(conn, sql)?;
+                }
+                Ok(())
+            })?;
+            self.changed_databases.insert(db.id.clone());
             let ns = self.staged_namespace_mut(&key)?;
             ns.manifest.databases.insert(name, db.clone());
             ns.dirty = true;

@@ -6,7 +6,7 @@ No Python installation is needed.
 
 ```rust,no_run
 use state_core::{State, inputs::NamespaceCreateInput};
-use state_store::DescriptionChange;
+use state_domain::DescriptionChange;
 let state = State::open("./state")?;
 let namespace = state.create_namespace(NamespaceCreateInput {
     name: "notes".into(), description: DescriptionChange::Set("Shared notes".into()),
@@ -32,7 +32,7 @@ have owner access. Published function bodies are restricted to their own namespa
 `tool_definitions()` returns the canonical MCP discovery definitions and strict
 JSON schemas that the service itself enforces. Unknown fields, actions, malformed
 argument types, and unknown host keyword arguments are errors. Storage operation
-shapes are documented in `state-store/README.md` and exposed through
+shapes are documented in `state-domain/README.md` and exposed through
 `describe`. The core supports all storage actions, including `fs`
 `stat`/`copy`, and `db.query` `drop`/`migrations`.
 
@@ -166,11 +166,11 @@ After write/append the service checks the serialized read result, including
 escaping/base64 overhead, against the same boundary used for the write, and
 rejects oversized output before committing. Runtime creation of an unreadable
 file therefore cannot silently succeed. Lists are bounded but unpaginated.
-History, old snapshots, and receipts remain until explicit storage maintenance.
+Historical domain metadata and receipts remain until explicit maintenance. Resource database deletion publishes with the invocation.
 This service does not run automatic GC or receipt expiration.
 
 Only root `call`/`execute` accept `idempotency_key` (1..256 bytes).
 Nested keys are rejected. Receipts are scoped by trusted principal and a
 canonical hash of tool/arguments; identical retries return the exact committed
-result, changed requests return `IDEMPOTENCY_MISMATCH`. Concurrent duplicates
-return the winning receipt and publish once. Failed runs leave no receipt.
+result, changed requests return `IDEMPOTENCY_MISMATCH`. Concurrent invocations return `CONFLICT` while another invocation holds the root;
+retrying then returns the committed receipt and publishes once. Failed runs leave no receipt.

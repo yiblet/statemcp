@@ -152,3 +152,17 @@ impl ToolCalls for state_core::State {
         })
     }
 }
+
+pub fn memory_store(fs: &state_fs::MemoryFs) -> state_core::Result<state_core::Store> {
+    let backing = state_store::Store::builder()
+        .with_fs(fs.clone())
+        .open("/state")
+        .map_err(state_domain::Error::from)?;
+    Ok(state_core::Store::from_storage(backing)?)
+}
+pub fn memory_state(fs: &state_fs::MemoryFs) -> state_core::Result<state_core::State> {
+    Ok(state_core::State::with_backend(
+        memory_store(fs)?,
+        std::sync::Arc::new(state_core::EmbeddedBackend),
+    ))
+}

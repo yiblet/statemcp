@@ -24,6 +24,12 @@ fn open_state(storage: &Storage) -> Result<State> {
     ))
 }
 
+async fn open_state_for_server(storage: Storage) -> Result<State> {
+    tokio::task::spawn_blocking(move || open_state(&storage))
+        .await
+        .context("state initialization task failed")?
+}
+
 fn invoke(tool: ToolCommand) -> Result<ExitCode> {
     // Load inputs before opening the store, so invalid inputs do not create it.
     let request = match tool.prepare() {
@@ -53,7 +59,7 @@ fn invoke(tool: ToolCommand) -> Result<ExitCode> {
 async fn serve(command: Command) -> Result<()> {
     match command {
         Command::Stdio { storage } => {
-            let server = Server::new(open_state(&storage)?)
+            let server = Server::new(open_state_for_server(storage).await?)
                 .serve(stdio())
                 .await
                 .context("cannot initialize MCP over stdio")?;
@@ -78,7 +84,7 @@ async fn serve(command: Command) -> Result<()> {
             let path = http_prefix.mcp_path();
             let options =
                 HttpOptions::for_addresses(&addresses, auth_bearer)?.with_prefix(http_prefix);
-            let state = open_state(&storage)?;
+            let state = open_state_for_server(storage).await?;
             for address in addresses {
                 tracing::info!(url = %format!("http://{address}{path}"), "MCP server listening");
             }

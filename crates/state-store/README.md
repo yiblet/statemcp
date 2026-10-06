@@ -1,174 +1,155 @@
 # state-store
 
-The storage layer for statemcp: an immutable catalog plus separate SQLite files
-for application databases. It does not execute Python or validate endpoint schemas;
-the core must validate declarations before handing them to storage.
+SQLite VFS overlays for a blocking, root-scoped storage invocation. Uses the
+`sqlite-plugin` crate's Rust traits; there is no FUSE mount or filesystem dependency.
+The base databases stay untouched while SQL executes. Only changed 4 KiB blocks
+are materialized in memory, including partial-block writes and SQLite rollback
+journals. Unchanged bytes are read directly from the base files.
 
-```rust,no_run
-use state_store::{Store, DescriptionChange, inputs::*};
-let store = Store::open("./state")?;
-let mut tx = store.begin()?;
-tx.create_namespace(&NamespaceCreateInput { name: "notes".into(), description: DescriptionChange::Unchanged })?;
-tx.create_database(&DbCreateInput { namespace: "notes".into(), database: "app".into(), expected_revision: None })?;
-tx.execute_database(&DbExecuteInput {
-    namespace: "notes".into(), database: "app".into(),
-    sql: "CREATE TABLE notes(id INTEGER PRIMARY KEY, text TEXT)".into(),
-    params: None, expected_revision: None,
-})?;
-let commit = tx.commit()?;
-# Ok::<(), state_store::Error>(())
+Building uses libclang through `sqlite-plugin`'s binding generator. No libclang
+or extra storage service is needed at runtime.
+
+```rust
+use state_store::{DatabaseName, Store, fs::MemoryFs};
+
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let store = Store::builder().with_fs(MemoryFs::new()).open("/state")?;
+let database = DatabaseName::parse("app.sqlite")?;
+let transaction = store.begin()?;
+{
+    let connection = transaction.connect(&database)?;
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS counter(value INTEGER);
+         INSERT INTO counter VALUES (1);"
+    )?;
+} // Close every connection before publishing the outer invocation.
+transaction.commit()?;
+# Ok(())
+# }
 ```
 
-## Rust interface
+SQLite `COMMIT` and `ROLLBACK` operate on the private overlay, so even committed
+inner transactions can be discarded by dropping the outer invocation. This crate
+does not implement SQL authorization or namespace permissions. The service layer
+decides whether callers may issue transaction commands and whether SQL errors
+abort the entire invocation. Dropping a connection rolls back an outstanding
+SQLite transaction before outer publication.
 
-- `Store::open(path) -> Result<Store>` creates or opens catalog format 1.
-- `Store::begin() -> Result<Transaction>` captures a consistent namespace view.
-- Named `Transaction` methods accept specific input structs and return typed records.
-- `Transaction::commit() -> Result<CommitOutcome>` publishes every staged change together.
-- `Transaction::set_receipt(principal, key, request_hash, result)` stages a receipt.
-- `Store::receipt(principal, key) -> Result<Option<Receipt>>` retrieves one.
-- `Store::maintenance(retain_receipts) -> Result<MaintenanceReport>` explicitly
-  prunes history and orphan payloads and retains the newest N receipts globally.
-- Errors expose public `code` and `message` fields. Any operation error poisons the
-  invocation: catching it cannot allow partial publication. Drop rolls back.
+## Publication and recovery
 
-`commit` returns `CommitOutcome::Published(CommitMetadata)` with generation, revisions, and changed fields.
-An identical concurrent receipt returns `CommitOutcome::Replayed(ReceiptResult)` and publishes
-none of the duplicate attempt's changes. Different request hashes produce
-`IDEMPOTENCY_MISMATCH`. Receipt lookup authorization belongs to the caller.
+`Store::begin_read` holds `overlay.lock` shared through read invocation cleanup,
+so multiple readers can use the same root concurrently. It returns a
+`ReadTransaction` with read-only SQLite connections, ending with `finish` or drop.
+Read invocations cannot create, update, or delete persistent databases. Queries
+can still use private in-memory SQLite scratch tables.
 
-## JSON operations
+`Store::begin` holds the lock exclusively through write invocation cleanup.
+Writers exclude readers and other writers. Contention returns `Error::Busy`
+immediately; locks do not wait and read invocations cannot upgrade to writers.
+The connection lifetime is tied to its invocation, and each database may have
+only one open connection within that invocation. Independent roots use independent
+locks. Run the blocking APIs on dedicated threads or through `spawn_blocking` in
+async applications.
 
-All resource operations take `namespace` as a name or immutable UUID. Names cannot
-alias another namespace UUID. Mutation operations accept `expected_revision`.
-Namespace names remain reserved after deletion.
+Opening a clean root also uses shared ownership. When a read invocation or open
+finds a recovery journal, it releases its shared lock, acquires an exclusive lock
+to recover, then reacquires and rechecks shared ownership before permitting reads.
+This prevents queries from observing a partially applied commit. Recovery is never
+run under a shared lock.
 
-| Tool | Actions and arguments |
-| --- | --- |
-| `namespace.*` | `create {name}`, `list`, `get {namespace}`, `update {namespace,name}`, `copy {namespace,name}`, `delete {namespace}` |
-| `fs.*` | `read`, `stat`, `write`, `append`, `list`, `delete`, `move`, `copy`; `path` is an absolute virtual POSIX path; writes take exactly one of `text` or `base64`; moves/copies take `destination`; directory deletion requires `recursive:true` |
-| `db.*` | `create`, `list`, `drop`, `query`, `execute`, `inspect`, `migrate`, `migrations`; database operations take `database`; SQL takes `sql` and optional array `params`; migrations take `migrations:[{id,sql}]` |
-| `function.*` | `declare`/`update`, `get`, `list`, `remove`; each endpoint has `name`; declaration includes `file`, `symbol`, schemas; optional `expected_version` |
+Outer commit streams changed blocks and file lengths into a checksummed
+`overlay.pending` redo journal and syncs it. Renaming that file to `overlay.redo`
+and syncing the root directory establishes the durable commit decision. Recovery
+validates the entire journal, applies its updates and deletions, syncs every
+updated database and the root, then removes the journal and syncs the root again.
+Creation, truncation, extension, and deletion participate in the same publication.
 
-Namespace/file/database/function lists are wrapped in `namespaces`, `entries`,
-`databases`, or `functions` respectively. Function get/declare returns metadata
-**directly**, including pinned `source`, `modules` (virtual paths to Python source),
-`source_hash`, `version`, and `abi_version`. Source edits do not change declarations.
-The public `state-core` API compacts declaration acknowledgments; these full
-metadata responses describe the lower-level storage API.
-Functions resolve database names within their namespace on each call; declarations
-do not prevent database dropping or recreation.
+A crash before the decision leaves original files unchanged; the incomplete
+pending journal is discarded. A crash after the decision is recovered by replaying
+the whole committed journal before any reads. Replay is idempotent, including
+when some files were already updated. Corrupt committed journals are retained and
+fail closed. `Error::RecoveryRequired` means a commit decision may already be
+durable: fix the underlying I/O problem and reopen or begin to finish recovery;
+do not rerun the invocation assuming it rolled back.
 
-SQL query/execute takes one statement and returns
-`{columns:[...],rows:[[...]],rows_affected:n}`. Duplicate column names are retained.
-BLOBs use `{"$base64":"..."}`; integers outside JavaScript's exact range use
-`{"$integer":"9223372036854775807"}`. These tagged forms also work as parameters.
-No values are interpolated into SQL. Multiple statements belong in a migration.
+The normal directory layout is:
 
-Migrations are ordered append-only IDs with SHA-256 checksums. Submit an exact
-history prefix (optionally with new migrations appended), or a batch of entirely
-new IDs. Existing IDs must occur in their original order starting at the first
-migration. IDs are opaque strings: lexical ordering is not assumed. Exact replay
-writes nothing. A migration batch and its external catalog ledger publish together.
-Application SQL sees no internal migration tables.
+```text
+overlay-data/
+├── overlay.lock
+├── catalog.sqlite
+├── app.sqlite
+└── overlay.redo       # Only during publication or interrupted recovery
+```
 
-`inspect` returns `name`, `id`, `snapshot`, `staged`, `schema_fingerprint`, `migrations`, the raw ordered
-`schema` query, and `tables`. Table entries include `name`, `type`, `sql`, `columns`
-(query result), `indexes` (objects with detailed index-column query results), and
-`foreign_keys` (query result). Views and triggers also appear in `schema`.
+## Boundaries and limits
 
-## Storage and isolation
+- Use a dedicated root. Every reader and writer must participate in this lock and
+  recovery protocol; ordinary SQLite access can observe incomplete application.
+  This store replaces the previous snapshot implementation; existing snapshot roots require a forward format migration.
+- File names are validated ASCII basenames ending in `.sqlite`; paths and symlinks
+  are rejected. SQLite journals and scratch files never become host files.
+- Databases imported from ordinary SQLite must be closed and have no WAL, shared
+  memory, or rollback-journal sidecars. WAL mode is disabled in this VFS.
+- Main databases use SQLite rollback journals in memory. SQLite's `xSync` completes
+  an inner operation; durability is provided only by the outer `commit`.
+- Maximum database/scratch file size: 256 MiB. Maximum managed overlay memory:
+  64 MiB of blocks. Maximum files/changes per invocation: 1,024. Anonymous SQLite
+  scratch files have an independent 64 MiB block budget each. Normal SQL temporary
+  tables use `temp_store=MEMORY`; SQLite's own caches and those tables are outside
+  the overlay budget.
+- This implementation overwrites base files after durable publication; it does
+  not retain historical snapshots or create cheap independent namespace copies.
+- The redo journal detects corruption with SHA-256. It is not a defense against
+  an external process intentionally modifying this exclusively managed directory.
 
-`catalog.sqlite` stores private metadata, immutable manifests, virtual file bytes,
-and receipts. `snapshots/<uuid>.sqlite` stores closed, immutable database files.
-Application connections never attach the catalog. Reads open snapshots read-only;
-writes copy a snapshot into an invocation's private `staging/<uuid>/` directory.
-One writable connection is reused per namespace/database in a root transaction,
-so temporary tables and `last_insert_rowid()` persist across callbacks. Temporary
-state is not published or inherited by copies.
+Tests cover actual SQLite commit/rollback behavior, multi-database publication,
+small updates, VACUUM/truncation, temporary tables, database deletion/recreation,
+root locking, invalid paths/sidecars, corrupt journal handling, and injected I/O
+failures before and after the commit decision and during multi-file publication.
+All store tests use the in-memory filesystem. Only `state-fs` physical adapter
+tests access disk, including cross-process locks and symlink metadata. The store
+suite tests recovery logic rather than process crashes or physical power loss.
 
-Committed namespace forks reuse the same manifest and snapshot references: they
-copy no file/database payload. Forking a namespace with staged database changes
-freezes the current main database into another snapshot, preserving the original
-connection's temporary state. Subsequent writes diverge. This implementation uses
-the portable full-file copy fallback, without reflink acceleration. Each database
-needs one working copy per root transaction, plus a frozen copy for each staged
-fork. Database size is a disk limit, not an interpreter-memory requirement.
+```sh
+cargo test -p state-store
+cargo clippy -p state-store --all-targets -- -D warnings
+```
 
-Publication closes working connections, fsyncs files, moves them into `snapshots`,
-and fsyncs that directory **before** a synchronous catalog transaction publishes
-all namespace heads and the receipt. Conservative global generation validation
-rejects conflicting writes, including write skew across read dependencies. A
-read-only transaction can finish against its captured view. Directory fsync is a
-platform requirement. Newly created root directories and their parent entries are
-also flushed. Managed files must not be modified out of band.
+## Rust migrations
 
-Every root invocation acquires a shared advisory filesystem lock before capturing
-its view and holds it through commit or rollback. Explicit maintenance requires an
-exclusive lock across processes and independent Store handles. Both sides return
-`CONFLICT` immediately when incompatible work holds the lock. This prevents GC from
-removing a snapshot or virtual file object that an old reader has not opened yet.
-Locks are released by the operating system after a process exits. The filesystem
-must support advisory locks and directory fsync; all processes must use this API.
+Use `Store::open_with_migrations(path, &service)` to apply an ordered
+`state_migrations::Service` at startup, or `store.migrate(&service)` to apply it explicitly.
+The service takes `Box<dyn state_migrations::Migrator>` implementors containing ordinary
+Rust forward migration code. `catalog.sqlite` records each applied migration's
+name and version in its `migrations` table. The overlay holds an exclusive root
+lock through history checks, migration execution, and durable publication. The
+whole pending catalog batch rolls back on a migration failure. Direct filesystem
+side effects must be safe to retry. There is no transition between the old store's
+lock and `overlay.lock`; the initial transition assumes no concurrent old users.
 
-Maintenance compacts deleted namespaces into empty tombstones, preserving reserved
-names and UUIDs; live namespace copies keep their shared payloads. It removes every
-non-head historical revision (there is no historical checkout API), unreferenced
-file objects, orphan UUID snapshot files, and abandoned UUID staging directories.
-References are removed in a catalog transaction before files are deleted. A crash
-during cleanup leaves recoverable orphans, never a live reference to a deleted
-snapshot. Catalog free pages are reused and the WAL is checkpointed; maintenance
-does not run a full catalog VACUUM or guarantee a smaller catalog file.
+## Filesystems for unit tests
 
-Receipt retention is **count-based**, globally by insertion order, not time-based:
-`maintenance(10000)` retains the latest 10,000 receipts across all principals;
-`maintenance(0)` expires all of them. Reusing an expired key may execute again.
-Receipt replay does not refresh its insertion order. Retention must fit the caller's
-retry window; callers needing permanent deduplication should keep application-level
-unique request IDs. Maintenance is explicit and never runs automatically.
+`Store::open` uses the host filesystem. Inject a `MemoryFs` to run the same VFS,
+locks, commit journal, and recovery code without accessing the host filesystem:
 
-The SQL authorizer denies attachment, transaction/savepoint control, unsafe
-PRAGMAs, extension/file functions, and unrecognized virtual-table modules. It is
-installed before user SQL is prepared on every connection. Ordinary schema
-PRAGMAs and table-valued introspection work. Allowed virtual-table modules are
-SQLite's built-in FTS5 and RTree families, when available. The query API additionally
-requires a read-only statement. Other transaction control belongs to this library.
+```rust
+use state_store::{Store, fs::MemoryFs};
 
-## Bounds and current limits
+# fn example() -> Result<(), Box<dyn std::error::Error>> {
+let fs = MemoryFs::new();
+let store = Store::builder().with_fs(fs.clone()).open("/state")?;
+// Reopening with the same backend sees the committed databases and root locks.
+let reopened = Store::builder().with_fs(fs).open("/state")?;
+# Ok(())
+# }
+```
 
-- 8 MiB per virtual file.
-- 256 MiB on disk per application database (65,536 4 KiB pages).
-- 16 MiB per connection for explicit in-memory temporary database pages.
-  SQLite intermediate allocations and the aggregate across connections are not
-  subject to a hard allocator quota; use process/container limits when required.
-- 1 MiB per SQL statement, SQL value, SQL result, or receipt; 10,000 result rows.
-- Two-second SQLite progress deadline per statement/migration batch; a core
-  invocation deadline and total memory/operation budget must wrap these limits.
-- SQLite expression depth, column count, bytecode size and worker threads capped.
-- Lists are currently unpaginated; the core must bound total output.
-- History, receipts, and unreachable payloads accumulate until explicit maintenance.
-  Tombstone names/UUIDs remain reserved even after their contents are collected.
-- Schema inspection checks cumulative result size during assembly and enforces
-  an aggregate deadline between its bounded SQLite queries.
+`state-fs` defines the focused `FileSystem`, `File`, and lock guard contracts.
+Custom wrappers can inject I/O failures. Clones of `MemoryFs` share state;
+independent instances are isolated. Memory paths are rooted at `/` and reject
+`..`. Sync operations are no-ops; this backend tests recovery logic and injected
+failures, while tests of the physical filesystem adapter use disk.
 
-The tests cover fork payload counts, staged divergence, connection-state reuse,
-rollback across namespaces, generation conflicts, migration integrity/replay,
-introspection, SQL boundaries, receipts, pinned declarations, result encodings,
-deadlines, and abrupt process exits before and after atomic publication. Test-only
-failpoints exit after durable snapshot sealing, immediately before catalog COMMIT,
-and immediately after COMMIT; recovery then runs GC and verifies atomic state and
-receipts. Cross-process tests verify that an old reader blocks GC while another
-writer advances heads. These process-exit tests do not simulate power loss or
-storage-controller failures at every individual filesystem operation.
-
-The ignored `copy_benchmark` test measures portable file copy, namespace fork, and
-first-write latency at approximately 1/32/256 MiB, also asserting zero new snapshots
-for a committed fork and one for a first write. Run it explicitly with
-`cargo test -p state-store --test copy_benchmark -- --ignored --nocapture`.
-Measurements depend on filesystem caches and hardware; the test is not a latency
-or physical-I/O guarantee.
-
-SQL parameters and result cells use `SqlCell`, including typed `$base64` and
-`$integer` representations. Receipt results are tagged as function values or
-script results. Errors carry an `ErrorCode` enum and a human-readable message.
-These alpha interfaces do not accept grouped action envelopes or old aliases.
+Migrations receive the injected filesystem through `Context::fs()`. Their direct
+file side effects remain outside overlay publication and must be retry-safe.
