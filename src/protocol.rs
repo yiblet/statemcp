@@ -1,5 +1,5 @@
 //! MCP tools use the official SDK's typed parameter, routing, and handler macros.
-use crate::{Controller, CoreError};
+use crate::{BlockingError, BlockingExecutor, Controller, CoreError};
 use rmcp::{
     ErrorData, ServerHandler,
     handler::server::{
@@ -11,16 +11,13 @@ use rmcp::{
 };
 use serde::Serialize;
 use state_contract::{database::*, discovery::*, execution::*, file::*, function::*, namespace::*};
-use std::sync::Arc;
-use tokio::sync::Semaphore;
 
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 const SERVER_INSTRUCTIONS: &str = "Start with namespace.list to discover available namespaces and their descriptions. Then use function.list to discover published functions in the relevant namespace. StateMCP lets you create SQLite databases and publish Python tools that use them. Create a namespace and databases, write Python source with fs.write, then publish with function.declare and invoke with call. Use describe with mode=runtime for Python helpers and mode=full for exact schemas. Namespace selectors accept names or stable UUIDs. Published functions have full access to their own namespace only; root execute scripts have owner access. Use expected_revision and expected_version for optimistic concurrency. Tool content contains a JSON-encoded text block; isError indicates an application failure.";
 
 #[derive(Clone)]
 pub struct Server {
-    state: Controller,
-    slots: Arc<Semaphore>,
+    executor: BlockingExecutor,
     tool_router: ToolRouter<Self>,
 }
 
@@ -55,10 +52,10 @@ fn tool_error(error: &CoreError) -> Result<CallToolResult, ErrorData> {
 }
 
 impl Server {
-    pub fn new(state: Controller) -> Self {
+    /// Construct an MCP adapter with explicitly supplied shared blocking execution.
+    pub fn new(executor: BlockingExecutor) -> Self {
         Self {
-            state,
-            slots: Arc::new(Semaphore::new(16)),
+            executor,
             tool_router: Self::tool_router(),
         }
     }
@@ -66,33 +63,21 @@ impl Server {
         &self,
         action: impl FnOnce(Controller) -> state_core::Result<T> + Send + 'static,
     ) -> Result<CallToolResult, ErrorData> {
-        let permit = match self.slots.clone().try_acquire_owned() {
-            Ok(permit) => permit,
-            Err(_) => {
-                return tool_error(&CoreError::new(
-                    state_core::ErrorCode::Busy,
-                    "Too many active invocations; retry later",
-                ));
-            }
-        };
-        let state = self.state.clone();
         let span = tracing::info_span!("tool_call");
-        let result = tokio::task::spawn_blocking(move || {
-            let _permit = permit;
-            let _span = span.enter();
-            action(state)
-        })
-        .await;
+        let result = {
+            use tracing::Instrument;
+            self.executor.run(action).instrument(span).await
+        };
         match result {
-            Ok(Ok(value)) => Ok(CallToolResult::success(vec![ContentBlock::text(
+            Ok(value) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 serde_json::to_string(&value)
                     .map_err(|_| ErrorData::internal_error("Result serialization failed", None))?,
             )])),
-            Ok(Err(error)) => {
+            Err(BlockingError::Application(error)) => {
                 tracing::debug!(code = %error.code, "Tool invocation failed");
                 tool_error(&error)
             }
-            Err(error) => {
+            Err(BlockingError::Task(error)) => {
                 tracing::error!(%error, "Invocation worker failed");
                 Err(ErrorData::internal_error("Invocation worker failed", None))
             }

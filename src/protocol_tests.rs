@@ -249,7 +249,7 @@ impl Drop for ReleaseGate {
 async fn invocation_limit_is_shared_by_session_clones_and_recovers()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
-    let server = super::Server::new(fixture.state_async().await?);
+    let server = super::Server::new(crate::BlockingExecutor::new(fixture.state_async().await?));
     let other_session = server.clone();
     let gate = std::sync::Arc::new(Gate::default());
     let release = ReleaseGate(gate.clone());

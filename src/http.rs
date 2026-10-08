@@ -1,5 +1,5 @@
 //! Streamable HTTP via the official MCP SDK, with optional bearer authentication.
-use crate::{Controller, Server, protocol::MAX_FRAME_BYTES};
+use crate::{BlockingExecutor, Controller, Server, protocol::MAX_FRAME_BYTES};
 use anyhow::{Result, bail};
 use axum::{
     Json, Router,
@@ -118,7 +118,7 @@ struct HealthResponse {
 }
 
 pub fn router(state: Controller, options: HttpOptions) -> Router {
-    let server = Server::new(state);
+    let server = Server::new(BlockingExecutor::new(state));
     let service = StreamableHttpService::new(
         move || Ok(server.clone()),
         LocalSessionManager::default().into(),

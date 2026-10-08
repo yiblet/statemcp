@@ -1,14 +1,15 @@
 # state-core
 
-The typed service behind StateMCP’s 30 tools. Named methods receive concrete
-inputs, return concrete records, and compose storage and Monty in one transaction.
-No Python installation is needed.
+Application controllers and typed feature services behind StateMCP’s 30 tools.
+Controllers coordinate root transactions, result validation and receipts.
+Namespaces, Files, Databases, Functions, Execution and DiscoveryService receive
+contract types and an explicitly borrowed Context. No Python installation is needed.
 
 ```rust,no_run
-use state_core::State;
+use state_core::Controller;
 use state_contract::namespace::NamespaceCreateInput;
 use state_contract::namespace::DescriptionChange;
-let state = State::open("./state")?;
+let state = Controller::open("./state")?;
 let namespace = state.create_namespace(NamespaceCreateInput {
     name: "notes".into(), description: DescriptionChange::Set("Shared notes".into()),
 })?;
@@ -16,17 +17,73 @@ assert!(namespace.revision.is_some());
 # Ok::<(), state_core::Error>(())
 ```
 
-`State::with_backend(Store, Arc<dyn RuntimeBackend>)` selects execution placement.
+`Controller::with_backend(Store, Arc<dyn RuntimeBackend>)` selects execution placement.
 `RuntimeBackend` exposes shared-reference `execute`, `invoke`, and
 `validate_module` methods with the argument types from `state-runtime`.
 `EmbeddedBackend` runs Monty in process. `state_runtime::WorkerConfig` implements
 the same trait for same-executable workers; the executable must install the
 runtime allocator and worker entrypoint as described in `state-runtime`.
-`State::with_limits(CoreLimits)` changes root/runtime budgets.
+`Controller::with_limits(CoreLimits)` changes root/runtime budgets.
 
-`State::with_principal(identity)` scopes receipts to an embedding-provided identity.
+`Controller::with_principal(identity)` scopes receipts to an embedding-provided identity.
 It does not authenticate users or establish tenant permissions. Root operations
 have owner access. Published function bodies are restricted to their own namespace.
+
+## Services and execution context
+
+`Controller::new(store, runtime)` constructs the application from explicit storage
+and interpreter dependencies. `Runtime` is a shared handle to an injected
+`RuntimeBackend`; controller/service clones retain the same backend. Primitive
+services are concrete types, not generic request dispatchers or service locators.
+
+`Context` owns one transaction, established namespace scope, deadline, counters,
+and sticky failure. It contains no services or runtime handles. Only a controller
+can create or finish it. Typed custom use cases can compose services atomically:
+
+```rust,no_run
+use state_core::Controller;
+use state_contract::file::{FsWriteInput, FileTextInput};
+# let controller = Controller::open("./state")?;
+let (written, commit) = controller.transaction(|context| {
+    controller.files().write_file(FsWriteInput::Text(FileTextInput {
+        namespace: "notes".into(), path: "/note.txt".into(), text: "hello".into(),
+        expected_revision: None,
+    }), context)
+})?;
+# Ok::<(), state_core::Error>(())
+```
+
+Each primitive enforces scope and charges one operation before accessing domain
+storage. Failures poison Context even when a caller catches the error. Execution
+narrows function scope and supplies a per-run host adapter. That adapter invokes
+the same services with the same Context, never starts a nested root transaction,
+and depends on the neutral `CodeExecutor` interface rather than concrete Execution.
+
+Heavy boundaries can be injected independently: `Sources` accepts a
+`SourceProvider`, Runtime accepts a RuntimeBackend, and storage accepts its
+filesystem implementation. Functions uses Sources and Runtime; neither neutral
+port imports its consuming service. Publication carries the exact validated
+`FunctionSources` into domain persistence, which checks source/module hashes and
+snapshot membership before publishing. Tests can inject source/runtime failures
+while using actual in-memory storage; no mock trait is needed for every primitive.
+Dependency direction is a design constraint: boundary contracts may depend on
+shared values and Context, but never on their consuming service or concrete
+implementation. Implementations satisfy those contracts; the composition root
+selects them. Add a narrow injectable boundary when execution is expensive,
+external, or nondeterministic, rather than making every service a trait. Keep
+pure rules directly callable and test real transaction/SQL guarantees against
+actual storage alongside tests with controlled boundary failures.
+
+Public operation contracts live in the capability modules of `state-contract`.
+Persistent manifests, receipts and declaration hashes keep their existing format;
+there are no storage migrations or code compatibility facades.
+
+Async transports use statemcp’s `BlockingExecutor`, supplied explicitly to Server.
+Its clones share bounded admission, acquired before scheduling blocking work and
+held until that work finishes, including when its async caller is canceled. SQL,
+source reads, interpreter execution and commit remain within the blocking task.
+Synchronous embedding calls controllers directly; storage still enforces exclusive
+root ownership and concurrent roots fail with Conflict.
 
 ## Fixed operations and results
 

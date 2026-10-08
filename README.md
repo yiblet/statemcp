@@ -168,3 +168,16 @@ cleanup, worker isolation, and aggregate allocator limits. Real-I/O scenarios
 run serially to avoid transient inherited-lock contention during process spawning.
 
 The scripts under [`test/`](test/README.md) remain manual executable checks.
+
+## Application architecture
+
+MCP and CLI adapt `state-contract` inputs to `state-core::Controller` use cases.
+Controllers open and finish one transaction; concrete feature services share its
+`Context`. Runtime host callbacks invoke those same services with retained
+namespace scope and budgets. Source loading and runtime execution have injectable
+boundaries for testing. See [state-core](crates/state-core/README.md) for service
+composition and typed transactional embedding.
+
+The MCP server receives a shared `BlockingExecutor`; cloned sessions share
+admission and execute synchronous application work off the async workers. Existing
+stores retain their format and require no migration for this service rewrite.

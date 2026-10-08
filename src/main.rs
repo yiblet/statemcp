@@ -7,7 +7,7 @@ use rmcp::{ServiceExt, transport::stdio};
 use state_core::Controller;
 use state_domain::Store;
 use state_runtime::WorkerConfig;
-use statemcp::{Server, http::HttpOptions};
+use statemcp::{BlockingExecutor, Server, http::HttpOptions};
 use std::{env, process::ExitCode, sync::Arc};
 use tracing_subscriber::EnvFilter;
 
@@ -62,7 +62,7 @@ fn invoke(tool: ToolCommand) -> Result<ExitCode> {
 async fn serve(command: Command) -> Result<()> {
     match command {
         Command::Stdio { storage } => {
-            let server = Server::new(open_state_for_server(storage).await?)
+            let server = Server::new(BlockingExecutor::new(open_state_for_server(storage).await?))
                 .serve(stdio())
                 .await
                 .context("cannot initialize MCP over stdio")?;

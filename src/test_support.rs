@@ -1,4 +1,4 @@
-use crate::{Controller, Server};
+use crate::{BlockingExecutor, Controller, Server};
 use rmcp::{
     RoleClient, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ClientConfig, ProtocolVersion},
@@ -44,7 +44,7 @@ pub fn config() -> ClientConfig {
 pub async fn connect(state: Controller) -> Client {
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
-        Server::new(state)
+        Server::new(BlockingExecutor::new(state))
             .serve(server_io)
             .await
             .unwrap()

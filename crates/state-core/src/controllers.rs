@@ -11,6 +11,8 @@ use state_contract::{
 use state_domain::Store;
 use std::{path::Path, sync::Arc};
 
+/// Composes feature services and owns root transaction, receipt and result lifecycle.
+/// Operations are synchronous; async callers must use a blocking execution boundary.
 #[derive(Clone)]
 pub struct Controller {
     store: Store,
@@ -64,7 +66,6 @@ impl Controller {
     pub fn with_backend(store: Store, backend: Arc<dyn RuntimeBackend>) -> Self {
         Self::new(store, Runtime::new(backend))
     }
-    /// Interpreter dependency shared by all cloned controllers and their feature services.
     /// File operations for custom typed use cases opened with `transaction`.
     pub fn files(&self) -> &Files {
         &self.files
@@ -93,6 +94,8 @@ impl Controller {
     pub fn runtime(&self) -> &Runtime {
         &self.runtime
     }
+    /// Set the trusted receipt identity; rejects empty identities and values over 256 bytes.
+    /// This configures receipt scope and does not authenticate or authorize a caller.
     pub fn with_principal(mut self, principal: impl Into<String>) -> Result<Self> {
         let principal = principal.into();
         if principal.is_empty() || principal.len() > 256 {
@@ -101,10 +104,12 @@ impl Controller {
         self.principal = principal;
         Ok(self)
     }
+    /// Configure budgets used by subsequently opened root contexts.
     pub fn with_limits(mut self, limits: CoreLimits) -> Self {
         self.limits = limits;
         self
     }
+    /// Access the configured persistence dependency for embedding and maintenance.
     pub fn store(&self) -> &Store {
         &self.store
     }

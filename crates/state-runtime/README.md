@@ -116,7 +116,7 @@ callback errors, and Rust panic unwinding. Callback time counts against the same
 deadline. A synchronous borrowed Rust callback cannot itself be preempted: its
 owner must impose deadlines on blocking operations; dispatch returns the timeout
 when that callback returns. Each nested worker gets the limits supplied by its
-caller; the State service must carry root budgets across nested operations.
+caller; the application Context must carry root budgets across nested operations.
 
 Tests live in crate-local `#[cfg(test)]` modules under `src/` and use no
 external I/O. Worker sessions read and write memory buffers; watchdog and drop
