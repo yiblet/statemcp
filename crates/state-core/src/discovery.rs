@@ -1,7 +1,6 @@
 //! Discovery records contain schemas and sample protocol arguments only in their JSON fields.
 use crate::{
-    Error, Result,
-    execution::Root,
+    Context, Error, Functions, Result,
     schemas::{self, RuntimeGuide, ToolDefinition},
 };
 use serde::Serialize;
@@ -69,8 +68,21 @@ struct DiscoveryLimits {
     runtime_json_bytes: usize,
     direct_result_bytes: usize,
 }
-impl Root {
-    pub(crate) fn describe_typed(&mut self, input: DescribeInput) -> Result<Discovery> {
+/// Describes capabilities and published function contracts without executing Python.
+#[derive(Clone)]
+pub struct DiscoveryService {
+    functions: Functions,
+}
+impl DiscoveryService {
+    /// Construct discovery using the function declaration service.
+    pub fn new(functions: Functions) -> Self {
+        Self { functions }
+    }
+    /// Resolve discovery selectors with the caller's namespace authority.
+    pub fn describe(&self, input: DescribeInput, context: &mut Context) -> Result<Discovery> {
+        context.operation(|context| self.describe_inner(input, context))
+    }
+    fn describe_inner(&self, input: DescribeInput, context: &mut Context) -> Result<Discovery> {
         match input {
             DescribeInput::Tool(input) => {
                 let tool = schemas::typed_tool_definitions(true)
@@ -80,10 +92,11 @@ impl Root {
                 Ok(Discovery::Tool { tool })
             }
             DescribeInput::Namespace(input) => {
-                let namespace = self.tx.namespace_identity(&input.namespace)?.to_owned();
-                let functions: Vec<_> = self
-                    .tx
-                    .function_declarations(&namespace)?
+                let namespace = context.namespace(&input.namespace)?.as_str().to_owned();
+                let declarations = self.functions.contracts(&namespace, context)?;
+                let functions: Vec<_> = declarations
+                    .functions
+                    .into_iter()
                     .filter(|declaration| {
                         input
                             .function
@@ -91,11 +104,11 @@ impl Root {
                             .is_none_or(|name| name == &declaration.name)
                     })
                     .map(|declaration| EndpointContract {
-                        name: declaration.name.clone(),
-                        version: declaration.version.clone(),
-                        description: declaration.description.clone(),
-                        input_schema: declaration.input_schema.clone(),
-                        output_schema: declaration.output_schema.clone(),
+                        name: declaration.name,
+                        version: declaration.version,
+                        description: declaration.description,
+                        input_schema: declaration.input_schema,
+                        output_schema: declaration.output_schema,
                     })
                     .collect();
                 if input.function.is_some() && functions.is_empty() {
@@ -137,11 +150,11 @@ impl Root {
                         identity: "local owner; embedding principal scopes receipts only",
                         retention: "history and receipts retained until explicit maintenance; no automatic GC",
                         limits: DiscoveryLimits {
-                            root_calls: self.limits.runtime.max_calls,
-                            root_depth: self.limits.max_depth,
-                            root_milliseconds: self.limits.runtime.max_duration.as_millis(),
-                            runtime_json_bytes: self.limits.runtime.max_output_bytes,
-                            direct_result_bytes: self.limits.max_result_bytes,
+                            root_calls: context.limits().runtime.max_calls,
+                            root_depth: context.limits().max_depth,
+                            root_milliseconds: context.limits().runtime.max_duration.as_millis(),
+                            runtime_json_bytes: context.limits().runtime.max_output_bytes,
+                            direct_result_bytes: context.limits().max_result_bytes,
                         },
                         runtime_guide: (mode == DiscoveryMode::Full).then(schemas::runtime_guide),
                     }))

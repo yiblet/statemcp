@@ -1,5 +1,5 @@
 //! MCP tools use the official SDK's typed parameter, routing, and handler macros.
-use crate::{CoreError, State};
+use crate::{Controller, CoreError};
 use rmcp::{
     ErrorData, ServerHandler,
     handler::server::{
@@ -19,7 +19,7 @@ const SERVER_INSTRUCTIONS: &str = "Start with namespace.list to discover availab
 
 #[derive(Clone)]
 pub struct Server {
-    state: State,
+    state: Controller,
     slots: Arc<Semaphore>,
     tool_router: ToolRouter<Self>,
 }
@@ -55,7 +55,7 @@ fn tool_error(error: &CoreError) -> Result<CallToolResult, ErrorData> {
 }
 
 impl Server {
-    pub fn new(state: State) -> Self {
+    pub fn new(state: Controller) -> Self {
         Self {
             state,
             slots: Arc::new(Semaphore::new(16)),
@@ -64,7 +64,7 @@ impl Server {
     }
     async fn run_blocking<T: serde::Serialize + Send + 'static>(
         &self,
-        action: impl FnOnce(State) -> state_core::Result<T> + Send + 'static,
+        action: impl FnOnce(Controller) -> state_core::Result<T> + Send + 'static,
     ) -> Result<CallToolResult, ErrorData> {
         let permit = match self.slots.clone().try_acquire_owned() {
             Ok(permit) => permit,

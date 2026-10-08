@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{Cli, Command, Storage, ToolCommand};
 use rmcp::{ServiceExt, transport::stdio};
-use state_core::State;
+use state_core::Controller;
 use state_domain::Store;
 use state_runtime::WorkerConfig;
 use statemcp::{Server, http::HttpOptions};
@@ -19,15 +19,15 @@ fn open_store(storage: &Storage) -> Result<Store> {
         .with_context(|| format!("cannot open state at {}", storage.data_dir.display()))
 }
 
-fn open_state(storage: &Storage) -> Result<State> {
+fn open_state(storage: &Storage) -> Result<Controller> {
     let executable = env::current_exe().context("cannot locate the worker executable")?;
-    Ok(State::with_backend(
+    Ok(Controller::with_backend(
         open_store(storage)?,
         Arc::new(WorkerConfig::new(executable)),
     ))
 }
 
-async fn open_state_for_server(storage: Storage) -> Result<State> {
+async fn open_state_for_server(storage: Storage) -> Result<Controller> {
     tokio::task::spawn_blocking(move || open_state(&storage))
         .await
         .context("state initialization task failed")?

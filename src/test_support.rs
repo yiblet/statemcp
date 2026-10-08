@@ -1,4 +1,4 @@
-use crate::{Server, State};
+use crate::{Controller, Server};
 use rmcp::{
     RoleClient, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ClientConfig, ProtocolVersion},
@@ -21,8 +21,8 @@ impl Fixture {
             .map_err(state_domain::Error::from)?;
         Ok(state_domain::Store::from_storage(backing)?)
     }
-    pub fn state(&self) -> state_core::Result<State> {
-        Ok(State::with_backend(
+    pub fn state(&self) -> state_core::Result<Controller> {
+        Ok(Controller::with_backend(
             self.store()?,
             std::sync::Arc::new(state_core::EmbeddedBackend),
         ))
@@ -31,7 +31,7 @@ impl Fixture {
         let fixture = self.clone();
         Ok(tokio::task::spawn_blocking(move || fixture.store()).await??)
     }
-    pub async fn state_async(&self) -> anyhow::Result<State> {
+    pub async fn state_async(&self) -> anyhow::Result<Controller> {
         let fixture = self.clone();
         Ok(tokio::task::spawn_blocking(move || fixture.state()).await??)
     }
@@ -41,7 +41,7 @@ pub fn config() -> ClientConfig {
     ClientConfig::default().with_protocol_version(ProtocolVersion::V_2025_06_18)
 }
 
-pub async fn connect(state: State) -> Client {
+pub async fn connect(state: Controller) -> Client {
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
         Server::new(state)

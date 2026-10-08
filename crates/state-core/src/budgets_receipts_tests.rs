@@ -1,5 +1,5 @@
 use crate::test_support as support;
-use crate::{CoreLimits, EmbeddedBackend, RuntimeBackend, State};
+use crate::{Controller, CoreLimits, EmbeddedBackend, RuntimeBackend};
 use serde_json::{Map, Value, json};
 use state_runtime::{HostCallback, Limits, RunResult, RuntimeError};
 use std::sync::{Arc, Mutex, mpsc};
@@ -64,7 +64,7 @@ fn nested_execution_gets_only_remaining_root_wall_budget() {
     });
     let mut limits = CoreLimits::default();
     limits.runtime.max_duration = Duration::from_secs(1);
-    let state = State::with_backend(support::memory_store(&dir).unwrap(), backend.clone())
+    let state = Controller::with_backend(support::memory_store(&dir).unwrap(), backend.clone())
         .with_limits(limits);
     state.tool("execute", json!({"script":"outer"})).unwrap();
     let seen = backend.seen.lock().unwrap();
@@ -117,7 +117,7 @@ impl RuntimeBackend for CatchingBackend {
 #[test]
 fn core_poisoning_survives_a_backend_that_swallows_host_errors() {
     let dir = state_fs::MemoryFs::new();
-    let state = State::with_backend(
+    let state = Controller::with_backend(
         support::memory_store(&dir).unwrap(),
         Arc::new(CatchingBackend),
     );
@@ -184,7 +184,7 @@ fn concurrent_receipts_conflict_then_retry_replays_the_committed_result()
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
     let dir = state_fs::MemoryFs::new();
-    let state = State::with_backend(
+    let state = Controller::with_backend(
         support::memory_store(&dir)?,
         Arc::new(RacingBackend {
             entered: entered_tx,

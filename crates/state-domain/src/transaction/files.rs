@@ -4,8 +4,9 @@ use crate::{Error, Result, validation::virtual_path};
 use std::collections::BTreeMap;
 
 impl Transaction {
-    /// Read pinned Python source without constructing a JSON file response.
-    pub fn file_text(&self, namespace: &str, path: &str) -> Result<String> {
+    /// Read virtual file bytes without constructing a text/base64 protocol response.
+    /// Invalid paths and absent files return recoverable errors.
+    pub fn file_bytes(&self, namespace: &str, path: &str) -> Result<Vec<u8>> {
         let namespace = self.namespace_identity(namespace)?;
         let path = virtual_path(path)?;
         let hash = self
@@ -14,7 +15,11 @@ impl Transaction {
             .files
             .get(&path)
             .ok_or_else(|| Error::new(crate::ErrorCode::NotFound, "file does not exist"))?;
-        String::from_utf8(self.bytes(hash)?)
+        self.bytes(hash)
+    }
+    /// Read pinned Python source without constructing a JSON file response.
+    pub fn file_text(&self, namespace: &str, path: &str) -> Result<String> {
+        String::from_utf8(self.file_bytes(namespace, path)?)
             .map_err(|_| Error::invalid("function source must be UTF-8"))
     }
     /// Snapshot Python files for namespace-local imports with a cumulative byte cap.

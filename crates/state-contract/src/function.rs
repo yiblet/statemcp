@@ -172,3 +172,11 @@ mod tests {
         Ok(())
     }
 }
+
+/// Owned namespace source snapshot, loaded once for validation and publication.
+/// This is an internal service contract and is not a persisted or protocol envelope.
+#[derive(Clone, Debug)]
+pub struct FunctionSources {
+    pub source: String,
+    pub modules: BTreeMap<String, String>,
+}

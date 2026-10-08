@@ -1,6 +1,6 @@
 use crate::test_support as common;
 use crate::{
-    State,
+    Controller,
     http::{HttpOptions, router},
 };
 use axum::{
@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use std::time::Duration;
 use tower::ServiceExt;
 
-fn app(state: State, token: Option<&str>) -> Router {
+fn app(state: Controller, token: Option<&str>) -> Router {
     router(
         state,
         HttpOptions::new("127.0.0.1:8000".parse().unwrap(), token.map(str::to_owned)).unwrap(),
@@ -444,7 +444,7 @@ impl state_core::RuntimeBackend for SlowBackend {
 #[tokio::test(flavor = "current_thread")]
 async fn synchronous_invocation_does_not_block_async_http_requests() {
     let directory = Fixture::new();
-    let state = State::with_backend(
+    let state = Controller::with_backend(
         directory.store_async().await.unwrap(),
         std::sync::Arc::new(SlowBackend),
     );

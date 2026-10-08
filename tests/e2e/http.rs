@@ -1,6 +1,6 @@
 use super::common::{self, Directory};
 use serde_json::json;
-use state_core::State;
+use state_core::Controller;
 use statemcp::http::{HttpOptions, router};
 use std::time::Duration;
 
@@ -19,7 +19,7 @@ async fn multiple_listeners_serve_shared_state_with_official_clients() -> anyhow
     let second = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addresses = [first.local_addr().unwrap(), second.local_addr().unwrap()];
     let path = directory.0.clone();
-    let state = tokio::task::spawn_blocking(move || State::open(path)).await??;
+    let state = tokio::task::spawn_blocking(move || Controller::open(path)).await??;
     let options = HttpOptions::for_addresses(&addresses, Some("sdk-token".into()))
         .unwrap()
         .with_prefix("/statemcp".parse().unwrap());
@@ -106,7 +106,7 @@ async fn official_http_clients_share_state_across_protocol_versions() -> anyhow:
     };
     let directory = Directory::new();
     let path = directory.0.clone();
-    let state = tokio::task::spawn_blocking(move || State::open(path)).await??;
+    let state = tokio::task::spawn_blocking(move || Controller::open(path)).await??;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let options = HttpOptions::new(address, Some("sdk-token".into())).unwrap();

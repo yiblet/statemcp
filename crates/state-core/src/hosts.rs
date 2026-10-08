@@ -1,9 +1,12 @@
 //! Decode Python values at the host boundary and pass concrete inputs to domain operations.
-use crate::{Error, Result, bounded, execution::Root, policy::Access, selectors::HostFunction};
+use crate::ports::CodeExecutor;
+use crate::{
+    Context, Databases, DiscoveryService, Error, Files, Functions, Namespaces, Result, bounded,
+    selectors::HostFunction,
+};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 use state_contract::database::SqlCell;
-use state_contract::file::FileContents;
 use state_contract::{database::*, file::*};
 
 /// Consume external Python arguments in signature order, retaining typed field values.
@@ -51,41 +54,34 @@ impl HostArguments {
 fn encode(value: impl Serialize) -> Result<Value> {
     serde_json::to_value(value).map_err(|e| Error::invalid(e.to_string()))
 }
-impl Root {
+pub(crate) struct Host<'a> {
+    pub(crate) executor: &'a dyn CodeExecutor,
+    pub(crate) files: &'a Files,
+    pub(crate) databases: &'a Databases,
+    pub(crate) namespaces: &'a Namespaces,
+    pub(crate) functions: &'a Functions,
+    pub(crate) discovery: &'a DiscoveryService,
+    pub(crate) context: &'a mut Context,
+}
+impl Host<'_> {
     pub(crate) fn host(
         &mut self,
         name: &str,
         positional: Vec<Value>,
         keywords: Map<String, Value>,
-        access: &Access,
         namespace: Option<&str>,
     ) -> Result<Value> {
-        let result = self.host_inner(name, positional, keywords, access, namespace);
-        if let Err(error) = &result {
-            self.failure.get_or_insert_with(|| error.clone());
-        }
-        result
-    }
-    fn scoped_namespace(&self, selector: &str, access: &Access) -> Result<String> {
-        let selector = match access {
-            Access::Namespace(namespace) if selector == "self" => namespace,
-            _ => selector,
-        };
-        let target = self.tx.namespace_identity(selector)?;
-        if let Access::Namespace(scope) = access {
-            crate::policy::check_namespace(scope, target)?;
-        }
-        Ok(target.to_owned())
+        let result = self.host_inner(name, positional, keywords, namespace);
+        self.context.record(result)
     }
     fn host_inner(
         &mut self,
         name: &str,
         positional: Vec<Value>,
         keywords: Map<String, Value>,
-        access: &Access,
         namespace: Option<&str>,
     ) -> Result<Value> {
-        self.check()?;
+        self.context.check()?;
         #[derive(Serialize)]
         struct WireArguments<'a> {
             args: &'a [Value],
@@ -96,7 +92,7 @@ impl Root {
                 args: &positional,
                 kwargs: &keywords,
             },
-            self.limits.runtime.max_output_bytes,
+            self.context.limits().runtime.max_output_bytes,
         )?;
         let function =
             HostFunction::parse(name).ok_or_else(|| Error::invalid("unknown host function"))?;
@@ -105,9 +101,8 @@ impl Root {
             let name: String = arguments.required("name")?;
             let fields: Map<String, Value> = arguments.optional("arguments")?.unwrap_or_default();
             arguments.finish()?;
-            return self.host_tool(&name, fields, access);
+            return self.host_tool(&name, fields);
         }
-        self.start_operation()?;
         let result = match function {
             HostFunction::Call => {
                 let namespace: String = arguments.required("namespace")?;
@@ -115,104 +110,100 @@ impl Root {
                 let fields: Map<String, Value> =
                     arguments.optional("arguments")?.unwrap_or_default();
                 arguments.finish()?;
-                let namespace = self.scoped_namespace(&namespace, access)?;
-                self.call_function(&namespace, &function, fields, None)?
+
+                self.executor.call_function(
+                    state_contract::execution::CallInput {
+                        namespace,
+                        function,
+                        arguments: Some(fields),
+                        expected_version: None,
+                        idempotency_key: None,
+                    },
+                    self.context,
+                )?
             }
             HostFunction::DbQuery => {
                 let database = arguments.required("database")?;
                 let sql = arguments.required("sql")?;
                 let params: Vec<SqlCell> = arguments.optional("params")?.unwrap_or_default();
                 arguments.finish()?;
-                let namespace = self.scoped_namespace(
-                    namespace.ok_or_else(|| {
-                        Error::invalid("database helper requires a default namespace")
-                    })?,
-                    access,
-                )?;
-                encode(self.tx.query_database(&DbQueryInput {
-                    namespace,
-                    database,
-                    sql,
-                    params: Some(params),
-                })?)?
+                let namespace = namespace
+                    .ok_or_else(|| Error::invalid("database helper requires a default namespace"))?
+                    .to_owned();
+                encode(self.databases.query_database(
+                    DbQueryInput {
+                        namespace,
+                        database,
+                        sql,
+                        params: Some(params),
+                    },
+                    self.context,
+                )?)?
             }
             HostFunction::DbExecute => {
                 let database = arguments.required("database")?;
                 let sql = arguments.required("sql")?;
                 let params: Vec<SqlCell> = arguments.optional("params")?.unwrap_or_default();
                 arguments.finish()?;
-                let namespace = self.scoped_namespace(
-                    namespace.ok_or_else(|| {
-                        Error::invalid("database helper requires a default namespace")
-                    })?,
-                    access,
-                )?;
-                encode(self.tx.execute_database(&DbExecuteInput {
-                    namespace,
-                    database,
-                    sql,
-                    params: Some(params),
-                    expected_revision: None,
-                })?)?
+                let namespace = namespace
+                    .ok_or_else(|| Error::invalid("database helper requires a default namespace"))?
+                    .to_owned();
+                encode(self.databases.execute_database(
+                    DbExecuteInput {
+                        namespace,
+                        database,
+                        sql,
+                        params: Some(params),
+                        expected_revision: None,
+                    },
+                    self.context,
+                )?)?
             }
             HostFunction::DbInspect => {
                 let database = arguments.required("database")?;
                 arguments.finish()?;
-                let namespace = self.scoped_namespace(
-                    namespace.ok_or_else(|| {
-                        Error::invalid("database helper requires a default namespace")
-                    })?,
-                    access,
-                )?;
-                encode(self.tx.inspect_database(&DbInspectInput {
-                    namespace,
-                    database,
-                })?)?
+                let namespace = namespace
+                    .ok_or_else(|| Error::invalid("database helper requires a default namespace"))?
+                    .to_owned();
+                encode(self.databases.inspect_database(
+                    DbInspectInput {
+                        namespace,
+                        database,
+                    },
+                    self.context,
+                )?)?
             }
             HostFunction::ReadText => {
                 let path = arguments.required("path")?;
                 arguments.finish()?;
-                let namespace = self.scoped_namespace(
-                    namespace.ok_or_else(|| {
-                        Error::invalid("file helper requires a default namespace")
-                    })?,
-                    access,
-                )?;
-                match self.tx.read_file(&FsReadInput { namespace, path })? {
-                    FileContents::Text { text, .. } => Value::String(text),
-                    FileContents::Binary { .. } => {
-                        return Err(Error::invalid("file is not UTF-8 text"));
-                    }
-                }
+                let namespace = namespace
+                    .ok_or_else(|| Error::invalid("file helper requires a default namespace"))?
+                    .to_owned();
+                Value::String(
+                    self.files
+                        .read_text(FsReadInput { namespace, path }, self.context)?,
+                )
             }
             HostFunction::WriteText => {
                 let path = arguments.required("path")?;
                 let text = arguments.required("text")?;
                 arguments.finish()?;
-                let namespace = self.scoped_namespace(
-                    namespace.ok_or_else(|| {
-                        Error::invalid("file helper requires a default namespace")
-                    })?,
-                    access,
-                )?;
+                let namespace = namespace
+                    .ok_or_else(|| Error::invalid("file helper requires a default namespace"))?
+                    .to_owned();
                 let input = FsWriteInput::Text(FileTextInput {
                     namespace,
                     path,
                     text,
                     expected_revision: None,
                 });
-                let result = self.tx.write_file(&input)?;
-                let (namespace, path) = match &input {
-                    FsWriteInput::Text(file) => (&file.namespace, &file.path),
-                    FsWriteInput::Binary(file) => (&file.namespace, &file.path),
-                };
-                self.check_file_readable(namespace, path)?;
+                let result = self.files.write_file(input, self.context)?;
                 encode(result)?
             }
             HostFunction::Mcp => return Err(Error::invalid("mcp call must use its tool boundary")),
         };
-        self.check()?;
-        bounded(&result, self.limits.runtime.max_output_bytes)?;
+        self.context.check()?;
+        bounded(&result, self.context.limits().runtime.max_output_bytes)?;
         Ok(result)
     }
 }

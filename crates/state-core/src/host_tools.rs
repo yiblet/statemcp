@@ -1,5 +1,5 @@
 //! Decode the dynamic Python mcp tool name at its boundary; execute using concrete inputs and results.
-use crate::{Error, Result, execution::Root, policy::Access};
+use crate::{Error, Result, hosts::Host};
 use serde::Serialize;
 use serde_json::Value;
 use state_contract::{database::*, discovery::*, execution::*, file::*, function::*, namespace::*};
@@ -7,183 +7,97 @@ use state_contract::{database::*, discovery::*, execution::*, file::*, function:
 fn encode(value: impl Serialize) -> Result<Value> {
     serde_json::to_value(value).map_err(|e| Error::invalid(e.to_string()))
 }
-impl Root {
+impl Host<'_> {
     pub(crate) fn host_tool(
         &mut self,
         name: &str,
         arguments: serde_json::Map<String, Value>,
-        access: &Access,
     ) -> Result<Value> {
-        self.start_operation()?;
         let mut input = HostTool::parse(name, Value::Object(arguments))?;
         if input.idempotency_key().is_some() {
             return Err(Error::invalid(
                 "idempotency keys are only valid on root calls",
             ));
         }
-        if let Access::Namespace(namespace) = access {
+        if let Some(namespace) = self.context.default_namespace() {
             input.resolve_self(namespace);
-            match input.target() {
-                Target::Discovery => {}
-                Target::Global => return Err(Error::denied()),
-                Target::Namespace(selector) => crate::policy::check_namespace(
-                    namespace,
-                    self.tx.namespace_identity(selector)?,
-                )?,
-            }
         }
         let result = match input {
-            HostTool::NamespaceCreate(input) => encode(self.tx.create_namespace(&input)?)?,
-            HostTool::NamespaceList(_) => encode(self.tx.list_namespaces()?)?,
-            HostTool::NamespaceGet(input) => encode(self.tx.get_namespace(&input)?)?,
-            HostTool::NamespaceUpdate(input) => encode(self.tx.update_namespace(&input)?)?,
-            HostTool::NamespaceCopy(input) => encode(self.tx.copy_namespace(&input)?)?,
-            HostTool::NamespaceDelete(input) => encode(self.tx.delete_namespace(&input)?)?,
-            HostTool::FsRead(input) => encode(self.tx.read_file(&input)?)?,
-            HostTool::FsStat(input) => encode(self.tx.stat_file(&input)?)?,
-            HostTool::FsList(input) => encode(self.tx.list_files(&input)?)?,
-            HostTool::FsWrite(input) => {
-                let result = self.tx.write_file(&input)?;
-                let (namespace, path) = match &input {
-                    state_contract::file::FsWriteInput::Text(file) => (&file.namespace, &file.path),
-                    state_contract::file::FsWriteInput::Binary(file) => {
-                        (&file.namespace, &file.path)
-                    }
-                };
-                self.check_file_readable(namespace, path)?;
-                encode(result)?
+            HostTool::NamespaceCreate(input) => {
+                encode(self.namespaces.create_namespace(input, self.context)?)?
             }
-            HostTool::FsAppend(input) => {
-                let result = self.tx.append_file(&input)?;
-                let (namespace, path) = match &input.0 {
-                    state_contract::file::FsWriteInput::Text(file) => (&file.namespace, &file.path),
-                    state_contract::file::FsWriteInput::Binary(file) => {
-                        (&file.namespace, &file.path)
-                    }
-                };
-                self.check_file_readable(namespace, path)?;
-                encode(result)?
+            HostTool::NamespaceList(input) => {
+                encode(self.namespaces.list_namespaces(input, self.context)?)?
             }
-            HostTool::FsMove(input) => encode(self.tx.move_file(&input)?)?,
-            HostTool::FsCopy(input) => encode(self.tx.copy_file(&input)?)?,
-            HostTool::FsDelete(input) => encode(self.tx.delete_file(&input)?)?,
-            HostTool::DbList(input) => encode(self.tx.list_databases(&input)?)?,
-            HostTool::DbCreate(input) => encode(self.tx.create_database(&input)?)?,
-            HostTool::DbDrop(input) => encode(self.tx.drop_database(&input)?)?,
-            HostTool::DbQuery(input) => encode(self.tx.query_database(&input)?)?,
-            HostTool::DbExecute(input) => encode(self.tx.execute_database(&input)?)?,
-            HostTool::DbInspect(input) => encode(self.tx.inspect_database(&input)?)?,
-            HostTool::DbMigrations(input) => encode(self.tx.database_migrations(&input)?)?,
-            HostTool::DbMigrate(input) => encode(self.tx.migrate_database(&input)?)?,
-            HostTool::FunctionList(input) => encode(self.tx.list_functions(&input)?)?,
-            HostTool::FunctionGet(input) => encode(self.tx.get_function(&input)?)?,
-            HostTool::FunctionDeclare(mut input) => {
-                self.validate_function(
-                    &input.namespace,
-                    &input.file,
-                    &input.symbol,
-                    &mut input.input_schema,
-                    &mut input.output_schema,
-                )?;
-                encode(self.tx.declare_function(&input)?)?
+            HostTool::NamespaceGet(input) => {
+                encode(self.namespaces.get_namespace(input, self.context)?)?
             }
-            HostTool::FunctionUpdate(mut input) => {
-                self.validate_function(
-                    &input.namespace,
-                    &input.file,
-                    &input.symbol,
-                    &mut input.input_schema,
-                    &mut input.output_schema,
-                )?;
-                encode(self.tx.update_function(&input)?)?
+            HostTool::NamespaceUpdate(input) => {
+                encode(self.namespaces.update_namespace(input, self.context)?)?
             }
-            HostTool::FunctionRemove(input) => encode(self.tx.remove_function(&input)?)?,
-            HostTool::Call(input) => self.call_function(
-                &input.namespace,
-                &input.function,
-                input.arguments.unwrap_or_default(),
-                input.expected_version.as_deref(),
-            )?,
-            HostTool::Execute(input) => encode(self.execute_script(
-                &input.script,
-                input.namespace.as_deref(),
-                input.inputs.unwrap_or(Value::Null),
-                access,
-            )?)?,
-            HostTool::Describe(input) => encode(self.describe_typed(input)?)?,
+            HostTool::NamespaceCopy(input) => {
+                encode(self.namespaces.copy_namespace(input, self.context)?)?
+            }
+            HostTool::NamespaceDelete(input) => {
+                encode(self.namespaces.delete_namespace(input, self.context)?)?
+            }
+            HostTool::FsRead(input) => encode(self.files.read_file(input, self.context)?)?,
+            HostTool::FsStat(input) => encode(self.files.stat_file(input, self.context)?)?,
+            HostTool::FsList(input) => encode(self.files.list_files(input, self.context)?)?,
+            HostTool::FsWrite(input) => encode(self.files.write_file(input, self.context)?)?,
+            HostTool::FsAppend(input) => encode(self.files.append_file(input, self.context)?)?,
+            HostTool::FsMove(input) => encode(self.files.move_file(input, self.context)?)?,
+            HostTool::FsCopy(input) => encode(self.files.copy_file(input, self.context)?)?,
+            HostTool::FsDelete(input) => encode(self.files.delete_file(input, self.context)?)?,
+            HostTool::DbList(input) => encode(self.databases.list_databases(input, self.context)?)?,
+            HostTool::DbCreate(input) => {
+                encode(self.databases.create_database(input, self.context)?)?
+            }
+            HostTool::DbDrop(input) => encode(self.databases.drop_database(input, self.context)?)?,
+            HostTool::DbQuery(input) => {
+                encode(self.databases.query_database(input, self.context)?)?
+            }
+            HostTool::DbExecute(input) => {
+                encode(self.databases.execute_database(input, self.context)?)?
+            }
+            HostTool::DbInspect(input) => {
+                encode(self.databases.inspect_database(input, self.context)?)?
+            }
+            HostTool::DbMigrations(input) => {
+                encode(self.databases.database_migrations(input, self.context)?)?
+            }
+            HostTool::DbMigrate(input) => {
+                encode(self.databases.migrate_database(input, self.context)?)?
+            }
+            HostTool::FunctionList(input) => {
+                encode(self.functions.list_functions(input, self.context)?)?
+            }
+            HostTool::FunctionGet(input) => {
+                encode(self.functions.get_function(input, self.context)?)?
+            }
+            HostTool::FunctionDeclare(input) => {
+                encode(self.functions.declare_function(input, self.context)?)?
+            }
+            HostTool::FunctionUpdate(input) => {
+                encode(self.functions.update_function(input, self.context)?)?
+            }
+            HostTool::FunctionRemove(input) => {
+                encode(self.functions.remove_function(input, self.context)?)?
+            }
+            HostTool::Call(input) => self.executor.call_function(input, self.context)?,
+            HostTool::Execute(input) => encode(self.executor.execute_script(input, self.context)?)?,
+            HostTool::Describe(input) => encode(self.discovery.describe(input, self.context)?)?,
         };
-        self.check()?;
-        crate::bounded(&result, self.limits.runtime.max_output_bytes)?;
+        self.context.check()?;
+        crate::bounded(&result, self.context.limits().runtime.max_output_bytes)?;
         Ok(result)
     }
 }
-enum Target<'a> {
-    Discovery,
-    Global,
-    Namespace(&'a str),
-}
 trait Scope {
-    fn target(&self) -> Target<'_>;
     fn resolve_self(&mut self, namespace: &str);
     fn idempotency_key(&self) -> Option<&str>;
 }
 impl Scope for HostTool {
-    fn target(&self) -> Target<'_> {
-        match self {
-            Self::NamespaceCreate(_) => Target::Global,
-            Self::NamespaceList(_) => Target::Global,
-            Self::NamespaceGet(input) => Target::Namespace(&input.namespace),
-            Self::NamespaceUpdate(input) => Target::Namespace(&input.namespace),
-            Self::NamespaceCopy(_) => Target::Global,
-            Self::NamespaceDelete(input) => Target::Namespace(&input.namespace),
-            Self::FsRead(input) => Target::Namespace(&input.namespace),
-            Self::FsStat(input) => Target::Namespace(&input.namespace),
-            Self::FsList(input) => Target::Namespace(&input.namespace),
-            Self::FsWrite(input) => match input {
-                state_contract::file::FsWriteInput::Text(input) => {
-                    Target::Namespace(&input.namespace)
-                }
-                state_contract::file::FsWriteInput::Binary(input) => {
-                    Target::Namespace(&input.namespace)
-                }
-            },
-            Self::FsAppend(input) => match &input.0 {
-                state_contract::file::FsWriteInput::Text(input) => {
-                    Target::Namespace(&input.namespace)
-                }
-                state_contract::file::FsWriteInput::Binary(input) => {
-                    Target::Namespace(&input.namespace)
-                }
-            },
-            Self::FsMove(input) => Target::Namespace(&input.namespace),
-            Self::FsCopy(input) => Target::Namespace(&input.namespace),
-            Self::FsDelete(input) => Target::Namespace(&input.namespace),
-            Self::DbList(input) => Target::Namespace(&input.namespace),
-            Self::DbCreate(input) => Target::Namespace(&input.namespace),
-            Self::DbDrop(input) => Target::Namespace(&input.namespace),
-            Self::DbQuery(input) => Target::Namespace(&input.namespace),
-            Self::DbExecute(input) => Target::Namespace(&input.namespace),
-            Self::DbInspect(input) => Target::Namespace(&input.namespace),
-            Self::DbMigrations(input) => Target::Namespace(&input.namespace),
-            Self::DbMigrate(input) => Target::Namespace(&input.namespace),
-            Self::FunctionList(input) => Target::Namespace(&input.namespace),
-            Self::FunctionGet(input) => Target::Namespace(&input.namespace),
-            Self::FunctionDeclare(input) => Target::Namespace(&input.namespace),
-            Self::FunctionUpdate(input) => Target::Namespace(&input.namespace),
-            Self::FunctionRemove(input) => Target::Namespace(&input.namespace),
-            Self::Call(input) => Target::Namespace(&input.namespace),
-            Self::Execute(input) => input
-                .namespace
-                .as_deref()
-                .map_or(Target::Discovery, Target::Namespace),
-            Self::Describe(input) => match input {
-                state_contract::discovery::DescribeInput::Namespace(input) => {
-                    Target::Namespace(&input.namespace)
-                }
-                _ => Target::Discovery,
-            },
-        }
-    }
     fn resolve_self(&mut self, namespace: &str) {
         fn resolve(selector: &mut String, namespace: &str) {
             if selector == "self" {

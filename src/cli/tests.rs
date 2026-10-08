@@ -2,14 +2,14 @@ use super::{Cli, Command};
 use clap::Parser;
 use serde_json::{Value, json};
 
-struct Workspace(state_core::State);
+struct Workspace(state_core::Controller);
 impl Workspace {
     fn new() -> Self {
         let backing = state_store::Store::builder()
             .with_fs(state_fs::MemoryFs::new())
             .open("/state")
             .unwrap();
-        Self(state_core::State::with_backend(
+        Self(state_core::Controller::with_backend(
             state_domain::Store::from_storage(backing).unwrap(),
             std::sync::Arc::new(state_core::EmbeddedBackend),
         ))

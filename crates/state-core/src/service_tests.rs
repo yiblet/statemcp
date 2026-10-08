@@ -1,29 +1,29 @@
 use crate::test_support as support;
-use crate::{CoreLimits, State};
+use crate::{Controller, CoreLimits};
 use serde_json::{Value, json};
 use state_fs::MemoryFs;
 use std::time::Duration;
 use support::ToolCalls;
 
-fn service() -> (MemoryFs, State) {
+fn service() -> (MemoryFs, Controller) {
     let dir = MemoryFs::new();
-    let state = support::memory_state(&dir).unwrap();
+    let state = support::memory_controller(&dir).unwrap();
     (dir, state)
 }
-fn run(state: &State, tool: &str, args: Value) -> Value {
+fn run(state: &Controller, tool: &str, args: Value) -> Value {
     state.tool(tool, args).unwrap()
 }
-fn namespace(state: &State, name: &str) {
+fn namespace(state: &Controller, name: &str) {
     run(state, "namespace.create", json!({"name":name}));
 }
-fn write(state: &State, namespace: &str, path: &str, text: &str) {
+fn write(state: &Controller, namespace: &str, path: &str, text: &str) {
     run(
         state,
         "fs.write",
         json!({"namespace":namespace,"path":path,"text":text}),
     );
 }
-fn publish(state: &State, namespace: &str, name: &str, source: &str, extra: Value) -> Value {
+fn publish(state: &Controller, namespace: &str, name: &str, source: &str, extra: Value) -> Value {
     write(state, namespace, &format!("/{name}.py"), source);
     let mut declaration =
         json!({"namespace":namespace,"name":name,"file":format!("/{name}.py"),"symbol":"endpoint"});
@@ -32,14 +32,14 @@ fn publish(state: &State, namespace: &str, name: &str, source: &str, extra: Valu
     }
     run(state, "function.declare", declaration)
 }
-fn call(state: &State, namespace: &str, function: &str, arguments: Value) -> Value {
+fn call(state: &Controller, namespace: &str, function: &str, arguments: Value) -> Value {
     run(
         state,
         "call",
         json!({"namespace":namespace,"function":function,"arguments":arguments}),
     )
 }
-fn database(state: &State, namespace: &str) {
+fn database(state: &Controller, namespace: &str) {
     run(
         state,
         "db.create",
@@ -51,7 +51,7 @@ fn database(state: &State, namespace: &str) {
         json!({"namespace":namespace,"database":"app","sql":"CREATE TABLE items(id INTEGER PRIMARY KEY, text TEXT)"}),
     );
 }
-fn rows(state: &State, namespace: &str) -> Value {
+fn rows(state: &Controller, namespace: &str) -> Value {
     run(
         state,
         "db.query",
@@ -142,7 +142,7 @@ fn code_is_pinned_and_shared_db_bindings_follow_clones_and_renames() {
     assert_eq!(call(&state, "a", "list", json!({})), "edited");
     drop(state);
     assert_eq!(
-        rows(&support::memory_state(&dir).unwrap(), "renamed"),
+        rows(&support::memory_controller(&dir).unwrap(), "renamed"),
         json!([["original"], ["fork"]])
     );
 }
@@ -921,7 +921,7 @@ fn sibling_imports_share_module_globals_and_pin_sources() {
         json!([41, 42, 42, true])
     );
     drop(state);
-    let state = support::memory_state(&dir).unwrap();
+    let state = support::memory_controller(&dir).unwrap();
     assert_eq!(
         call(&state, "n", "api", json!({})),
         json!([41, 42, 42, true])
@@ -1150,7 +1150,7 @@ fn namespace_descriptions_persist_copy_and_obey_revision_guards() {
     assert_eq!(cleared_copy["description"], Value::Null);
     assert!(state.tool("execute", json!({"script":"mcp('namespace.update', {'namespace':'memory', 'description':'rolled back'})\n1 / 0"})).is_err());
     drop(state);
-    let state = support::memory_state(&dir).unwrap();
+    let state = support::memory_controller(&dir).unwrap();
     assert_eq!(
         run(&state, "namespace.get", json!({"namespace":"memory"}))["description"],
         "Shared memory"

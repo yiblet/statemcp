@@ -915,7 +915,7 @@ pub enum PreparedCommand {
     Describe(DescribeInput),
 }
 impl PreparedCommand {
-    pub fn run(self, state: &state_core::State) -> state_core::Result<String> {
+    pub fn run(self, state: &state_core::Controller) -> state_core::Result<String> {
         fn encode(value: impl Serialize) -> state_core::Result<String> {
             serde_json::to_string(&value).map_err(|e| {
                 state_core::Error::new(state_core::ErrorCode::InvalidArgument, e.to_string())

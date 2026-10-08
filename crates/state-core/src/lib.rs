@@ -1,9 +1,23 @@
-//! One transactional service behind all fixed MCP tools and Monty host callbacks.
+//! Typed feature services with application controllers and explicitly shared execution context.
 pub use state_contract::ErrorCode;
-mod api;
+mod context;
+mod controllers;
+pub use controllers::Controller;
+mod databases;
+mod files;
+mod functions;
+mod ports;
+pub use ports::{CodeExecutor, SourceProvider, Sources};
+mod namespaces;
+pub use context::Context;
+pub use databases::Databases;
+pub use execution::Execution;
+pub use files::Files;
+pub use functions::Functions;
+pub use namespaces::Namespaces;
 mod discovery;
 mod execution;
-pub use discovery::Discovery;
+pub use discovery::{Discovery, DiscoveryService};
 mod hosts;
 
 mod host_tools;
@@ -14,15 +28,14 @@ mod runtime;
 mod schemas;
 mod selectors;
 
-pub use runtime::{EmbeddedBackend, RuntimeBackend};
+pub use runtime::{EmbeddedBackend, Runtime, RuntimeBackend};
 pub use schemas::tool_definitions;
 use state_contract::operations::Operation;
 use state_contract::operations::{DatabaseAction, FileAction, FunctionAction, NamespaceAction};
-use state_domain::Store;
 pub use state_runtime::{Limits, WorkerConfig};
 
 use serde::{Deserialize, Serialize};
-use std::{fmt, path::Path, sync::Arc, time::Instant};
+use std::{fmt, time::Instant};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -88,46 +101,6 @@ impl Default for CoreLimits {
             max_depth: 16,
             max_result_bytes: 16 * 1024 * 1024,
         }
-    }
-}
-
-#[derive(Clone)]
-pub struct State {
-    store: Store,
-    backend: Arc<dyn RuntimeBackend>,
-    limits: CoreLimits,
-    principal: String,
-}
-impl State {
-    /// Open an embedded service; does not launch another executable.
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Ok(Self::with_backend(
-            Store::open(path)?,
-            Arc::new(EmbeddedBackend),
-        ))
-    }
-    pub fn with_backend(store: Store, backend: Arc<dyn RuntimeBackend>) -> Self {
-        Self {
-            store,
-            backend,
-            limits: CoreLimits::default(),
-            principal: "owner".into(),
-        }
-    }
-    pub fn with_principal(mut self, principal: impl Into<String>) -> Result<Self> {
-        let principal = principal.into();
-        if principal.is_empty() || principal.len() > 256 {
-            return Err(Error::invalid("principal must contain 1..256 bytes"));
-        }
-        self.principal = principal;
-        Ok(self)
-    }
-    pub fn with_limits(mut self, limits: CoreLimits) -> Self {
-        self.limits = limits;
-        self
-    }
-    pub fn store(&self) -> &Store {
-        &self.store
     }
 }
 

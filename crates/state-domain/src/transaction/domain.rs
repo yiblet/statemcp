@@ -139,13 +139,21 @@ impl Transaction {
     }
     /// Publish a Python function by specifying namespace, name, file, and symbol. First write the source with fs.write and create any databases it needs. Arguments supplied to call become keyword arguments to the Python symbol; its return value must be JSON-compatible. Input/output schemas validate calls. Functions can access all files, databases, and functions in their own namespace only. Source bytes are pinned at publication. Returns name, version, and published status, plus the committed revision for direct calls.
     /// Effects are staged; an error aborts this transaction. Publish with `commit`.
-    pub fn declare_function(&mut self, input: &FunctionDeclareInput) -> Result<FunctionPublished> {
-        self.operation(|tx| tx.declare_function_inner(input))
+    pub fn declare_function(
+        &mut self,
+        input: &FunctionDeclareInput,
+        sources: FunctionSources,
+    ) -> Result<FunctionPublished> {
+        self.operation(|tx| tx.declare_function_inner(input, sources))
     }
     /// Publish a new function declaration for namespace and name using the current contents of file and its Python symbol. Supply the complete declaration. Functions retain full access to their own namespace only. Use expected_version to reject a stale update. Returns the published function version; later source-file edits do not affect this version.
     /// Effects are staged; an error aborts this transaction. Publish with `commit`.
-    pub fn update_function(&mut self, input: &FunctionUpdateInput) -> Result<FunctionPublished> {
-        self.operation(|tx| tx.update_function_inner(input))
+    pub fn update_function(
+        &mut self,
+        input: &FunctionUpdateInput,
+        sources: FunctionSources,
+    ) -> Result<FunctionPublished> {
+        self.operation(|tx| tx.update_function_inner(input, sources))
     }
 
     pub(super) fn staged_namespace(&self, key: &str) -> Result<&crate::model::Namespace> {
@@ -752,6 +760,7 @@ impl Transaction {
     fn declare_function_inner(
         &mut self,
         input: &FunctionDeclareInput,
+        sources: FunctionSources,
     ) -> Result<FunctionPublished> {
         self.publish_function(
             &input.namespace,
@@ -763,9 +772,14 @@ impl Transaction {
             input.output_schema.as_ref(),
             input.expected_revision.as_deref(),
             input.expected_version.as_deref(),
+            sources,
         )
     }
-    fn update_function_inner(&mut self, input: &FunctionUpdateInput) -> Result<FunctionPublished> {
+    fn update_function_inner(
+        &mut self,
+        input: &FunctionUpdateInput,
+        sources: FunctionSources,
+    ) -> Result<FunctionPublished> {
         self.publish_function(
             &input.namespace,
             &input.name,
@@ -776,6 +790,7 @@ impl Transaction {
             input.output_schema.as_ref(),
             input.expected_revision.as_deref(),
             input.expected_version.as_deref(),
+            sources,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -790,6 +805,7 @@ impl Transaction {
         output_schema: Option<&EndpointSchema>,
         revision: Option<&str>,
         version: Option<&str>,
+        sources: FunctionSources,
     ) -> Result<FunctionPublished> {
         let key = self.namespace_for_change(namespace, revision)?;
         let function_name = name(function_name)?;
@@ -814,8 +830,50 @@ impl Transaction {
             .get(&file)
             .cloned()
             .ok_or_else(|| Error::new(crate::ErrorCode::NotFound, "source file does not exist"))?;
-        let source = String::from_utf8(self.bytes(&source_hash)?)
-            .map_err(|_| Error::invalid("function source must be UTF-8"))?;
+        // Publication consumes exactly the snapshot validated by the runtime.
+        if hash(sources.source.as_bytes()) != source_hash {
+            return Err(Error::invalid(
+                "validated source differs from the transaction snapshot",
+            ));
+        }
+        let expected_modules = &self.staged_namespace(&key)?.manifest.files;
+        let mut module_count = 0usize;
+        let mut module_bytes = 0usize;
+        for (path, hash_value) in expected_modules {
+            if !path.ends_with(".py") {
+                continue;
+            }
+            module_count += 1;
+            let module = sources
+                .modules
+                .get(path)
+                .ok_or_else(|| Error::invalid("validated module snapshot is incomplete"))?;
+            if hash(module.as_bytes()) != *hash_value {
+                return Err(Error::invalid(
+                    "validated module differs from the transaction snapshot",
+                ));
+            }
+            module_bytes = module_bytes
+                .checked_add(path.len())
+                .and_then(|size| size.checked_add(module.len()))
+                .ok_or_else(|| {
+                    Error::new(
+                        crate::ErrorCode::LimitExceeded,
+                        "module source byte limit exceeded",
+                    )
+                })?;
+        }
+        if module_count != sources.modules.len() {
+            return Err(Error::invalid(
+                "validated module snapshot contains foreign modules",
+            ));
+        }
+        if module_bytes > 1024 * 1024 {
+            return Err(Error::new(
+                crate::ErrorCode::LimitExceeded,
+                "module source byte limit exceeded",
+            ));
+        }
         if symbol.is_empty() {
             return Err(Error::invalid("symbol must be a nonempty string"));
         }
@@ -826,8 +884,8 @@ impl Transaction {
             description: description.map(str::to_owned),
             input_schema: input_schema.cloned(),
             output_schema: output_schema.cloned(),
-            modules: self.python_sources(&key, 1024 * 1024)?,
-            source,
+            modules: sources.modules,
+            source: sources.source,
             source_hash,
             abi_version: 1,
             version: String::new(),

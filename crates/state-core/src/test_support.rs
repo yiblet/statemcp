@@ -7,7 +7,7 @@ pub trait ToolCalls {
     fn tool(&self, name: &str, arguments: Value) -> crate::Result<Value>;
     fn tool_as(&self, principal: &str, name: &str, arguments: Value) -> crate::Result<Value>;
 }
-impl ToolCalls for crate::State {
+impl ToolCalls for crate::Controller {
     fn tool_as(&self, principal: &str, name: &str, arguments: Value) -> crate::Result<Value> {
         self.clone()
             .with_principal(principal)?
@@ -148,15 +148,15 @@ impl ToolCalls for crate::State {
     }
 }
 
-pub fn memory_store(fs: &state_fs::MemoryFs) -> crate::Result<crate::Store> {
+pub fn memory_store(fs: &state_fs::MemoryFs) -> crate::Result<state_domain::Store> {
     let backing = state_store::Store::builder()
         .with_fs(fs.clone())
         .open("/state")
         .map_err(state_domain::Error::from)?;
-    Ok(crate::Store::from_storage(backing)?)
+    Ok(state_domain::Store::from_storage(backing)?)
 }
-pub fn memory_state(fs: &state_fs::MemoryFs) -> crate::Result<crate::State> {
-    Ok(crate::State::with_backend(
+pub fn memory_controller(fs: &state_fs::MemoryFs) -> crate::Result<crate::Controller> {
+    Ok(crate::Controller::with_backend(
         memory_store(fs)?,
         std::sync::Arc::new(crate::EmbeddedBackend),
     ))

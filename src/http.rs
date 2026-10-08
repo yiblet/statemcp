@@ -1,5 +1,5 @@
 //! Streamable HTTP via the official MCP SDK, with optional bearer authentication.
-use crate::{Server, State, protocol::MAX_FRAME_BYTES};
+use crate::{Controller, Server, protocol::MAX_FRAME_BYTES};
 use anyhow::{Result, bail};
 use axum::{
     Json, Router,
@@ -117,7 +117,7 @@ struct HealthResponse {
     status: &'static str,
 }
 
-pub fn router(state: State, options: HttpOptions) -> Router {
+pub fn router(state: Controller, options: HttpOptions) -> Router {
     let server = Server::new(state);
     let service = StreamableHttpService::new(
         move || Ok(server.clone()),
@@ -152,7 +152,7 @@ pub fn router(state: State, options: HttpOptions) -> Router {
 
 pub async fn serve(
     listener: tokio::net::TcpListener,
-    state: State,
+    state: Controller,
     options: HttpOptions,
 ) -> std::io::Result<()> {
     serve_listeners(vec![listener], state, options).await
@@ -161,7 +161,7 @@ pub async fn serve(
 /// Share a single router, session manager, and state across all listeners.
 pub async fn serve_listeners(
     listeners: Vec<tokio::net::TcpListener>,
-    state: State,
+    state: Controller,
     options: HttpOptions,
 ) -> std::io::Result<()> {
     if listeners.is_empty() {

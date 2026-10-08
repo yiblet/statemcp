@@ -4,7 +4,7 @@ pub mod protocol;
 
 pub use protocol::{Server, tool_definitions};
 
-use state_core::{Error as CoreError, State};
+use state_core::{Controller, Error as CoreError};
 
 #[cfg(test)]
 mod acceptance_tests;

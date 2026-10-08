@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use state_core::State;
+use state_core::Controller;
 use std::{
     fs,
     time::{SystemTime, UNIX_EPOCH},
@@ -61,7 +61,7 @@ fn executable_runs_real_worker_callbacks_and_explicit_maintenance() -> anyhow::R
     let responses = replies;
     assert_eq!(responses[1]["result"]["isError"], false, "{}", responses[1]);
     assert_eq!(tool_value(&responses[1]["result"])["value"], 42);
-    let state = State::open(&path).unwrap();
+    let state = Controller::open(&path).unwrap();
     let file = state.read_file(state_contract::file::FsReadInput {
         namespace: "cli".into(),
         path: "/value.txt".into(),
