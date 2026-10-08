@@ -119,8 +119,8 @@ pub fn parse_receipted<T: DeserializeOwned>(
     Ok((input, receipt))
 }
 
-pub fn discovery_mode(value: &str) -> Result<state_core::inputs::DiscoveryMode> {
-    use state_core::inputs::DiscoveryMode;
+pub fn discovery_mode(value: &str) -> Result<state_contract::discovery::DiscoveryMode> {
+    use state_contract::discovery::DiscoveryMode;
     match value {
         "overview" => Ok(DiscoveryMode::Overview),
         "full" => Ok(DiscoveryMode::Full),

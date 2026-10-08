@@ -4,7 +4,9 @@ The namespace and resource domain layer for statemcp, backed by `state-store`. I
 the core must validate declarations before handing them to storage.
 
 ```rust,no_run
-use state_domain::{Store, DescriptionChange, inputs::*};
+use state_domain::Store;
+use state_contract::namespace::{DescriptionChange, NamespaceCreateInput};
+use state_contract::database::{DbCreateInput, DbExecuteInput};
 let backing = state_store::Store::builder().with_fs(state_store::fs::MemoryFs::new()).open("/state")?;
 let store = Store::from_storage(backing)?;
 let mut tx = store.begin()?;

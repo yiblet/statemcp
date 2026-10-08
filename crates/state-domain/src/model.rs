@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Receipt {
     pub request_hash: String,
-    pub result: crate::records::ReceiptResult,
+    pub result: state_contract::execution::ReceiptResult,
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Manifest {
@@ -26,7 +26,7 @@ pub(crate) struct Database {
     #[serde(default)]
     pub(crate) migrations: Vec<Migration>,
 }
-pub(crate) use crate::records::Migration;
+pub(crate) use state_contract::database::Migration;
 #[derive(Clone)]
 pub(crate) struct Namespace {
     pub(crate) id: String,

@@ -1,7 +1,8 @@
 //! Catalog metadata reads and logical publication within an overlay invocation.
-use crate::records::{CommitMetadata, CommitOutcome};
 use crate::{Error, Receipt, Result, identity::id, model::Namespace};
 use rusqlite::{Connection, OptionalExtension, params};
+use state_contract::publication::CommitMetadata;
+use state_contract::publication::CommitOutcome;
 use std::collections::BTreeMap;
 
 pub(crate) fn name() -> Result<state_store::DatabaseName> {

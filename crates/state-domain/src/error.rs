@@ -102,3 +102,9 @@ impl From<state_store::Error> for Error {
         }
     }
 }
+
+impl From<state_contract::ParseError> for Error {
+    fn from(error: state_contract::ParseError) -> Self {
+        Self::new(error.code, error.message)
+    }
+}

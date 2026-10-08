@@ -14,20 +14,20 @@ impl Fixture {
     pub fn new() -> Self {
         Self(state_fs::MemoryFs::new())
     }
-    pub fn store(&self) -> state_core::Result<crate::Store> {
+    pub fn store(&self) -> state_core::Result<state_domain::Store> {
         let backing = state_store::Store::builder()
             .with_fs(self.0.clone())
             .open("/state")
             .map_err(state_domain::Error::from)?;
-        Ok(crate::Store::from_storage(backing)?)
+        Ok(state_domain::Store::from_storage(backing)?)
     }
     pub fn state(&self) -> state_core::Result<State> {
         Ok(State::with_backend(
             self.store()?,
-            std::sync::Arc::new(crate::EmbeddedBackend),
+            std::sync::Arc::new(state_core::EmbeddedBackend),
         ))
     }
-    pub async fn store_async(&self) -> anyhow::Result<crate::Store> {
+    pub async fn store_async(&self) -> anyhow::Result<state_domain::Store> {
         let fixture = self.clone();
         Ok(tokio::task::spawn_blocking(move || fixture.store()).await??)
     }

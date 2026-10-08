@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use statemcp::State;
+use state_core::State;
 use std::{
     fs,
     time::{SystemTime, UNIX_EPOCH},
@@ -62,12 +62,12 @@ fn executable_runs_real_worker_callbacks_and_explicit_maintenance() -> anyhow::R
     assert_eq!(responses[1]["result"]["isError"], false, "{}", responses[1]);
     assert_eq!(tool_value(&responses[1]["result"])["value"], 42);
     let state = State::open(&path).unwrap();
-    let file = state.read_file(state_core::inputs::FsReadInput {
+    let file = state.read_file(state_contract::file::FsReadInput {
         namespace: "cli".into(),
         path: "/value.txt".into(),
     })?;
     assert!(
-        matches!(file, state_core::records::FileContents::Text { text, .. } if text == "persisted")
+        matches!(file, state_contract::file::FileContents::Text { text, .. } if text == "persisted")
     );
     drop(state);
     let maintenance = Command::new(env!("CARGO_BIN_EXE_statemcp"))

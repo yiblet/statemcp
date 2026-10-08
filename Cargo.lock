@@ -2784,7 +2784,10 @@ dependencies = [
 name = "state-contract"
 version = "0.1.0"
 dependencies = [
+ "schemars",
  "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -2792,6 +2795,7 @@ name = "state-core"
 version = "0.1.0"
 dependencies = [
  "jsonschema",
+ "schemars",
  "serde",
  "serde_json",
  "sha2",
@@ -2867,6 +2871,7 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "state-contract",
  "state-core",
  "state-domain",
  "state-fs",

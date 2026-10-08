@@ -1,9 +1,7 @@
 use super::common::{self, Directory};
 use serde_json::json;
-use statemcp::{
-    State,
-    http::{HttpOptions, router},
-};
+use state_core::State;
+use statemcp::http::{HttpOptions, router};
 use std::time::Duration;
 
 #[tokio::test]

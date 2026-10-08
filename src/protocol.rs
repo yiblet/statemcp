@@ -10,7 +10,7 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 use serde::Serialize;
-use state_core::inputs::*;
+use state_contract::{database::*, discovery::*, execution::*, file::*, function::*, namespace::*};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 

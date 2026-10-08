@@ -321,7 +321,7 @@ async fn authenticated_http_sessions_execute_and_share_persistent_state() {
     drop(app);
     let reopened = directory.state_async().await.unwrap();
     let file = tokio::task::spawn_blocking(move || {
-        reopened.read_file(state_core::inputs::FsReadInput {
+        reopened.read_file(state_contract::file::FsReadInput {
             namespace: "http".into(),
             path: "/saved".into(),
         })
@@ -330,7 +330,7 @@ async fn authenticated_http_sessions_execute_and_share_persistent_state() {
     .unwrap()
     .unwrap();
     assert!(
-        matches!(file, state_core::records::FileContents::Text { text, .. } if text == "persisted")
+        matches!(file, state_contract::file::FileContents::Text { text, .. } if text == "persisted")
     );
 }
 
@@ -404,13 +404,13 @@ async fn http_without_bearer_is_optional_and_protocol_headers_are_checked() {
 }
 
 struct SlowBackend;
-impl crate::RuntimeBackend for SlowBackend {
+impl state_core::RuntimeBackend for SlowBackend {
     fn execute(
         &self,
         _: &str,
         _: &state_runtime::ModuleSources,
         _: Value,
-        _: &crate::Limits,
+        _: &state_runtime::Limits,
         _: &mut state_runtime::HostCallback<'_>,
     ) -> Result<state_runtime::RunResult, state_runtime::RuntimeError> {
         std::thread::sleep(Duration::from_millis(250));
@@ -425,7 +425,7 @@ impl crate::RuntimeBackend for SlowBackend {
         _: &state_runtime::ModuleSources,
         _: &str,
         _: Map<String, Value>,
-        _: &crate::Limits,
+        _: &state_runtime::Limits,
         _: &mut state_runtime::HostCallback<'_>,
     ) -> Result<state_runtime::RunResult, state_runtime::RuntimeError> {
         unreachable!()
@@ -435,7 +435,7 @@ impl crate::RuntimeBackend for SlowBackend {
         _: &str,
         _: &state_runtime::ModuleSources,
         _: &str,
-        _: &crate::Limits,
+        _: &state_runtime::Limits,
     ) -> Result<(), state_runtime::RuntimeError> {
         unreachable!()
     }

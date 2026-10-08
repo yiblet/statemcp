@@ -3,13 +3,12 @@ use super::Transaction;
 use crate::{
     Error, FunctionDeclaration, Result,
     identity::{hash, id},
-    inputs::*,
     model::Database,
-    records::*,
     sql,
     validation::{name, virtual_path},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
+use state_contract::{database::*, file::*, function::*, namespace::*};
 use std::collections::{BTreeMap, BTreeSet};
 
 impl Transaction {

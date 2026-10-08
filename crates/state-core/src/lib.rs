@@ -5,7 +5,7 @@ mod discovery;
 mod execution;
 pub use discovery::Discovery;
 mod hosts;
-pub use state_domain::{inputs, records};
+
 mod host_tools;
 mod receipt;
 pub use receipt::ReceiptIdentity;
@@ -16,9 +16,9 @@ mod selectors;
 
 pub use runtime::{EmbeddedBackend, RuntimeBackend};
 pub use schemas::tool_definitions;
-pub use state_domain::{
-    DatabaseAction, FileAction, FunctionAction, NamespaceAction, Operation, Store, Tool,
-};
+use state_contract::operations::Operation;
+use state_contract::operations::{DatabaseAction, FileAction, FunctionAction, NamespaceAction};
+use state_domain::Store;
 pub use state_runtime::{Limits, WorkerConfig};
 
 use serde::{Deserialize, Serialize};
@@ -157,3 +157,9 @@ mod budgets_receipts_tests;
 mod service_tests;
 #[cfg(test)]
 mod test_support;
+
+impl From<state_contract::ParseError> for Error {
+    fn from(error: state_contract::ParseError) -> Self {
+        Self::new(error.code, error.message)
+    }
+}

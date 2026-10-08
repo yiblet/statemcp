@@ -41,7 +41,7 @@ impl Transaction {
         principal: &str,
         key: &str,
         request_hash: &str,
-        result: crate::records::ReceiptResult,
+        result: state_contract::execution::ReceiptResult,
     ) -> Result<()> {
         if principal.is_empty() || key.is_empty() || key.len() > 256 {
             self.poisoned = true;
@@ -77,7 +77,7 @@ impl Transaction {
         }
         result
     }
-    pub fn commit(self) -> Result<crate::records::CommitOutcome> {
+    pub fn commit(self) -> Result<state_contract::publication::CommitOutcome> {
         if self.poisoned {
             return Err(Error::new(
                 crate::ErrorCode::TransactionAborted,
@@ -86,8 +86,8 @@ impl Transaction {
         }
         let changed = self.namespaces.values().any(|n| n.dirty);
         if !changed && self.receipt.is_none() {
-            return Ok(crate::records::CommitOutcome::Published(
-                crate::records::CommitMetadata {
+            return Ok(state_contract::publication::CommitOutcome::Published(
+                state_contract::publication::CommitMetadata {
                     generation: self.generation,
                     revisions: BTreeMap::new(),
                     changed: false,
@@ -105,7 +105,10 @@ impl Transaction {
                 &self.receipt,
             )?
         };
-        if matches!(outcome, crate::records::CommitOutcome::Published(_)) {
+        if matches!(
+            outcome,
+            state_contract::publication::CommitOutcome::Published(_)
+        ) {
             self.backing.commit()?;
         }
         Ok(outcome)

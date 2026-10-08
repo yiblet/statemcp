@@ -4,7 +4,10 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use cli::{Cli, Command, Storage, ToolCommand};
 use rmcp::{ServiceExt, transport::stdio};
-use statemcp::{Server, State, Store, WorkerConfig, http::HttpOptions};
+use state_core::State;
+use state_domain::Store;
+use state_runtime::WorkerConfig;
+use statemcp::{Server, http::HttpOptions};
 use std::{env, process::ExitCode, sync::Arc};
 use tracing_subscriber::EnvFilter;
 
@@ -35,7 +38,7 @@ fn invoke(tool: ToolCommand) -> Result<ExitCode> {
     let request = match tool.prepare() {
         Ok(request) => request,
         Err(error) => {
-            if let Some(error) = error.downcast_ref::<statemcp::CoreError>() {
+            if let Some(error) = error.downcast_ref::<state_core::Error>() {
                 eprintln!("{}", serde_json::json!({"error": error}));
                 return Ok(ExitCode::FAILURE);
             }

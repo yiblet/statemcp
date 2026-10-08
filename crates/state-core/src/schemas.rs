@@ -107,7 +107,7 @@ pub struct ToolDefinition {
     pub name: String,
     pub description: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub input_schema: Option<state_domain::Schema>,
+    pub input_schema: Option<schemars::Schema>,
 }
 pub(crate) fn typed_tool_definitions(full: bool) -> Vec<ToolDefinition> {
     use crate::{DatabaseAction, FileAction, FunctionAction, NamespaceAction};
@@ -122,7 +122,7 @@ pub(crate) fn typed_tool_definitions(full: bool) -> Vec<ToolDefinition> {
         .map(|operation| ToolDefinition {
             name: operation.public_name(),
             description: tool_description(operation),
-            input_schema: full.then(|| crate::inputs::schema(operation)),
+            input_schema: full.then(|| state_contract::schema::schema(operation)),
         })
         .collect()
 }
@@ -130,7 +130,9 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
     typed_tool_definitions(true)
 }
 
-pub(crate) fn compile(schema: &crate::inputs::EndpointSchema) -> Result<jsonschema::Validator> {
+pub(crate) fn compile(
+    schema: &state_contract::function::EndpointSchema,
+) -> Result<jsonschema::Validator> {
     // The schema library consumes JSON; preserve the typed object/boolean contract until this boundary.
     let schema = serde_json::to_value(schema).map_err(|e| Error::invalid(e.to_string()))?;
     if schema.to_string().len() > 64 * 1024 {
@@ -232,20 +234,20 @@ pub struct HostGuide {
 #[serde(tag = "tool", content = "arguments")]
 pub enum ExampleCall {
     #[serde(rename = "namespace.create")]
-    NamespaceCreate(crate::inputs::NamespaceCreateInput),
+    NamespaceCreate(state_contract::namespace::NamespaceCreateInput),
     #[serde(rename = "db.create")]
-    DbCreate(crate::inputs::DbCreateInput),
+    DbCreate(state_contract::database::DbCreateInput),
     #[serde(rename = "db.execute")]
-    DbExecute(crate::inputs::DbExecuteInput),
+    DbExecute(state_contract::database::DbExecuteInput),
     #[serde(rename = "fs.write")]
-    FsWrite(crate::inputs::FsWriteInput),
+    FsWrite(state_contract::file::FsWriteInput),
     #[serde(rename = "function.declare")]
-    FunctionDeclare(crate::inputs::FunctionDeclareInput),
+    FunctionDeclare(state_contract::function::FunctionDeclareInput),
     #[serde(rename = "call")]
-    Call(crate::inputs::CallInput),
+    Call(state_contract::execution::CallInput),
 }
 fn examples() -> Vec<ExampleCall> {
-    use crate::inputs::*;
+    use state_contract::{database::*, execution::*, file::*, function::*, namespace::*};
     let input_schema = EndpointSchema::Object(Map::from_iter([
         ("type".into(), Value::String("object".into())),
         (
@@ -265,7 +267,7 @@ fn examples() -> Vec<ExampleCall> {
         ("additionalProperties".into(), Value::Bool(false)),
     ]));
     vec![
-        ExampleCall::NamespaceCreate(NamespaceCreateInput { name:"demo".into(), description:state_domain::DescriptionChange::Unchanged }),
+        ExampleCall::NamespaceCreate(NamespaceCreateInput { name:"demo".into(), description:state_contract::namespace::DescriptionChange::Unchanged }),
         ExampleCall::DbCreate(DbCreateInput { namespace:"demo".into(),database:"app".into(),expected_revision:None }),
         ExampleCall::DbExecute(DbExecuteInput { namespace:"demo".into(),database:"app".into(),sql:"CREATE TABLE notes(id INTEGER PRIMARY KEY, text TEXT)".into(),params:None,expected_revision:None }),
         ExampleCall::FsWrite(FsWriteInput::Text(FileTextInput { namespace:"demo".into(),path:"/api.py".into(),text:"def add(text):\n    return db_execute('app', 'INSERT INTO notes(text) VALUES (?) RETURNING id, text', [text])['rows'][0]\n".into(),expected_revision:None })),

@@ -1,6 +1,7 @@
 use crate::test_support as common;
 use serde_json::json;
-use state_core::inputs::{ExecuteInput, FsReadInput};
+use state_contract::execution::ExecuteInput;
+use state_contract::file::FsReadInput;
 
 #[tokio::test]
 async fn embedded_service_dispatches_through_mcp_and_rolls_back_failed_scripts()
@@ -49,7 +50,7 @@ async fn embedded_service_dispatches_through_mcp_and_rolls_back_failed_scripts()
     })
     .await??;
     assert!(
-        matches!(file, state_core::records::FileContents::Text { text, .. } if text == "saved")
+        matches!(file, state_contract::file::FileContents::Text { text, .. } if text == "saved")
     );
     Ok(())
 }
@@ -70,7 +71,7 @@ fn callbacks_publish_and_maintenance_runs_in_memory() -> anyhow::Result<()> {
         path: "/value.txt".into(),
     })?;
     assert!(
-        matches!(file, state_core::records::FileContents::Text { text, .. } if text == "persisted")
+        matches!(file, state_contract::file::FileContents::Text { text, .. } if text == "persisted")
     );
     let report = fixture.store()?.maintenance(0)?;
     assert!(serde_json::to_value(report)?["revisions_removed"].is_number());

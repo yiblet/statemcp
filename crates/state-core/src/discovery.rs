@@ -2,10 +2,10 @@
 use crate::{
     Error, Result,
     execution::Root,
-    inputs::{DescribeInput, DiscoveryMode},
     schemas::{self, RuntimeGuide, ToolDefinition},
 };
 use serde::Serialize;
+use state_contract::discovery::*;
 
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
@@ -30,8 +30,8 @@ pub struct EndpointContract {
     name: String,
     version: String,
     description: Option<String>,
-    input_schema: Option<crate::inputs::EndpointSchema>,
-    output_schema: Option<crate::inputs::EndpointSchema>,
+    input_schema: Option<state_contract::function::EndpointSchema>,
+    output_schema: Option<state_contract::function::EndpointSchema>,
 }
 #[derive(Debug, Serialize)]
 pub struct Catalog {

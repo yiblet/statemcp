@@ -5,8 +5,9 @@ use clap::{Args, Parser, Subcommand};
 
 use serde::Serialize;
 use serde_json::{Map, Value};
-use state_core::records::SqlCell;
-use state_core::{ReceiptIdentity, inputs::*};
+use state_contract::database::SqlCell;
+use state_contract::{database::*, discovery::*, execution::*, file::*, function::*, namespace::*};
+use state_core::ReceiptIdentity;
 use std::{net::SocketAddr, path::PathBuf};
 
 #[derive(Parser)]
@@ -914,7 +915,7 @@ pub enum PreparedCommand {
     Describe(DescribeInput),
 }
 impl PreparedCommand {
-    pub fn run(self, state: &statemcp::State) -> state_core::Result<String> {
+    pub fn run(self, state: &state_core::State) -> state_core::Result<String> {
         fn encode(value: impl Serialize) -> state_core::Result<String> {
             serde_json::to_string(&value).map_err(|e| {
                 state_core::Error::new(state_core::ErrorCode::InvalidArgument, e.to_string())

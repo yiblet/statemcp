@@ -1,4 +1,4 @@
-//! Error categories shared by the storage, service, and runtime contracts.
+//! Typed capability contracts shared by services, runtimes, storage adapters, and transports.
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -52,3 +52,40 @@ impl std::fmt::Display for ErrorCode {
         f.write_str(self.as_str())
     }
 }
+
+pub mod database;
+pub mod discovery;
+pub mod execution;
+pub mod file;
+pub mod function;
+pub mod namespace;
+pub mod operations;
+mod path;
+pub mod publication;
+pub mod schema;
+pub use path::{PathComponent, VirtualPath};
+
+/// A malformed contract value, independent of storage or service implementations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParseError {
+    pub code: ErrorCode,
+    pub message: String,
+}
+impl ParseError {
+    /// Construct a structured error for a contract that cannot be parsed.
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+    fn invalid(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::InvalidArgument, message)
+    }
+}
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+impl std::error::Error for ParseError {}

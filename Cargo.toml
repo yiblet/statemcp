@@ -15,6 +15,8 @@ subtle = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 state-core = { path = "crates/state-core" }
+state-domain = { path = "crates/state-domain" }
+state-contract = { path = "crates/state-contract" }
 state-runtime = { path = "crates/state-runtime" }
 rmcp = { version = "3.5.0", default-features = false, features = ["server", "macros", "schemars", "transport-io", "transport-streamable-http-server"] }
 anyhow = "1.0.104"
@@ -30,7 +32,6 @@ exclude = ["vendor/monty"]
 tempfile = "3"
 state-fs = { path = "crates/state-fs" }
 state-store = { path = "crates/state-store" }
-state-domain = { path = "crates/state-domain" }
 rmcp = { version = "3.5.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 tower = { version = "0.5", features = ["util"] }
 

@@ -2,16 +2,16 @@ use super::{Cli, Command};
 use clap::Parser;
 use serde_json::{Value, json};
 
-struct Workspace(statemcp::State);
+struct Workspace(state_core::State);
 impl Workspace {
     fn new() -> Self {
         let backing = state_store::Store::builder()
             .with_fs(state_fs::MemoryFs::new())
             .open("/state")
             .unwrap();
-        Self(statemcp::State::with_backend(
-            statemcp::Store::from_storage(backing).unwrap(),
-            std::sync::Arc::new(statemcp::EmbeddedBackend),
+        Self(state_core::State::with_backend(
+            state_domain::Store::from_storage(backing).unwrap(),
+            std::sync::Arc::new(state_core::EmbeddedBackend),
         ))
     }
     fn run(&self, tool: &str, arguments: &[&str]) -> anyhow::Result<String> {

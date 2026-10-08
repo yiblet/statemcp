@@ -5,8 +5,9 @@ inputs, return concrete records, and compose storage and Monty in one transactio
 No Python installation is needed.
 
 ```rust,no_run
-use state_core::{State, inputs::NamespaceCreateInput};
-use state_domain::DescriptionChange;
+use state_core::State;
+use state_contract::namespace::NamespaceCreateInput;
+use state_contract::namespace::DescriptionChange;
 let state = State::open("./state")?;
 let namespace = state.create_namespace(NamespaceCreateInput {
     name: "notes".into(), description: DescriptionChange::Set("Shared notes".into()),

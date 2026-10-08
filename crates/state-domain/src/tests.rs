@@ -1,8 +1,6 @@
-use crate::{
-    inputs::*,
-    records::{CommitOutcome, ReceiptResult, SqlCell},
-    *,
-};
+use crate::*;
+use state_contract::VirtualPath;
+use state_contract::{database::*, execution::*, namespace::*, publication::*};
 use state_store::fs::{FileSystem, MemoryFs};
 use std::path::Path;
 

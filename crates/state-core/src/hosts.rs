@@ -1,10 +1,10 @@
 //! Decode Python values at the host boundary and pass concrete inputs to domain operations.
-use crate::{
-    Error, Result, bounded, execution::Root, inputs::*, policy::Access, selectors::HostFunction,
-};
+use crate::{Error, Result, bounded, execution::Root, policy::Access, selectors::HostFunction};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
-use state_domain::records::{FileContents, SqlCell};
+use state_contract::database::SqlCell;
+use state_contract::file::FileContents;
+use state_contract::{database::*, file::*};
 
 /// Consume external Python arguments in signature order, retaining typed field values.
 struct HostArguments {

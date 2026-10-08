@@ -1,5 +1,4 @@
 //! Application connections never open or attach the catalog.
-use crate::records::{BinaryCell, IntegerCell, SqlCell};
 use crate::{Error, Result};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rusqlite::{
@@ -8,6 +7,9 @@ use rusqlite::{
     limits::Limit,
     types::{Value as SqlValue, ValueRef},
 };
+use state_contract::database::BinaryCell;
+use state_contract::database::IntegerCell;
+use state_contract::database::SqlCell;
 use std::time::{Duration, Instant};
 
 pub(crate) const MAX_RESULT: usize = 1024 * 1024;
@@ -196,7 +198,7 @@ pub(crate) fn run_typed(
     sql: &str,
     params: &[SqlCell],
     read_only: bool,
-) -> Result<crate::records::SqlResult> {
+) -> Result<state_contract::database::SqlResult> {
     reset_deadline(conn)?;
     if sql.len() > MAX_RESULT {
         return Err(Error::limit("SQL exceeds 1 MiB"));
@@ -225,7 +227,7 @@ pub(crate) fn run_typed(
         }
         rows.push(cells);
     }
-    Ok(crate::records::SqlResult {
+    Ok(state_contract::database::SqlResult {
         columns,
         rows,
         rows_affected: conn.total_changes() - before,
@@ -241,8 +243,13 @@ pub(crate) fn batch(conn: &Connection, sql: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn inspect_typed(conn: &Connection) -> Result<crate::records::SchemaInspection> {
-    use crate::records::{IndexInspection, SchemaInspection, SchemaObjectKind, TableInspection};
+pub(crate) fn inspect_typed(
+    conn: &Connection,
+) -> Result<state_contract::database::SchemaInspection> {
+    use state_contract::database::IndexInspection;
+    use state_contract::database::SchemaInspection;
+    use state_contract::database::SchemaObjectKind;
+    use state_contract::database::TableInspection;
     fn text(value: &SqlCell) -> Result<&str> {
         value.as_text().ok_or_else(|| {
             Error::new(

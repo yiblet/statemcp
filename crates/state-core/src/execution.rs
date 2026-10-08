@@ -44,7 +44,7 @@ impl Root {
         Ok(())
     }
     pub(crate) fn check_file_readable(&mut self, namespace: &str, path: &str) -> Result<()> {
-        let readable = self.tx.read_file(&crate::inputs::FsReadInput {
+        let readable = self.tx.read_file(&state_contract::file::FsReadInput {
             namespace: namespace.to_owned(),
             path: path.to_owned(),
         })?;
@@ -61,17 +61,17 @@ impl Root {
         namespace: &str,
         file: &str,
         symbol: &str,
-        input: &mut Option<crate::inputs::EndpointSchema>,
-        output: &mut Option<crate::inputs::EndpointSchema>,
+        input: &mut Option<state_contract::function::EndpointSchema>,
+        output: &mut Option<state_contract::function::EndpointSchema>,
     ) -> Result<()> {
         let input = input.get_or_insert_with(|| {
-            crate::inputs::EndpointSchema::Object(serde_json::Map::from_iter([(
+            state_contract::function::EndpointSchema::Object(serde_json::Map::from_iter([(
                 "type".into(),
                 Value::String("object".into()),
             )]))
         });
         schemas::compile(input)?;
-        let output = output.get_or_insert(crate::inputs::EndpointSchema::Boolean(true));
+        let output = output.get_or_insert(state_contract::function::EndpointSchema::Boolean(true));
         schemas::compile(output)?;
         let source = self.tx.file_text(namespace, file)?;
         let limits = remaining(self.start, &self.limits.runtime)?;

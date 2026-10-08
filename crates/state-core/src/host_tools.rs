@@ -1,12 +1,8 @@
 //! Decode the dynamic Python mcp tool name at its boundary; execute using concrete inputs and results.
-use crate::{
-    Error, Result,
-    execution::Root,
-    inputs::{self, *},
-    policy::Access,
-};
+use crate::{Error, Result, execution::Root, policy::Access};
 use serde::Serialize;
 use serde_json::Value;
+use state_contract::{database::*, discovery::*, execution::*, file::*, function::*, namespace::*};
 
 fn encode(value: impl Serialize) -> Result<Value> {
     serde_json::to_value(value).map_err(|e| Error::invalid(e.to_string()))
@@ -49,8 +45,10 @@ impl Root {
             HostTool::FsWrite(input) => {
                 let result = self.tx.write_file(&input)?;
                 let (namespace, path) = match &input {
-                    inputs::FsWriteInput::Text(file) => (&file.namespace, &file.path),
-                    inputs::FsWriteInput::Binary(file) => (&file.namespace, &file.path),
+                    state_contract::file::FsWriteInput::Text(file) => (&file.namespace, &file.path),
+                    state_contract::file::FsWriteInput::Binary(file) => {
+                        (&file.namespace, &file.path)
+                    }
                 };
                 self.check_file_readable(namespace, path)?;
                 encode(result)?
@@ -58,8 +56,10 @@ impl Root {
             HostTool::FsAppend(input) => {
                 let result = self.tx.append_file(&input)?;
                 let (namespace, path) = match &input.0 {
-                    inputs::FsWriteInput::Text(file) => (&file.namespace, &file.path),
-                    inputs::FsWriteInput::Binary(file) => (&file.namespace, &file.path),
+                    state_contract::file::FsWriteInput::Text(file) => (&file.namespace, &file.path),
+                    state_contract::file::FsWriteInput::Binary(file) => {
+                        (&file.namespace, &file.path)
+                    }
                 };
                 self.check_file_readable(namespace, path)?;
                 encode(result)?
@@ -140,12 +140,20 @@ impl Scope for HostTool {
             Self::FsStat(input) => Target::Namespace(&input.namespace),
             Self::FsList(input) => Target::Namespace(&input.namespace),
             Self::FsWrite(input) => match input {
-                inputs::FsWriteInput::Text(input) => Target::Namespace(&input.namespace),
-                inputs::FsWriteInput::Binary(input) => Target::Namespace(&input.namespace),
+                state_contract::file::FsWriteInput::Text(input) => {
+                    Target::Namespace(&input.namespace)
+                }
+                state_contract::file::FsWriteInput::Binary(input) => {
+                    Target::Namespace(&input.namespace)
+                }
             },
             Self::FsAppend(input) => match &input.0 {
-                inputs::FsWriteInput::Text(input) => Target::Namespace(&input.namespace),
-                inputs::FsWriteInput::Binary(input) => Target::Namespace(&input.namespace),
+                state_contract::file::FsWriteInput::Text(input) => {
+                    Target::Namespace(&input.namespace)
+                }
+                state_contract::file::FsWriteInput::Binary(input) => {
+                    Target::Namespace(&input.namespace)
+                }
             },
             Self::FsMove(input) => Target::Namespace(&input.namespace),
             Self::FsCopy(input) => Target::Namespace(&input.namespace),
@@ -169,7 +177,9 @@ impl Scope for HostTool {
                 .as_deref()
                 .map_or(Target::Discovery, Target::Namespace),
             Self::Describe(input) => match input {
-                inputs::DescribeInput::Namespace(input) => Target::Namespace(&input.namespace),
+                state_contract::discovery::DescribeInput::Namespace(input) => {
+                    Target::Namespace(&input.namespace)
+                }
                 _ => Target::Discovery,
             },
         }
@@ -191,12 +201,20 @@ impl Scope for HostTool {
             Self::FsStat(input) => resolve(&mut input.namespace, namespace),
             Self::FsList(input) => resolve(&mut input.namespace, namespace),
             Self::FsWrite(input) => match input {
-                inputs::FsWriteInput::Text(input) => resolve(&mut input.namespace, namespace),
-                inputs::FsWriteInput::Binary(input) => resolve(&mut input.namespace, namespace),
+                state_contract::file::FsWriteInput::Text(input) => {
+                    resolve(&mut input.namespace, namespace)
+                }
+                state_contract::file::FsWriteInput::Binary(input) => {
+                    resolve(&mut input.namespace, namespace)
+                }
             },
             Self::FsAppend(input) => match &mut input.0 {
-                inputs::FsWriteInput::Text(input) => resolve(&mut input.namespace, namespace),
-                inputs::FsWriteInput::Binary(input) => resolve(&mut input.namespace, namespace),
+                state_contract::file::FsWriteInput::Text(input) => {
+                    resolve(&mut input.namespace, namespace)
+                }
+                state_contract::file::FsWriteInput::Binary(input) => {
+                    resolve(&mut input.namespace, namespace)
+                }
             },
             Self::FsMove(input) => resolve(&mut input.namespace, namespace),
             Self::FsCopy(input) => resolve(&mut input.namespace, namespace),
@@ -223,7 +241,7 @@ impl Scope for HostTool {
                 }
             }
             Self::Describe(input) => {
-                if let inputs::DescribeInput::Namespace(input) = input {
+                if let state_contract::discovery::DescribeInput::Namespace(input) = input {
                     resolve(&mut input.namespace, namespace);
                 }
             }
@@ -274,131 +292,153 @@ enum HostTool {
 }
 impl HostTool {
     fn parse(name: &str, arguments: Value) -> Result<Self> {
-        Ok(match state_domain::Operation::from_public_name(name)? {
-            state_domain::Operation::Namespace(state_domain::NamespaceAction::Create) => {
-                Self::NamespaceCreate(
+        Ok(
+            match state_contract::operations::Operation::from_public_name(name)? {
+                state_contract::operations::Operation::Namespace(
+                    state_contract::operations::NamespaceAction::Create,
+                ) => Self::NamespaceCreate(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::Namespace(state_domain::NamespaceAction::List) => {
-                Self::NamespaceList(
+                ),
+                state_contract::operations::Operation::Namespace(
+                    state_contract::operations::NamespaceAction::List,
+                ) => Self::NamespaceList(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::Namespace(state_domain::NamespaceAction::Get) => {
-                Self::NamespaceGet(
+                ),
+                state_contract::operations::Operation::Namespace(
+                    state_contract::operations::NamespaceAction::Get,
+                ) => Self::NamespaceGet(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::Namespace(state_domain::NamespaceAction::Update) => {
-                Self::NamespaceUpdate(
+                ),
+                state_contract::operations::Operation::Namespace(
+                    state_contract::operations::NamespaceAction::Update,
+                ) => Self::NamespaceUpdate(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::Namespace(state_domain::NamespaceAction::Copy) => {
-                Self::NamespaceCopy(
+                ),
+                state_contract::operations::Operation::Namespace(
+                    state_contract::operations::NamespaceAction::Copy,
+                ) => Self::NamespaceCopy(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::Namespace(state_domain::NamespaceAction::Delete) => {
-                Self::NamespaceDelete(
+                ),
+                state_contract::operations::Operation::Namespace(
+                    state_contract::operations::NamespaceAction::Delete,
+                ) => Self::NamespaceDelete(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::File(state_domain::FileAction::Read) => Self::FsRead(
-                serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-            ),
-            state_domain::Operation::File(state_domain::FileAction::Stat) => Self::FsStat(
-                serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-            ),
-            state_domain::Operation::File(state_domain::FileAction::List) => Self::FsList(
-                serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-            ),
-            state_domain::Operation::File(state_domain::FileAction::Write) => Self::FsWrite(
-                serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-            ),
-            state_domain::Operation::File(state_domain::FileAction::Append) => Self::FsAppend(
-                serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-            ),
-            state_domain::Operation::File(state_domain::FileAction::Move) => Self::FsMove(
-                serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-            ),
-            state_domain::Operation::File(state_domain::FileAction::Copy) => Self::FsCopy(
-                serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-            ),
-            state_domain::Operation::File(state_domain::FileAction::Delete) => Self::FsDelete(
-                serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-            ),
-            state_domain::Operation::Database(state_domain::DatabaseAction::List) => Self::DbList(
-                serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-            ),
-            state_domain::Operation::Database(state_domain::DatabaseAction::Create) => {
-                Self::DbCreate(
+                ),
+                state_contract::operations::Operation::File(
+                    state_contract::operations::FileAction::Read,
+                ) => Self::FsRead(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::Database(state_domain::DatabaseAction::Drop) => Self::DbDrop(
-                serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-            ),
-            state_domain::Operation::Database(state_domain::DatabaseAction::Query) => {
-                Self::DbQuery(
+                ),
+                state_contract::operations::Operation::File(
+                    state_contract::operations::FileAction::Stat,
+                ) => Self::FsStat(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::Database(state_domain::DatabaseAction::Execute) => {
-                Self::DbExecute(
+                ),
+                state_contract::operations::Operation::File(
+                    state_contract::operations::FileAction::List,
+                ) => Self::FsList(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::Database(state_domain::DatabaseAction::Inspect) => {
-                Self::DbInspect(
+                ),
+                state_contract::operations::Operation::File(
+                    state_contract::operations::FileAction::Write,
+                ) => Self::FsWrite(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::Database(state_domain::DatabaseAction::Migrations) => {
-                Self::DbMigrations(
+                ),
+                state_contract::operations::Operation::File(
+                    state_contract::operations::FileAction::Append,
+                ) => Self::FsAppend(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::Database(state_domain::DatabaseAction::Migrate) => {
-                Self::DbMigrate(
+                ),
+                state_contract::operations::Operation::File(
+                    state_contract::operations::FileAction::Move,
+                ) => Self::FsMove(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::Function(state_domain::FunctionAction::List) => {
-                Self::FunctionList(
+                ),
+                state_contract::operations::Operation::File(
+                    state_contract::operations::FileAction::Copy,
+                ) => Self::FsCopy(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::Function(state_domain::FunctionAction::Get) => {
-                Self::FunctionGet(
+                ),
+                state_contract::operations::Operation::File(
+                    state_contract::operations::FileAction::Delete,
+                ) => Self::FsDelete(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::Function(state_domain::FunctionAction::Declare) => {
-                Self::FunctionDeclare(
+                ),
+                state_contract::operations::Operation::Database(
+                    state_contract::operations::DatabaseAction::List,
+                ) => Self::DbList(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::Function(state_domain::FunctionAction::Update) => {
-                Self::FunctionUpdate(
+                ),
+                state_contract::operations::Operation::Database(
+                    state_contract::operations::DatabaseAction::Create,
+                ) => Self::DbCreate(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::Function(state_domain::FunctionAction::Remove) => {
-                Self::FunctionRemove(
+                ),
+                state_contract::operations::Operation::Database(
+                    state_contract::operations::DatabaseAction::Drop,
+                ) => Self::DbDrop(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-                )
-            }
-            state_domain::Operation::Call => Self::Call(
-                serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-            ),
-            state_domain::Operation::Execute => Self::Execute(
-                serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-            ),
-            state_domain::Operation::Describe => Self::Describe(
-                serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
-            ),
-        })
+                ),
+                state_contract::operations::Operation::Database(
+                    state_contract::operations::DatabaseAction::Query,
+                ) => Self::DbQuery(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Database(
+                    state_contract::operations::DatabaseAction::Execute,
+                ) => Self::DbExecute(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Database(
+                    state_contract::operations::DatabaseAction::Inspect,
+                ) => Self::DbInspect(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Database(
+                    state_contract::operations::DatabaseAction::Migrations,
+                ) => Self::DbMigrations(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Database(
+                    state_contract::operations::DatabaseAction::Migrate,
+                ) => Self::DbMigrate(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Function(
+                    state_contract::operations::FunctionAction::List,
+                ) => Self::FunctionList(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Function(
+                    state_contract::operations::FunctionAction::Get,
+                ) => Self::FunctionGet(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Function(
+                    state_contract::operations::FunctionAction::Declare,
+                ) => Self::FunctionDeclare(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Function(
+                    state_contract::operations::FunctionAction::Update,
+                ) => Self::FunctionUpdate(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Function(
+                    state_contract::operations::FunctionAction::Remove,
+                ) => Self::FunctionRemove(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Call => Self::Call(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Execute => Self::Execute(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Describe => Self::Describe(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+            },
+        )
     }
 }

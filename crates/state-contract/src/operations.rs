@@ -1,5 +1,6 @@
 //! Typed operation identifiers shared by validation, authorization, and storage.
-use crate::{Error, Result};
+use crate::ParseError as Error;
+type Result<T> = std::result::Result<T, Error>;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 

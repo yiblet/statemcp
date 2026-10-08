@@ -1,8 +1,10 @@
 //! Concrete service operations with one transaction per root call.
-use crate::{Error, Result, State, execution::Root, inputs, policy::Access};
+use crate::{Error, Result, State, execution::Root, policy::Access};
 use serde::Serialize;
 use serde_json::Value;
-use state_domain::records::*;
+use state_contract::{
+    database::*, execution::*, file::*, function::*, namespace::*, publication::*,
+};
 
 impl State {
     fn transaction<T: Serialize>(
@@ -85,7 +87,10 @@ impl State {
     }
     /// Get a namespace’s name, description, stable ID, revision, and resource counts.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn get_namespace(&self, input: inputs::NamespaceGetInput) -> Result<NamespaceInfo> {
+    pub fn get_namespace(
+        &self,
+        input: state_contract::namespace::NamespaceGetInput,
+    ) -> Result<NamespaceInfo> {
         self.transaction(|root| Ok(root.tx.get_namespace(&input)?))
             .map(|(result, _)| result)
     }
@@ -93,56 +98,71 @@ impl State {
     /// Runs in one root transaction; failures roll back all nested effects.
     pub fn delete_namespace(
         &self,
-        input: inputs::NamespaceDeleteInput,
+        input: state_contract::namespace::NamespaceDeleteInput,
     ) -> Result<NamespaceDeleted> {
         self.transaction(|root| Ok(root.tx.delete_namespace(&input)?))
             .map(|(result, _)| result)
     }
     /// Read a virtual file as UTF-8 text or base64 for binary data.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn read_file(&self, input: inputs::FsReadInput) -> Result<FileContents> {
+    pub fn read_file(&self, input: state_contract::file::FsReadInput) -> Result<FileContents> {
         self.transaction(|root| Ok(root.tx.read_file(&input)?))
             .map(|(result, _)| result)
     }
     /// Get a virtual file’s metadata or check whether a virtual directory exists.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn stat_file(&self, input: inputs::FsStatInput) -> Result<FileStat> {
+    pub fn stat_file(&self, input: state_contract::file::FsStatInput) -> Result<FileStat> {
         self.transaction(|root| Ok(root.tx.stat_file(&input)?))
             .map(|(result, _)| result)
     }
     /// List files and directories directly beneath a virtual path.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn list_files(&self, input: inputs::FsListInput) -> Result<FileEntries> {
+    pub fn list_files(&self, input: state_contract::file::FsListInput) -> Result<FileEntries> {
         self.transaction(|root| Ok(root.tx.list_files(&input)?))
             .map(|(result, _)| result)
     }
     /// List the named SQLite databases in a namespace.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn list_databases(&self, input: inputs::DbListInput) -> Result<Databases> {
+    pub fn list_databases(
+        &self,
+        input: state_contract::database::DbListInput,
+    ) -> Result<Databases> {
         self.transaction(|root| Ok(root.tx.list_databases(&input)?))
             .map(|(result, _)| result)
     }
     /// Run one read-only SQL statement with optional bound parameters. Returns columns, rows, and rows_affected.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn query_database(&self, input: inputs::DbQueryInput) -> Result<SqlResult> {
+    pub fn query_database(
+        &self,
+        input: state_contract::database::DbQueryInput,
+    ) -> Result<SqlResult> {
         self.transaction(|root| Ok(root.tx.query_database(&input)?))
             .map(|(result, _)| result)
     }
     /// Inspect a database’s tables, columns, indexes, foreign keys, schema, migration history, and storage metadata.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn inspect_database(&self, input: inputs::DbInspectInput) -> Result<DatabaseInspection> {
+    pub fn inspect_database(
+        &self,
+        input: state_contract::database::DbInspectInput,
+    ) -> Result<DatabaseInspection> {
         self.transaction(|root| Ok(root.tx.inspect_database(&input)?))
             .map(|(result, _)| result)
     }
     /// Get the ordered IDs and checksums of applied database migrations.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn database_migrations(&self, input: inputs::DbMigrationsInput) -> Result<Migrations> {
+    pub fn database_migrations(
+        &self,
+        input: state_contract::database::DbMigrationsInput,
+    ) -> Result<Migrations> {
         self.transaction(|root| Ok(root.tx.database_migrations(&input)?))
             .map(|(result, _)| result)
     }
     /// List published functions in the required namespace, selected by name or stable UUID. Returns names, versions, input/output contracts, without source code. Use function.get with namespace and name for a full declaration.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn list_functions(&self, input: inputs::FunctionListInput) -> Result<Functions> {
+    pub fn list_functions(
+        &self,
+        input: state_contract::function::FunctionListInput,
+    ) -> Result<Functions> {
         self.transaction(|root| Ok(root.tx.list_functions(&input)?))
             .map(|(result, _)| result)
     }
@@ -150,8 +170,8 @@ impl State {
     /// Runs in one root transaction; failures roll back all nested effects.
     pub fn get_function(
         &self,
-        input: inputs::FunctionGetInput,
-    ) -> Result<state_domain::FunctionDeclaration> {
+        input: state_contract::function::FunctionGetInput,
+    ) -> Result<state_contract::function::FunctionDeclaration> {
         self.transaction(|root| Ok(root.tx.get_function(&input)?))
             .map(|(result, _)| result)
     }
@@ -159,7 +179,7 @@ impl State {
     /// Runs in one root transaction; failures roll back all nested effects.
     pub fn create_namespace(
         &self,
-        input: inputs::NamespaceCreateInput,
+        input: state_contract::namespace::NamespaceCreateInput,
     ) -> Result<Committed<NamespaceSummary>> {
         self.namespace_mutation(|root| Ok(root.tx.create_namespace(&input)?))
     }
@@ -167,7 +187,7 @@ impl State {
     /// Runs in one root transaction; failures roll back all nested effects.
     pub fn update_namespace(
         &self,
-        input: inputs::NamespaceUpdateInput,
+        input: state_contract::namespace::NamespaceUpdateInput,
     ) -> Result<Committed<NamespaceSummary>> {
         self.namespace_mutation(|root| Ok(root.tx.update_namespace(&input)?))
     }
@@ -175,16 +195,19 @@ impl State {
     /// Runs in one root transaction; failures roll back all nested effects.
     pub fn copy_namespace(
         &self,
-        input: inputs::NamespaceCopyInput,
+        input: state_contract::namespace::NamespaceCopyInput,
     ) -> Result<Committed<NamespaceSummary>> {
         self.namespace_mutation(|root| Ok(root.tx.copy_namespace(&input)?))
     }
     /// Create or replace a virtual file. Supply either text or base64.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn write_file(&self, input: inputs::FsWriteInput) -> Result<Committed<FileWritten>> {
+    pub fn write_file(
+        &self,
+        input: state_contract::file::FsWriteInput,
+    ) -> Result<Committed<FileWritten>> {
         let (namespace, path) = match &input {
-            inputs::FsWriteInput::Text(file) => (&file.namespace, &file.path),
-            inputs::FsWriteInput::Binary(file) => (&file.namespace, &file.path),
+            state_contract::file::FsWriteInput::Text(file) => (&file.namespace, &file.path),
+            state_contract::file::FsWriteInput::Binary(file) => (&file.namespace, &file.path),
         };
         self.mutation(namespace, |root| {
             let result = root.tx.write_file(&input)?;
@@ -194,10 +217,13 @@ impl State {
     }
     /// Append text or base64-encoded bytes to a virtual file.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn append_file(&self, input: inputs::FsAppendInput) -> Result<Committed<FileWritten>> {
+    pub fn append_file(
+        &self,
+        input: state_contract::file::FsAppendInput,
+    ) -> Result<Committed<FileWritten>> {
         let (namespace, path) = match &input.0 {
-            inputs::FsWriteInput::Text(file) => (&file.namespace, &file.path),
-            inputs::FsWriteInput::Binary(file) => (&file.namespace, &file.path),
+            state_contract::file::FsWriteInput::Text(file) => (&file.namespace, &file.path),
+            state_contract::file::FsWriteInput::Binary(file) => (&file.namespace, &file.path),
         };
         self.mutation(namespace, |root| {
             let result = root.tx.append_file(&input)?;
@@ -207,24 +233,33 @@ impl State {
     }
     /// Move a virtual file to another path in the same namespace.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn move_file(&self, input: inputs::FsMoveInput) -> Result<Committed<FileMoved>> {
+    pub fn move_file(
+        &self,
+        input: state_contract::file::FsMoveInput,
+    ) -> Result<Committed<FileMoved>> {
         self.mutation(&input.namespace, |root| Ok(root.tx.move_file(&input)?))
     }
     /// Copy a virtual file to another path in the same namespace.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn copy_file(&self, input: inputs::FsCopyInput) -> Result<Committed<FileMoved>> {
+    pub fn copy_file(
+        &self,
+        input: state_contract::file::FsCopyInput,
+    ) -> Result<Committed<FileMoved>> {
         self.mutation(&input.namespace, |root| Ok(root.tx.copy_file(&input)?))
     }
     /// Delete a virtual file, or delete a directory’s contents with recursive=true.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn delete_file(&self, input: inputs::FsDeleteInput) -> Result<Committed<FilesDeleted>> {
+    pub fn delete_file(
+        &self,
+        input: state_contract::file::FsDeleteInput,
+    ) -> Result<Committed<FilesDeleted>> {
         self.mutation(&input.namespace, |root| Ok(root.tx.delete_file(&input)?))
     }
     /// Create an empty named SQLite database in a namespace.
     /// Runs in one root transaction; failures roll back all nested effects.
     pub fn create_database(
         &self,
-        input: inputs::DbCreateInput,
+        input: state_contract::database::DbCreateInput,
     ) -> Result<Committed<DatabaseCreated>> {
         self.mutation(&input.namespace, |root| {
             Ok(root.tx.create_database(&input)?)
@@ -232,14 +267,20 @@ impl State {
     }
     /// Drop a named SQLite database. Functions resolve database names within their namespace on each call.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn drop_database(&self, input: inputs::DbDropInput) -> Result<Committed<DatabaseDropped>> {
+    pub fn drop_database(
+        &self,
+        input: state_contract::database::DbDropInput,
+    ) -> Result<Committed<DatabaseDropped>> {
         self.mutation(&input.namespace, |root| {
             Ok(root.tx.drop_database(&input)?)
         })
     }
     /// Run one SQL statement with optional bound parameters, including writes and RETURNING. Returns columns, rows, and rows_affected.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn execute_database(&self, input: inputs::DbExecuteInput) -> Result<Committed<SqlResult>> {
+    pub fn execute_database(
+        &self,
+        input: state_contract::database::DbExecuteInput,
+    ) -> Result<Committed<SqlResult>> {
         self.mutation(&input.namespace, |root| {
             Ok(root.tx.execute_database(&input)?)
         })
@@ -248,7 +289,7 @@ impl State {
     /// Runs in one root transaction; failures roll back all nested effects.
     pub fn migrate_database(
         &self,
-        input: inputs::DbMigrateInput,
+        input: state_contract::database::DbMigrateInput,
     ) -> Result<Committed<MigrationsApplied>> {
         self.mutation(&input.namespace, |root| {
             Ok(root.tx.migrate_database(&input)?)
@@ -258,7 +299,7 @@ impl State {
     /// Runs in one root transaction; failures roll back all nested effects.
     pub fn remove_function(
         &self,
-        input: inputs::FunctionRemoveInput,
+        input: state_contract::function::FunctionRemoveInput,
     ) -> Result<Committed<FunctionRemoved>> {
         self.mutation(&input.namespace, |root| {
             Ok(root.tx.remove_function(&input)?)
@@ -268,7 +309,7 @@ impl State {
     /// Runs in one root transaction; failures roll back all nested effects.
     pub fn declare_function(
         &self,
-        mut input: inputs::FunctionDeclareInput,
+        mut input: state_contract::function::FunctionDeclareInput,
     ) -> Result<Committed<FunctionPublished>> {
         self.mutation(&input.namespace.clone(), |root| {
             root.validate_function(
@@ -285,7 +326,7 @@ impl State {
     /// Runs in one root transaction; failures roll back all nested effects.
     pub fn update_function(
         &self,
-        mut input: inputs::FunctionUpdateInput,
+        mut input: state_contract::function::FunctionUpdateInput,
     ) -> Result<Committed<FunctionPublished>> {
         self.mutation(&input.namespace.clone(), |root| {
             root.validate_function(
@@ -302,7 +343,7 @@ impl State {
     /// Runs in one root transaction; failures roll back all nested effects.
     pub fn call_function(
         &self,
-        input: inputs::CallInput,
+        input: state_contract::execution::CallInput,
         receipt: Option<crate::ReceiptIdentity>,
     ) -> Result<Value> {
         crate::ReceiptIdentity::check(input.idempotency_key.as_deref(), receipt.as_ref())?;
@@ -319,7 +360,7 @@ impl State {
     /// Runs in one root transaction; failures roll back all nested effects.
     pub fn execute_script(
         &self,
-        input: inputs::ExecuteInput,
+        input: state_contract::execution::ExecuteInput,
         receipt: Option<crate::ReceiptIdentity>,
     ) -> Result<ExecutionResult> {
         crate::ReceiptIdentity::check(input.idempotency_key.as_deref(), receipt.as_ref())?;
@@ -338,7 +379,10 @@ impl State {
     }
     /// Get a compact API overview, mode=runtime for a Python authoring guide, or mode=full for all schemas, or mode=readme for the bundled documentation. Select tool for one tool’s schema, or namespace and optional function for endpoint contracts.
     /// Runs in one root transaction; failures roll back all nested effects.
-    pub fn describe(&self, input: inputs::DescribeInput) -> Result<crate::Discovery> {
+    pub fn describe(
+        &self,
+        input: state_contract::discovery::DescribeInput,
+    ) -> Result<crate::Discovery> {
         self.transaction(|root| root.describe_typed(input))
             .map(|(result, _)| result)
     }
