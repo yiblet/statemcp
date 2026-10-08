@@ -50,7 +50,7 @@ pub enum Command {
     },
     /// Serve MCP at /mcp and namespace HTTP APIs and static files
     #[command(
-        after_help = "Example:\n  statemcp http ./state --bind 127.0.0.1:8000\n\nMCP is served at /mcp, published routes at /<namespace>/..., and health at /health. Configure routes with cli api.publish or the MCP api.publish tool. --http-prefix applies to every route; /health does not require a bearer token."
+        after_help = "Example:\n  statemcp http ./state --bind 127.0.0.1:8000\n\nMCP is served at /mcp, published routes at /<namespace>/..., and health at /health. Configure routes with cli api.publish or the MCP api.publish tool. --http-prefix applies to every route; namespace API/static routes and /health do not require a bearer token."
     )]
     Http {
         #[command(flatten)]
@@ -61,7 +61,7 @@ pub enum Command {
         /// Path prefix for all HTTP routes, for example /statemcp
         #[arg(long, default_value = "")]
         http_prefix: statemcp::http::HttpPrefix,
-        /// Require Authorization: Bearer <value> on MCP, API and static requests
+        /// Require Authorization: Bearer <value> on MCP requests; API and static routes are public
         #[arg(long, value_name = "TOKEN", value_parser = bearer_token)]
         auth_bearer: Option<String>,
     },

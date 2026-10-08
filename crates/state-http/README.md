@@ -1,8 +1,9 @@
 # state-http
 
 Axum hosting for namespace HTTP APIs and static websites, plus shared admission
-into synchronous StateMCP controllers. The executable supplies bearer, host and
-origin policy; this crate does not create its own storage/runtime dependencies.
+into synchronous StateMCP controllers. Namespace API and static routes are public;
+the executable applies bearer authentication to MCP only and checks Host and Origin
+on all routes. This crate does not create its own storage/runtime dependencies.
 
 `BlockingExecutor` clones share admission and retain a running worker's slot after
 caller cancellation. `namespace_router(executor, prefix)` collects bounded request

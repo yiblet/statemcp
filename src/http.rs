@@ -121,8 +121,7 @@ pub fn router(state: Controller, options: HttpOptions) -> Router {
     let executor = BlockingExecutor::new(state);
     let hosting = state_http::Hosting::new(&options.hosts, &options.prefix.0);
     let server = Server::new(executor.clone()).with_hosting(hosting);
-    let namespace = state_http::namespace_router(executor, &options.prefix.0)
-        .layer(middleware::from_fn_with_state(options.clone(), authorize));
+    let namespace = state_http::namespace_router(executor, &options.prefix.0);
     let service = StreamableHttpService::new(
         move || Ok(server.clone()),
         LocalSessionManager::default().into(),

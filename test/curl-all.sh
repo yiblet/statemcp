@@ -30,7 +30,7 @@ trap 'exit 143' TERM
 if [[ -z ${STATEMCP_BINARY:-} ]]; then
     "$script_dir/build.sh" >&2
 fi
-"${STATEMCP_BINARY:-$script_dir/statemcp}" http "$work/data" --bind 127.0.0.1:0 >"$work/server.log" 2>&1 &
+"${STATEMCP_BINARY:-$script_dir/statemcp}" http "$work/data" --bind 127.0.0.1:0 --auth-bearer curl-smoke-token >"$work/server.log" 2>&1 &
 server_pid=$!
 url=''
 for ((attempt=0; attempt<100; attempt++)); do
@@ -48,7 +48,7 @@ response=null
 # expected is success, notification, a tool error code, or rpc:<JSON-RPC code>.
 request() {
     local label=$1 payload=$2 expected=${3:-success} status curl_exit=0 passed=false
-    local -a headers=(-H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -H 'MCP-Protocol-Version: 2025-06-18')
+    local -a headers=(-H 'Authorization: Bearer curl-smoke-token' -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -H 'MCP-Protocol-Version: 2025-06-18')
     [[ -z $session ]] || headers+=(-H "Mcp-Session-Id: $session")
     : > "$work/body"
     : > "$work/headers"

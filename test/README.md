@@ -45,6 +45,8 @@ schemas are checked for missing action coverage at the end. HTTP routes are publ
 inspected, listed and removed through MCP. Direct HTTP requests verify captures,
 repeated query values, extension methods, committed file writes, invalid-response
 rollback, static HTML/index redirects, HEAD, method rejection and route removal.
+The temporary server requires a bearer token for MCP; namespace API and static
+requests deliberately send no token to verify that published pages are public.
 
 MCP JSONL lines contain a direction and a JSON-RPC message:
 

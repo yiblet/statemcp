@@ -218,8 +218,9 @@ Namespace file updates become visible on the next request. Routes follow namespa
 copy/rename/delete; a stable UUID URL alias is also available.
 
 Start `statemcp http DATA_DIR --bind 127.0.0.1:8000`, then call the API with
-`curl http://127.0.0.1:8000/notes/api/notes`. Existing bearer/host/origin policy covers
-namespace APIs and websites as well as MCP. Handlers have full access to their own
+`curl http://127.0.0.1:8000/notes/api/notes`. Namespace APIs and static websites
+are public and do not require a bearer token; `--auth-bearer` protects MCP only.
+Host and Origin checks apply to all routes. Handlers have full access to their own
 namespace's files, databases, functions and API declarations, with no per-route
 permission lists. Cross-namespace access is denied.
 

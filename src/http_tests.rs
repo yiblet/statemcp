@@ -177,15 +177,7 @@ async fn prefixed_routes_share_sessions_and_health_is_public() {
             )
             .await
             .unwrap();
-        assert_eq!(
-            response.status(),
-            if uri == "/statemcp/mcpx" {
-                StatusCode::UNAUTHORIZED
-            } else {
-                StatusCode::NOT_FOUND
-            },
-            "{uri}"
-        );
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
     }
     let response = app
         .oneshot(
@@ -720,7 +712,6 @@ async fn namespace_http_publication_urls_methods_and_binary_static()
                 .method("CUSTOM")
                 .uri("/web/echo")
                 .header("host", "127.0.0.1:8000")
-                .header("authorization", "Bearer secret")
                 .body(Body::from(vec![0, 255, 1]))?,
         )
         .await?;
@@ -748,7 +739,7 @@ async fn namespace_http_publication_urls_methods_and_binary_static()
                     .body(Body::empty())?,
             )
             .await?;
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.status(), StatusCode::CREATED);
     }
     tool(
         &app,
@@ -773,7 +764,6 @@ async fn namespace_http_publication_urls_methods_and_binary_static()
             .method(method)
             .uri(path)
             .header("host", "127.0.0.1:8000")
-            .header("authorization", "Bearer secret")
             .body(Body::empty())
     };
     let redirect = app.clone().oneshot(req("GET", "/web/site")?).await?;
@@ -841,7 +831,8 @@ async fn prefixed_namespace_paths_keep_trailing_slashes_and_body_caps()
     }}).await??;
     let app = router(
         controller.clone(),
-        HttpOptions::new("127.0.0.1:8000".parse()?, None)?.with_prefix("/prefix".parse()?),
+        HttpOptions::new("127.0.0.1:8000".parse()?, Some("secret".into()))?
+            .with_prefix("/prefix".parse()?),
     );
     let response = app
         .clone()
