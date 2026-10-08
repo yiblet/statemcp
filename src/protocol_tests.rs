@@ -23,7 +23,7 @@ async fn official_sdk_client_discovers_and_calls_tools() {
         "statemcp"
     );
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 30);
+    assert_eq!(tools.len(), 34);
     for (actual, expected) in tools.iter().zip(tool_definitions()) {
         assert_eq!(actual.name, expected["name"].as_str().unwrap());
         assert_eq!(
@@ -146,7 +146,7 @@ fn schemas_advertise_exact_fixed_surface_and_required_properties() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 30);
+    assert_eq!(names.len(), 34);
     assert!(names.contains(&"db.create"));
     assert!(names.contains(&"db.query"));
     assert!(names.contains(&"namespace.copy"));
@@ -249,7 +249,9 @@ impl Drop for ReleaseGate {
 async fn invocation_limit_is_shared_by_session_clones_and_recovers()
 -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::new();
-    let server = super::Server::new(crate::BlockingExecutor::new(fixture.state_async().await?));
+    let server = super::Server::new(state_http::BlockingExecutor::new(
+        fixture.state_async().await?,
+    ));
     let other_session = server.clone();
     let gate = std::sync::Arc::new(Gate::default());
     let release = ReleaseGate(gate.clone());

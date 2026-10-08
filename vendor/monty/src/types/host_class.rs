@@ -138,9 +138,41 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
             .to_cow(vm.interns)
     }
 
-    fn py_len(&self, _vm: &VM<'h>) -> Option<usize> {
-        // Host class instances don't have a length
-        None
+    fn py_len(&self, vm: &VM<'h>) -> Option<usize> {
+        self.get(vm.heap).attrs.get_by_str("_mapping", vm.heap, vm.interns).and_then(|value|value.py_len(vm))
+    }
+
+    fn py_iter(&self, vm: &mut VM<'h>) -> RunResult<Value> {
+        let mapping=self.get(vm.heap).attrs.get_by_str("_mapping", vm.heap, vm.interns).map(|value|value.clone_with_heap(vm.heap));
+        match mapping {Some(mapping)=>{defer_drop!(mapping,vm);mapping.py_iter(vm)},None=>Err(ExcType::type_error("host object is not iterable"))}
+    }
+
+    fn py_contains_impl(&self, item:&Value, vm:&mut VM<'h>)->RunResult<Option<bool>> {
+        let mapping=self.get(vm.heap).attrs.get_by_str("_mapping", vm.heap, vm.interns).map(|value|value.clone_with_heap(vm.heap));
+        match mapping {Some(mapping)=>{defer_drop!(mapping,vm);mapping.py_contains_impl(item,vm)},None=>Ok(None)}
+    }
+
+    /// A host may supply a local mapping for synchronous Python indexing.
+    /// This delegates to the value's normal item semantics without host I/O.
+    fn py_getitem(&self, key: &Value, vm: &mut VM<'h>) -> RunResult<Value> {
+        let mapping = self.get(vm.heap).attrs.get_by_str("_mapping", vm.heap, vm.interns)
+            .map(|value| value.clone_with_heap(vm.heap));
+        match mapping {
+            Some(mapping) => {
+                defer_drop!(mapping, vm);
+                let insensitive = self.get(vm.heap).attrs.get_by_str("_mapping_casefold", vm.heap, vm.interns)
+                    .is_some_and(|value| matches!(value, Value::Bool(true)));
+                if insensitive {
+                    if let Some(key) = key.as_either_str(vm.heap) {
+                        let key = allocate_string(key.as_str(vm.interns).to_ascii_lowercase(), vm.heap);
+                        defer_drop!(key, vm);
+                        return mapping.py_getitem(key, vm);
+                    }
+                }
+                mapping.py_getitem(key, vm)
+            }
+            None => Err(ExcType::type_error("host object is not subscriptable")),
+        }
     }
 
     fn py_set_attr(&mut self, name: &EitherStr, value: Value, vm: &mut VM<'h>) -> RunResult<()> {
@@ -171,9 +203,8 @@ impl<'h> PyTrait<'h> for HeapObjectRead<'h, HostClass> {
         Ok(None)
     }
 
-    fn py_bool(&self, _vm: &mut VM<'h>) -> RunResult<bool> {
-        // Host class instances are always truthy (like Python objects)
-        Ok(true)
+    fn py_bool(&self, vm: &mut VM<'h>) -> RunResult<bool> {
+        Ok(self.py_len(vm).is_none_or(|length|length>0))
     }
 
     fn py_repr_fmt(&self, f: &mut impl Write, vm: &mut VM<'h>, heap_ids: &mut LazyHeapSet) -> RunResult<()> {

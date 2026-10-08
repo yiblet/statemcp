@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ErrorCode {
+    HttpBadRequest,
+    HttpUnsupportedMediaType,
     AbiMismatch,
     AlreadyExists,
     Busy,
@@ -26,6 +28,8 @@ impl ErrorCode {
     /// Stable wire representation of this error category.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::HttpBadRequest => "HTTP_BAD_REQUEST",
+            Self::HttpUnsupportedMediaType => "HTTP_UNSUPPORTED_MEDIA_TYPE",
             Self::AbiMismatch => "ABI_MISMATCH",
             Self::AlreadyExists => "ALREADY_EXISTS",
             Self::Busy => "BUSY",
@@ -58,6 +62,7 @@ pub mod discovery;
 pub mod execution;
 pub mod file;
 pub mod function;
+pub mod http;
 pub mod namespace;
 pub mod operations;
 mod path;

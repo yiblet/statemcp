@@ -212,7 +212,7 @@ fn direct_cli_tools_publish_invoke_and_manipulate_state() {
     workspace.ok("db.drop", &["--namespace", "renamed", "--database", "app"]);
     workspace.ok("namespace.delete", &["--namespace", "renamed"]);
     let tools = workspace.ok("describe", &[]);
-    assert_eq!(tools["tools"].as_array().unwrap().len(), 30);
+    assert_eq!(tools["tools"].as_array().unwrap().len(), 34);
 }
 
 #[test]
@@ -283,7 +283,7 @@ fn cli_commands_cover_mcp_tools_and_paths_are_required() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(groups.len(), 30);
+    assert_eq!(groups.len(), 34);
     for name in &groups {
         let help = Command::new(env!("CARGO_BIN_EXE_statemcp"))
             .args(["cli", name, "--help"])

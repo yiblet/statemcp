@@ -1,5 +1,5 @@
 //! Streamable HTTP via the official MCP SDK, with optional bearer authentication.
-use crate::{BlockingExecutor, Controller, Server, protocol::MAX_FRAME_BYTES};
+use crate::{Controller, Server, protocol::MAX_FRAME_BYTES};
 use anyhow::{Result, bail};
 use axum::{
     Json, Router,
@@ -14,9 +14,9 @@ use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
 use serde::Serialize;
+use state_http::BlockingExecutor;
 use std::{net::SocketAddr, str::FromStr};
 use subtle::ConstantTimeEq;
-use tower_http::normalize_path::NormalizePath;
 
 #[derive(Clone)]
 pub struct HttpOptions {
@@ -118,7 +118,11 @@ struct HealthResponse {
 }
 
 pub fn router(state: Controller, options: HttpOptions) -> Router {
-    let server = Server::new(BlockingExecutor::new(state));
+    let executor = BlockingExecutor::new(state);
+    let hosting = state_http::Hosting::new(&options.hosts, &options.prefix.0);
+    let server = Server::new(executor.clone()).with_hosting(hosting);
+    let namespace = state_http::namespace_router(executor, &options.prefix.0)
+        .layer(middleware::from_fn_with_state(options.clone(), authorize));
     let service = StreamableHttpService::new(
         move || Ok(server.clone()),
         LocalSessionManager::default().into(),
@@ -137,6 +141,7 @@ pub fn router(state: Controller, options: HttpOptions) -> Router {
             get(|| async { Json(HealthResponse { status: "ok" }) }),
         )
         .merge(mcp)
+        .fallback_service(namespace)
         .layer(middleware::from_fn_with_state(
             options,
             check_host_and_origin,
@@ -146,8 +151,33 @@ pub fn router(state: Controller, options: HttpOptions) -> Router {
     } else {
         Router::new().nest(&prefix.0, routes)
     };
-    // Normalize before the inner router matches paths, rather than after routing.
-    Router::new().fallback_service(NormalizePath::trim_trailing_slash(routes))
+    // Preserve legacy reserved route spelling without changing namespace URL semantics.
+    Router::new()
+        .fallback_service(routes)
+        .layer(middleware::from_fn_with_state(prefix, normalize_reserved))
+}
+
+async fn normalize_reserved(
+    AxumState(prefix): AxumState<HttpPrefix>,
+    mut request: Request<Body>,
+    next: Next,
+) -> Response {
+    let path = request.uri().path();
+    let trimmed = path.trim_end_matches('/');
+    if path != trimmed
+        && (trimmed == format!("{}/mcp", prefix.0) || trimmed == format!("{}/health", prefix.0))
+    {
+        let text = if let Some(query) = request.uri().query() {
+            format!("{trimmed}?{query}")
+        } else {
+            trimmed.into()
+        };
+        match text.parse() {
+            Ok(uri) => *request.uri_mut() = uri,
+            Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+        };
+    }
+    next.run(request).await
 }
 
 pub async fn serve(
@@ -216,7 +246,7 @@ async fn authorize(
 
 async fn check_host_and_origin(
     AxumState(options): AxumState<HttpOptions>,
-    request: Request<Body>,
+    mut request: Request<Body>,
     next: Next,
 ) -> Response {
     let host_allowed = request
@@ -237,6 +267,14 @@ async fn check_host_and_origin(
     });
     if !host_allowed || !origin_allowed {
         return StatusCode::FORBIDDEN.into_response();
+    }
+    if let Some(host) = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+    {
+        let origin = state_http::RequestOrigin(format!("http://{host}"));
+        request.extensions_mut().insert(origin);
     }
     next.run(request).await
 }

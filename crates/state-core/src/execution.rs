@@ -10,6 +10,7 @@ use state_runtime::ModuleSources;
 /// Executes code with explicitly supplied feature services and runtime.
 #[derive(Clone)]
 pub struct Execution {
+    api: crate::Api,
     pub(crate) functions: Functions,
     pub(crate) files: Files,
     pub(crate) databases: Databases,
@@ -20,6 +21,7 @@ pub struct Execution {
 impl Execution {
     /// Construct an executor. All nested runs use this runtime and the caller's context.
     pub fn new(
+        api: crate::Api,
         functions: Functions,
         files: Files,
         databases: Databases,
@@ -28,6 +30,7 @@ impl Execution {
         runtime: Runtime,
     ) -> Self {
         Self {
+            api,
             functions,
             files,
             databases,
@@ -38,6 +41,7 @@ impl Execution {
     }
     fn host<'a>(&'a self, context: &'a mut Context) -> crate::hosts::Host<'a> {
         crate::hosts::Host {
+            api: &self.api,
             executor: self,
             files: &self.files,
             databases: &self.databases,
@@ -46,6 +50,47 @@ impl Execution {
             discovery: &self.discovery,
             context,
         }
+    }
+    pub(crate) fn invoke_http_handler(
+        &self,
+        namespace: crate::policy::NamespaceId,
+        handler: state_contract::http::Handler,
+        request: state_contract::http::HttpRequest,
+        context: &mut Context,
+    ) -> Result<state_contract::http::HttpResponse> {
+        context.scoped(namespace.clone(), |context| {
+            context.execution(|context| {
+                let limits = context.runtime_limits()?;
+                let modules = ModuleSources {
+                    entry_path: handler.file,
+                    files: handler.sources.modules,
+                };
+                let result = self
+                    .runtime
+                    .invoke_http(
+                        &handler.sources.source,
+                        &modules,
+                        &handler.symbol,
+                        request,
+                        &limits,
+                        &mut |name, args, kwargs| {
+                            self.host(context)
+                                .host(name, args, kwargs, Some(namespace.as_str()))
+                                .map_err(Into::into)
+                        },
+                    )
+                    .map_err(|error| {
+                        if error.code == crate::ErrorCode::InvalidArgument {
+                            Error::new(crate::ErrorCode::PythonError, error.message)
+                        } else {
+                            error.into()
+                        }
+                    })?;
+                context.check()?;
+                context.account_stdout(&result.stdout)?;
+                Ok(result.response)
+            })
+        })
     }
     /// Invoke a pinned function, narrowing authority to its established namespace identity.
     pub fn call_function(&self, input: CallInput, context: &mut Context) -> Result<Value> {

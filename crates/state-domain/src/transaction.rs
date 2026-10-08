@@ -3,6 +3,7 @@ pub(crate) mod databases;
 mod domain;
 mod files;
 mod functions;
+mod http;
 mod namespaces;
 mod objects;
 

@@ -133,3 +133,13 @@ allocator ceilings and fatal allocator exits, malformed frames, and empty-PATH
 startup. On Linux it also observes `/proc` to verify actual worker reaping during
 a blocked callback and after a host error. Run it with `cargo test --test e2e`
 from the workspace root.
+
+## HTTP handlers
+
+`invoke_http` supplies one native positional Request and returns HttpRunResult
+with a validated buffered HttpResponse. Byte bodies and Python tuple/list identity
+are preserved before Flask response conversion. Request JSON/form access is lazy;
+failed request parsing terminates the host run rather than permitting partial
+publication. `validate_http` provides Response during initialization with effects
+denied. WorkerConfig offers the same methods through typed worker operations and
+completion variants; ordinary invoke remains the keyword/JSON ABI.

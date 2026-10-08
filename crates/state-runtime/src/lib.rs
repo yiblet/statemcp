@@ -22,6 +22,9 @@ use std::{
 
 pub use monty_alloc::LimitedAllocator;
 
+mod http;
+mod http_form;
+pub use http::{HttpRunResult, invoke_http, validate_http};
 mod worker;
 pub use worker::{
     WorkerConfig, execute_isolated, invoke_isolated, validate_module_isolated, worker_main,
@@ -318,6 +321,7 @@ struct Session<'a> {
     started: Instant,
     stdout: BoundedOutput,
     calls: usize,
+    http: Option<http::Bindings>,
 }
 
 impl<'a> Session<'a> {
@@ -340,6 +344,7 @@ impl<'a> Session<'a> {
                 exceeded: false,
             },
             calls: 0,
+            http: None,
         })
     }
 
@@ -435,6 +440,26 @@ impl<'a> Session<'a> {
             progress = match progress {
                 ReplProgress::Complete { repl, value } => return Ok((repl, value)),
                 ReplProgress::FunctionCall(call) => {
+                    if let Some(object_id) = call.object_id
+                        && self.http.is_some()
+                    {
+                        if self.calls >= self.limits.max_calls {
+                            return Err(limit_error("HTTP object operation limit exceeded"));
+                        }
+                        self.calls += 1;
+                        if let Some(bindings) = self.http.as_mut() {
+                            let value = bindings
+                                .call(
+                                    object_id,
+                                    &call.function_name,
+                                    call.args.args().collect(),
+                                    call.args.kwargs().collect(),
+                                )?
+                                .ok_or_else(|| invalid_result("unknown HTTP object method"))?;
+                            progress = call.resume(value, self.print()).map_err(repl_error)?;
+                            continue;
+                        }
+                    }
                     let Some(host) = host.as_mut() else {
                         return Err(RuntimeError::new(
                             crate::ErrorCode::PermissionDenied,
@@ -485,6 +510,21 @@ impl<'a> Session<'a> {
                     ));
                 }
                 ReplProgress::NameLookup(call) => {
+                    if let Some(object_id) = call.object_id()
+                        && self.http.is_some()
+                    {
+                        if self.calls >= self.limits.max_calls {
+                            return Err(limit_error("HTTP object operation limit exceeded"));
+                        }
+                        self.calls += 1;
+                        if let Some(bindings) = self.http.as_mut() {
+                            let value = bindings.lookup(object_id, &call.name)?;
+                            progress = call
+                                .resume(value.into(), self.print())
+                                .map_err(repl_error)?;
+                            continue;
+                        }
+                    }
                     return Err(RuntimeError::new(
                         crate::ErrorCode::PythonError,
                         format!("undefined name: {}", call.name),

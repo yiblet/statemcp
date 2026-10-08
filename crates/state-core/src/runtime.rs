@@ -4,6 +4,25 @@ use state_runtime::{HostCallback, Limits, ModuleSources, RunResult, RuntimeError
 /// Backends must terminate on callback errors; callbacks are the only state access.
 /// Shared references permit nested invocation using the same backend configuration.
 pub trait RuntimeBackend: Send + Sync {
+    /// Invoke one positional HTTP request and return a fully validated buffered response.
+    fn invoke_http(
+        &self,
+        source: &str,
+        modules: &ModuleSources,
+        symbol: &str,
+        request: state_contract::http::HttpRequest,
+        limits: &Limits,
+        host: &mut HostCallback<'_>,
+    ) -> Result<state_runtime::HttpRunResult, RuntimeError>;
+    /// Initialize an HTTP module with all state effects denied.
+    fn validate_http(
+        &self,
+        source: &str,
+        modules: &ModuleSources,
+        symbol: &str,
+        limits: &Limits,
+    ) -> Result<(), RuntimeError>;
+
     fn execute(
         &self,
         source: &str,
@@ -33,6 +52,27 @@ pub trait RuntimeBackend: Send + Sync {
 /// Cooperative in-process runtime. Choose WorkerConfig for process isolation.
 pub struct EmbeddedBackend;
 impl RuntimeBackend for EmbeddedBackend {
+    fn invoke_http(
+        &self,
+        source: &str,
+        modules: &ModuleSources,
+        symbol: &str,
+        request: state_contract::http::HttpRequest,
+        limits: &Limits,
+        host: &mut HostCallback<'_>,
+    ) -> Result<state_runtime::HttpRunResult, RuntimeError> {
+        state_runtime::invoke_http(source, symbol, modules, request, limits, host)
+    }
+    fn validate_http(
+        &self,
+        source: &str,
+        modules: &ModuleSources,
+        symbol: &str,
+        limits: &Limits,
+    ) -> Result<(), RuntimeError> {
+        state_runtime::validate_http(source, symbol, modules, limits)
+    }
+
     fn execute(
         &self,
         source: &str,
@@ -65,6 +105,27 @@ impl RuntimeBackend for EmbeddedBackend {
     }
 }
 impl RuntimeBackend for WorkerConfig {
+    fn invoke_http(
+        &self,
+        source: &str,
+        modules: &ModuleSources,
+        symbol: &str,
+        request: state_contract::http::HttpRequest,
+        limits: &Limits,
+        host: &mut HostCallback<'_>,
+    ) -> Result<state_runtime::HttpRunResult, RuntimeError> {
+        WorkerConfig::invoke_http(self, source, symbol, modules, request, limits, host)
+    }
+    fn validate_http(
+        &self,
+        source: &str,
+        modules: &ModuleSources,
+        symbol: &str,
+        limits: &Limits,
+    ) -> Result<(), RuntimeError> {
+        WorkerConfig::validate_http(self, source, symbol, modules, limits)
+    }
+
     fn execute(
         &self,
         source: &str,
@@ -104,6 +165,30 @@ pub struct Runtime {
     backend: std::sync::Arc<dyn RuntimeBackend>,
 }
 impl Runtime {
+    /// Invoke HTTP with an injected runtime and a per-run host capability.
+    pub fn invoke_http(
+        &self,
+        source: &str,
+        modules: &ModuleSources,
+        symbol: &str,
+        request: state_contract::http::HttpRequest,
+        limits: &Limits,
+        host: &mut HostCallback<'_>,
+    ) -> Result<state_runtime::HttpRunResult, RuntimeError> {
+        self.backend
+            .invoke_http(source, modules, symbol, request, limits, host)
+    }
+    /// Validate the HTTP publication without handler effects.
+    pub fn validate_http(
+        &self,
+        source: &str,
+        modules: &ModuleSources,
+        symbol: &str,
+        limits: &Limits,
+    ) -> Result<(), RuntimeError> {
+        self.backend.validate_http(source, modules, symbol, limits)
+    }
+
     /// Own a configured backend. Backend operations are synchronous and must run off async workers.
     pub fn new(backend: std::sync::Arc<dyn RuntimeBackend>) -> Self {
         Self { backend }
@@ -159,6 +244,31 @@ mod tests {
 
     struct CountingBackend(AtomicUsize);
     impl RuntimeBackend for CountingBackend {
+        fn invoke_http(
+            &self,
+            _: &str,
+            _: &state_runtime::ModuleSources,
+            _: &str,
+            _: state_contract::http::HttpRequest,
+            _: &state_runtime::Limits,
+            _: &mut state_runtime::HostCallback<'_>,
+        ) -> std::result::Result<state_runtime::HttpRunResult, state_runtime::RuntimeError>
+        {
+            Err(state_runtime::RuntimeError::new(
+                state_contract::ErrorCode::PythonError,
+                "test backend HTTP failure",
+            ))
+        }
+        fn validate_http(
+            &self,
+            source: &str,
+            modules: &state_runtime::ModuleSources,
+            symbol: &str,
+            limits: &state_runtime::Limits,
+        ) -> std::result::Result<(), state_runtime::RuntimeError> {
+            self.validate_module(source, modules, symbol, limits)
+        }
+
         fn execute(
             &self,
             _: &str,

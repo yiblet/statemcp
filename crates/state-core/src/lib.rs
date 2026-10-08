@@ -1,5 +1,9 @@
 //! Typed feature services with application controllers and explicitly shared execution context.
 pub use state_contract::ErrorCode;
+mod api;
+pub use api::Api;
+mod http_application;
+pub use http_application::HttpApplication;
 mod context;
 mod controllers;
 pub use controllers::Controller;

@@ -1,5 +1,5 @@
 //! MCP tools use the official SDK's typed parameter, routing, and handler macros.
-use crate::{BlockingError, BlockingExecutor, Controller, CoreError};
+use crate::{Controller, CoreError};
 use rmcp::{
     ErrorData, ServerHandler,
     handler::server::{
@@ -10,13 +10,16 @@ use rmcp::{
     tool, tool_handler, tool_router,
 };
 use serde::Serialize;
+use state_contract::http::{ApiGetInput, ApiListInput, ApiPublishInput, ApiRemoveInput};
 use state_contract::{database::*, discovery::*, execution::*, file::*, function::*, namespace::*};
+use state_http::{BlockingError, BlockingExecutor, Hosting, RequestOrigin};
 
 pub const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 const SERVER_INSTRUCTIONS: &str = "Start with namespace.list to discover available namespaces and their descriptions. Then use function.list to discover published functions in the relevant namespace. StateMCP lets you create SQLite databases and publish Python tools that use them. Create a namespace and databases, write Python source with fs.write, then publish with function.declare and invoke with call. Use describe with mode=runtime for Python helpers and mode=full for exact schemas. Namespace selectors accept names or stable UUIDs. Published functions have full access to their own namespace only; root execute scripts have owner access. Use expected_revision and expected_version for optimistic concurrency. Tool content contains a JSON-encoded text block; isError indicates an application failure.";
 
 #[derive(Clone)]
 pub struct Server {
+    hosting: Option<Hosting>,
     executor: BlockingExecutor,
     tool_router: ToolRouter<Self>,
 }
@@ -41,6 +44,20 @@ impl<S> FromContextPart<ToolCallContext<'_, S>> for ReceiptContext {
     }
 }
 
+struct HostedOrigin(Option<RequestOrigin>);
+impl<S> FromContextPart<ToolCallContext<'_, S>> for HostedOrigin {
+    fn from_context_part(context: &mut ToolCallContext<'_, S>) -> Result<Self, ErrorData> {
+        Ok(Self(
+            context
+                .request_context
+                .extensions
+                .get::<axum::http::request::Parts>()
+                .and_then(|parts| parts.extensions.get::<RequestOrigin>())
+                .cloned(),
+        ))
+    }
+}
+
 #[derive(Serialize)]
 struct ErrorEnvelope<'a> {
     error: &'a CoreError,
@@ -52,9 +69,15 @@ fn tool_error(error: &CoreError) -> Result<CallToolResult, ErrorData> {
 }
 
 impl Server {
+    /// Configure endpoint URL reporting from actual listener addresses.
+    pub fn with_hosting(mut self, hosting: Hosting) -> Self {
+        self.hosting = Some(hosting);
+        self
+    }
     /// Construct an MCP adapter with explicitly supplied shared blocking execution.
     pub fn new(executor: BlockingExecutor) -> Self {
         Self {
+            hosting: None,
             executor,
             tool_router: Self::tool_router(),
         }
@@ -348,6 +371,68 @@ impl Server {
         Parameters(inputs): Parameters<ExecuteInput>,
     ) -> Result<CallToolResult, ErrorData> {
         self.run_blocking(move |state| state.execute_script(inputs, receipt.0))
+            .await
+    }
+    /// Publish or replace an HTTP function route or static website mount beneath /namespace/. Handler receives one Request and returns Flask buffered response forms. Omitted methods means all methods for functions. Namespace-wide access and atomic writes; source/imports pinned at publication. Returns hosted URL patterns.
+    #[tool(name = "api.publish")]
+    async fn api_publish(
+        &self,
+        origin: HostedOrigin,
+        Parameters(input): Parameters<ApiPublishInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let hosting = self.hosting.clone();
+        self.run_blocking(move |controller| {
+            let mut result = controller.publish_api(input)?;
+            if let Some(hosting) = hosting {
+                hosting.locate(&mut result.result, origin.0.as_ref());
+            }
+            Ok(result)
+        })
+        .await
+    }
+    /// Get one named HTTP route and its hosted URL patterns, without pinned source.
+    #[tool(name = "api.get")]
+    async fn api_get(
+        &self,
+        origin: HostedOrigin,
+        Parameters(input): Parameters<ApiGetInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let hosting = self.hosting.clone();
+        self.run_blocking(move |controller| {
+            let mut result = controller.get_api(input)?;
+            if let Some(hosting) = hosting {
+                hosting.locate(&mut result, origin.0.as_ref());
+            }
+            Ok(result)
+        })
+        .await
+    }
+    /// List HTTP function routes and static mounts in a namespace with hosted URL patterns.
+    #[tool(name = "api.list")]
+    async fn api_list(
+        &self,
+        origin: HostedOrigin,
+        Parameters(input): Parameters<ApiListInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let hosting = self.hosting.clone();
+        self.run_blocking(move |controller| {
+            let mut result = controller.list_api(input)?;
+            if let Some(hosting) = hosting {
+                for route in &mut result {
+                    hosting.locate(route, origin.0.as_ref());
+                }
+            }
+            Ok(result)
+        })
+        .await
+    }
+    /// Remove a named HTTP route, optionally guarding the namespace revision.
+    #[tool(name = "api.remove")]
+    async fn api_remove(
+        &self,
+        Parameters(input): Parameters<ApiRemoveInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run_blocking(move |controller| controller.remove_api(input))
             .await
     }
     /// Get a compact API overview, mode=runtime for a Python authoring guide, or mode=full for all schemas, or mode=readme for the bundled documentation. Select tool for one tool’s schema, or namespace and optional function for endpoint contracts.

@@ -1,10 +1,11 @@
-use crate::{BlockingExecutor, Controller, Server};
+use crate::{Controller, Server};
 use rmcp::{
     RoleClient, ServiceExt,
     model::{CallToolRequestParams, CallToolResult, ClientConfig, ProtocolVersion},
     service::RunningService,
 };
 use serde_json::Value;
+use state_http::BlockingExecutor;
 
 pub type Client = RunningService<RoleClient, ClientConfig>;
 

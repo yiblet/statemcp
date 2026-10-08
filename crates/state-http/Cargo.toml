@@ -1,0 +1,19 @@
+[package]
+name = "state-http"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT"
+description = "Namespace HTTP hosting and shared async execution for StateMCP"
+
+[dependencies]
+state-core = { path = "../state-core" }
+state-contract = { path = "../state-contract" }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+tracing = "0.1"
+
+[dev-dependencies]
+state-fs = { path = "../state-fs" }
+state-store = { path = "../state-store" }
+state-domain = { path = "../state-domain" }

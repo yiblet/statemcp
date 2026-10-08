@@ -95,15 +95,25 @@ impl BlockingExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::Fixture;
+    async fn controller() -> Result<Controller, Box<dyn std::error::Error>> {
+        Ok(tokio::task::spawn_blocking(|| {
+            let fs = state_fs::MemoryFs::new();
+            let backing = state_store::Store::builder()
+                .with_fs(fs)
+                .open("/state")
+                .map_err(state_domain::Error::from)?;
+            let store = state_domain::Store::from_storage(backing)?;
+            Ok::<_, state_core::Error>(Controller::new(store, state_core::Runtime::embedded()))
+        })
+        .await??)
+    }
     use std::sync::mpsc;
     use tokio::sync::oneshot;
 
     #[tokio::test(flavor = "current_thread")]
     async fn clones_share_admission_and_cancellation_keeps_running_work_admitted()
     -> Result<(), Box<dyn std::error::Error>> {
-        let fixture = Fixture::new();
-        let executor = BlockingExecutor::with_capacity(fixture.state_async().await?, 1)?;
+        let executor = BlockingExecutor::with_capacity(controller().await?, 1)?;
         let worker = executor.clone();
         let (entered, started) = oneshot::channel();
         let (release, blocked) = mpsc::channel();
@@ -143,7 +153,7 @@ mod tests {
     #[tokio::test]
     async fn application_errors_remain_typed_and_invalid_capacity_is_rejected()
     -> Result<(), Box<dyn std::error::Error>> {
-        let controller = Fixture::new().state_async().await?;
+        let controller = controller().await?;
         assert!(
             matches!(BlockingExecutor::with_capacity(controller.clone(), 0), Err(error) if error.code == ErrorCode::InvalidArgument)
         );

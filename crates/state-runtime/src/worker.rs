@@ -1,7 +1,8 @@
 //! Disposable same-executable workers. The parent alone owns host capabilities.
-use crate::{HostCallback, Limits, ModuleSources, RunResult, RuntimeError};
+use crate::{HostCallback, HttpRunResult, Limits, ModuleSources, RunResult, RuntimeError};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
+use state_contract::http::HttpRequest;
 use std::{
     io::{self, Read, Write},
     path::PathBuf,
@@ -50,7 +51,7 @@ impl WorkerConfig {
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
-        self.run(
+        self.run_json(
             Operation::Execute {
                 source: source.into(),
                 modules: modules.clone(),
@@ -86,7 +87,7 @@ impl WorkerConfig {
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
-        self.run(
+        self.run_json(
             Operation::Invoke {
                 source: source.into(),
                 modules: modules.clone(),
@@ -112,7 +113,7 @@ impl WorkerConfig {
         modules: &ModuleSources,
         limits: &Limits,
     ) -> Result<(), RuntimeError> {
-        self.run(
+        self.run_json(
             Operation::Validate {
                 source: source.into(),
                 modules: modules.clone(),
@@ -128,12 +129,66 @@ impl WorkerConfig {
         )
         .map(|_| ())
     }
-    fn run(
+    /// Invoke a pinned HTTP handler in a disposable worker with native request/response values.
+    pub fn invoke_http(
+        &self,
+        source: &str,
+        symbol: &str,
+        modules: &ModuleSources,
+        request: HttpRequest,
+        limits: &Limits,
+        host: &mut HostCallback<'_>,
+    ) -> Result<HttpRunResult, RuntimeError> {
+        match self.run(
+            Operation::InvokeHttp {
+                source: source.into(),
+                symbol: symbol.into(),
+                modules: modules.clone(),
+                request,
+            },
+            limits,
+            host,
+        )? {
+            Completion::Http(result) => Ok(result),
+            Completion::Json(_) => Err(protocol("worker returned JSON for an HTTP invocation")),
+        }
+    }
+    /// Validate an HTTP module with effects denied and the Response type available.
+    pub fn validate_http(
+        &self,
+        source: &str,
+        symbol: &str,
+        modules: &ModuleSources,
+        limits: &Limits,
+    ) -> Result<(), RuntimeError> {
+        self.run_json(
+            Operation::ValidateHttp {
+                source: source.into(),
+                symbol: symbol.into(),
+                modules: modules.clone(),
+            },
+            limits,
+            &mut |_, _, _| Err(protocol("unexpected initialization callback")),
+        )
+        .map(|_| ())
+    }
+    fn run_json(
         &self,
         operation: Operation,
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
+        match self.run(operation, limits, host)? {
+            Completion::Json(result) => Ok(result),
+            Completion::Http(_) => Err(protocol("worker returned HTTP for a JSON invocation")),
+        }
+    }
+    fn run(
+        &self,
+        operation: Operation,
+        limits: &Limits,
+        host: &mut HostCallback<'_>,
+    ) -> Result<Completion, RuntimeError> {
         validate_frame_limit(self.max_frame_bytes)?;
         let deadline = Instant::now()
             .checked_add(limits.max_duration)
@@ -270,6 +325,17 @@ pub fn validate_module_isolated(
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
 enum Operation {
+    ValidateHttp {
+        source: String,
+        modules: ModuleSources,
+        symbol: String,
+    },
+    InvokeHttp {
+        source: String,
+        modules: ModuleSources,
+        symbol: String,
+        request: HttpRequest,
+    },
     Execute {
         source: String,
         modules: ModuleSources,
@@ -290,14 +356,18 @@ enum Operation {
 impl Operation {
     fn modules(&self) -> &ModuleSources {
         match self {
-            Self::Execute { modules, .. }
+            Self::ValidateHttp { modules, .. }
+            | Self::InvokeHttp { modules, .. }
+            | Self::Execute { modules, .. }
             | Self::Invoke { modules, .. }
             | Self::Validate { modules, .. } => modules,
         }
     }
     fn source(&self) -> &str {
         match self {
-            Self::Execute { source, .. }
+            Self::ValidateHttp { source, .. }
+            | Self::InvokeHttp { source, .. }
+            | Self::Execute { source, .. }
             | Self::Invoke { source, .. }
             | Self::Validate { source, .. } => source,
         }
@@ -310,6 +380,12 @@ struct WorkerCommand {
     limits: Limits,
 }
 #[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", content = "result", rename_all = "snake_case")]
+enum Completion {
+    Json(RunResult),
+    Http(HttpRunResult),
+}
+#[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Message {
     HostCall {
@@ -318,7 +394,7 @@ enum Message {
         kwargs: Map<String, Value>,
     },
     Complete {
-        result: RunResult,
+        result: Completion,
     },
     Error {
         error: RuntimeError,
@@ -372,11 +448,36 @@ fn serve_command(
         Ok(value)
     };
     let result = match request.operation {
+        Operation::ValidateHttp {
+            source,
+            symbol,
+            modules,
+        } => crate::validate_http(&source, &symbol, &modules, &request.limits).map(|()| {
+            Completion::Json(RunResult {
+                value: Value::Null,
+                stdout: String::new(),
+            })
+        }),
+        Operation::InvokeHttp {
+            source,
+            symbol,
+            modules,
+            request: http_request,
+        } => crate::invoke_http(
+            &source,
+            &symbol,
+            &modules,
+            http_request,
+            &request.limits,
+            &mut host,
+        )
+        .map(Completion::Http),
         Operation::Execute {
             source,
             inputs,
             modules,
-        } => crate::execute_with_modules(&source, inputs, &modules, &request.limits, &mut host),
+        } => crate::execute_with_modules(&source, inputs, &modules, &request.limits, &mut host)
+            .map(Completion::Json),
         Operation::Invoke {
             source,
             symbol,
@@ -389,15 +490,18 @@ fn serve_command(
             &modules,
             &request.limits,
             &mut host,
-        ),
+        )
+        .map(Completion::Json),
         Operation::Validate {
             source,
             symbol,
             modules,
         } => crate::validate_module_with_modules(&source, &symbol, &modules, &request.limits).map(
-            |()| RunResult {
-                value: Value::Null,
-                stdout: String::new(),
+            |()| {
+                Completion::Json(RunResult {
+                    value: Value::Null,
+                    stdout: String::new(),
+                })
             },
         ),
     };
@@ -776,12 +880,51 @@ mod tests {
             let decoded = read_frame(&mut encoded.as_slice(), 1024)?;
             let mut output = Vec::new();
             serve_command(decoded, &mut io::empty(), &mut output, 1024)?;
-            let Message::Complete { result } = read_frame(&mut output.as_slice(), 1024)? else {
+            let Message::Complete {
+                result: Completion::Json(result),
+            } = read_frame(&mut output.as_slice(), 1024)?
+            else {
                 return Err(protocol("expected completion"));
             };
             assert_eq!(result.value, expected);
             assert_eq!(result.stdout, stdout);
         }
+        Ok(())
+    }
+    #[test]
+    fn http_worker_frames_preserve_binary_request_and_typed_response() -> Result<(), RuntimeError> {
+        let request = state_contract::http::HttpRequest {
+            method: state_contract::http::Method::parse("CUSTOM")
+                .map_err(|e| protocol(e.message))?,
+            path: "/web/echo".into(),
+            query: String::new(),
+            host: "localhost".into(),
+            scheme: "http".into(),
+            headers: Vec::new(),
+            body: vec![0, 255, 10],
+            view_args: Default::default(),
+        };
+        let command=WorkerCommand{operation:Operation::InvokeHttp{source:"def handle(request):\n    return request.body, 202, [('X-Method',request.method)]".into(),symbol:"handle".into(),modules:ModuleSources::default(),request},limits:Limits::default()};
+        let mut encoded = Vec::new();
+        write_frame(&mut encoded, &command, 4096)?;
+        let decoded = read_frame(&mut encoded.as_slice(), 4096)?;
+        let mut output = Vec::new();
+        serve_command(decoded, &mut io::empty(), &mut output, 4096)?;
+        let Message::Complete {
+            result: Completion::Http(result),
+        } = read_frame(&mut output.as_slice(), 4096)?
+        else {
+            return Err(protocol("expected HTTP completion"));
+        };
+        assert_eq!(result.response.status(), 202);
+        assert_eq!(result.response.body(), [0, 255, 10]);
+        assert!(
+            result
+                .response
+                .headers()
+                .iter()
+                .any(|(k, v)| k == "x-method" && v == "CUSTOM")
+        );
         Ok(())
     }
     #[test]
@@ -835,7 +978,10 @@ mod tests {
             read_frame::<Message>(&mut frames, 1024)?,
             Message::HostCall { .. }
         ));
-        let Message::Complete { result } = read_frame(&mut frames, 1024)? else {
+        let Message::Complete {
+            result: Completion::Json(result),
+        } = read_frame(&mut frames, 1024)?
+        else {
             return Err(protocol("expected completion"));
         };
         assert_eq!(result.value, Value::from(42));

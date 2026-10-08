@@ -1440,3 +1440,177 @@ and `describe({"mode":"runtime"})` for the Python authoring guide.
 The canonical schemas and runtime guide are in
 [schemas.rs](crates/state-core/src/schemas.rs). Storage behavior is documented
 in [state-domain](crates/state-domain/README.md).
+
+### `api.publish`
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "expected_revision": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "methods": {
+      "type": "array",
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Method"
+      },
+      "uniqueItems": true
+    },
+    "name": {
+      "type": "string"
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "path": {
+      "$ref": "#/$defs/RoutePattern"
+    },
+    "target": {
+      "$ref": "#/$defs/TargetInput"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "namespace",
+    "name",
+    "path",
+    "target"
+  ],
+  "$defs": {
+    "Method": {
+      "description": "An RFC HTTP method token, including extension methods.",
+      "type": "string"
+    },
+    "RoutePattern": {
+      "description": "Parsed namespace-relative route with unique named captures.",
+      "type": "string"
+    },
+    "TargetInput": {
+      "description": "Publication target; static mounts expose only their directory descendants.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "file": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "function"
+            },
+            "symbol": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "file",
+            "symbol"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "directory": {
+              "type": "string"
+            },
+            "index": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "default": null
+            },
+            "kind": {
+              "type": "string",
+              "const": "static"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "directory"
+          ]
+        }
+      ]
+    }
+  }
+}
+```
+
+### `api.get`
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "namespace": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "namespace",
+    "name"
+  ]
+}
+```
+
+### `api.list`
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "namespace": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "namespace"
+  ]
+}
+```
+
+### `api.remove`
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "expected_revision": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "name": {
+      "type": "string"
+    },
+    "namespace": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "namespace",
+    "name"
+  ]
+}
+```

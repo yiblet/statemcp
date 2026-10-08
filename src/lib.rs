@@ -1,6 +1,4 @@
 //! StateMCP services and official Rust MCP SDK transports.
-mod blocking;
-pub use blocking::{BlockingError, BlockingExecutor};
 pub mod http;
 pub mod protocol;
 

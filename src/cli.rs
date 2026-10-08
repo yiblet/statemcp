@@ -6,6 +6,7 @@ use clap::{Args, Parser, Subcommand};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use state_contract::database::SqlCell;
+use state_contract::http::{ApiGetInput, ApiListInput, ApiPublishInput, ApiRemoveInput};
 use state_contract::{database::*, discovery::*, execution::*, file::*, function::*, namespace::*};
 use state_core::ReceiptIdentity;
 use std::{net::SocketAddr, path::PathBuf};
@@ -73,6 +74,14 @@ pub enum Command {
 
 #[derive(Subcommand)]
 pub enum ToolCommand {
+    #[command(name = "api.publish")]
+    ApiPublish(CliApi),
+    #[command(name = "api.get")]
+    ApiGet(CliApi),
+    #[command(name = "api.list")]
+    ApiList(CliApi),
+    #[command(name = "api.remove")]
+    ApiRemove(CliApi),
     #[command(name = "namespace.create")]
     NamespaceCreate(CliNamespaceCreate),
     #[command(name = "namespace.list")]
@@ -133,6 +142,16 @@ pub enum ToolCommand {
     Execute(CliExecute),
     #[command(name = "describe")]
     Describe(CliDescribe),
+}
+/// HTTP registration uses typed --json contracts; routes are never decorator-scanned.
+#[derive(Args, Serialize)]
+pub struct CliApi {
+    #[command(flatten)]
+    #[serde(skip)]
+    storage: Storage,
+    #[arg(long)]
+    #[serde(skip)]
+    json: Option<String>,
 }
 #[derive(Args, Serialize)]
 pub struct CliNamespaceCreate {
@@ -722,6 +741,10 @@ fn bearer_token(value: &str) -> Result<String> {
 impl ToolCommand {
     pub fn storage(&self) -> &Storage {
         match self {
+            Self::ApiPublish(args)
+            | Self::ApiGet(args)
+            | Self::ApiList(args)
+            | Self::ApiRemove(args) => &args.storage,
             Self::NamespaceCreate(args) => &args.storage,
             Self::NamespaceList(args) => &args.storage,
             Self::NamespaceGet(args) => &args.storage,
@@ -756,6 +779,22 @@ impl ToolCommand {
     }
     pub fn prepare(&self) -> Result<PreparedCommand> {
         match self {
+            Self::ApiPublish(args) => Ok(PreparedCommand::ApiPublish(input::parse(
+                args.json.as_deref(),
+                args,
+            )?)),
+            Self::ApiGet(args) => Ok(PreparedCommand::ApiGet(input::parse(
+                args.json.as_deref(),
+                args,
+            )?)),
+            Self::ApiList(args) => Ok(PreparedCommand::ApiList(input::parse(
+                args.json.as_deref(),
+                args,
+            )?)),
+            Self::ApiRemove(args) => Ok(PreparedCommand::ApiRemove(input::parse(
+                args.json.as_deref(),
+                args,
+            )?)),
             Self::NamespaceCreate(args) => Ok(PreparedCommand::NamespaceCreate(input::parse(
                 args.json.as_deref(),
                 args,
@@ -883,6 +922,10 @@ impl ToolCommand {
 }
 
 pub enum PreparedCommand {
+    ApiPublish(ApiPublishInput),
+    ApiGet(ApiGetInput),
+    ApiList(ApiListInput),
+    ApiRemove(ApiRemoveInput),
     NamespaceCreate(NamespaceCreateInput),
     NamespaceList(NamespaceListInput),
     NamespaceGet(NamespaceGetInput),
@@ -922,6 +965,10 @@ impl PreparedCommand {
             })
         }
         match self {
+            Self::ApiPublish(input) => encode(state.publish_api(input)?),
+            Self::ApiGet(input) => encode(state.get_api(input)?),
+            Self::ApiList(input) => encode(state.list_api(input)?),
+            Self::ApiRemove(input) => encode(state.remove_api(input)?),
             Self::NamespaceCreate(input) => encode(state.create_namespace(input)?),
             Self::NamespaceList(_) => encode(state.list_namespaces()?),
             Self::NamespaceGet(input) => encode(state.get_namespace(input)?),

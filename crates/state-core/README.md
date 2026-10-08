@@ -1,6 +1,6 @@
 # state-core
 
-Application controllers and typed feature services behind StateMCP’s 30 tools.
+Application controllers and typed feature services behind StateMCP’s 34 tools.
 Controllers coordinate root transactions, result validation and receipts.
 Namespaces, Files, Databases, Functions, Execution and DiscoveryService receive
 contract types and an explicitly borrowed Context. No Python installation is needed.
@@ -78,7 +78,7 @@ Public operation contracts live in the capability modules of `state-contract`.
 Persistent manifests, receipts and declaration hashes keep their existing format;
 there are no storage migrations or code compatibility facades.
 
-Async transports use statemcp’s `BlockingExecutor`, supplied explicitly to Server.
+Async transports use state-http’s `BlockingExecutor`, supplied explicitly to Server.
 Its clones share bounded admission, acquired before scheduling blocking work and
 held until that work finishes, including when its async caller is canceled. SQL,
 source reads, interpreter execution and commit remain within the blocking task.
@@ -98,7 +98,7 @@ shapes are documented in `state-domain/README.md` and exposed through
 and returns the endpoint's JSON value directly. `arguments` defaults to `{}`.
 `execute` takes `{script,inputs?,namespace?,idempotency_key?}` and returns
 `{value,stdout}`. `inputs` defaults to null, and `namespace` selects the default
-namespace for helpers. Top-level scripts have owner access and may call all 30
+namespace for helpers. Top-level scripts have owner access and may call all 34
 tools; scripts nested through `mcp` retain that authority and share the root budget.
 Scripts nested inside functions inherit the function's namespace scope.
 
@@ -242,3 +242,14 @@ host files, bind sockets, or launch processes.
 ```sh
 cargo test -p state-core
 ```
+
+## HTTP services
+
+`Api` publishes pinned HTTP handlers or live static mounts, with Sources and
+Runtime injected explicitly. `HttpApplication` resolves typed routes and calls
+Execution/Files in a borrowed Context. `Controller::handle_http` validates raw
+response bytes/metadata and commits before transport writing; it does not JSON
+encode the response internally. HTTP callbacks use the same namespace scope and
+primitive services as ordinary functions. No per-route permissions are added.
+The state-http crate owns async body collection, shared BlockingExecutor admission,
+URL reporting and Axum response writing. Core/domain/runtime never import it.

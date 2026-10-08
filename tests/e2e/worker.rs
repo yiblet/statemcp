@@ -278,7 +278,7 @@ fn worker_does_not_need_python_or_modify_parent_allocator() {
         String::from_utf8_lossy(&output.stderr)
     );
     let frame: Value = serde_json::from_slice(&output.stdout[4..]).unwrap();
-    assert_eq!(frame["result"]["value"], json!(42));
+    assert_eq!(frame["result"]["result"]["value"], json!(42));
 }
 
 #[test]

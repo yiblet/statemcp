@@ -163,7 +163,7 @@ async fn prefixed_routes_share_sessions_and_health_is_public() {
             .as_array()
             .unwrap()
             .len(),
-        30
+        34
     );
     for uri in ["/health", "/mcp", "/mcp/", "/statemcp/mcpx"] {
         let response = app
@@ -177,7 +177,15 @@ async fn prefixed_routes_share_sessions_and_health_is_public() {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+        assert_eq!(
+            response.status(),
+            if uri == "/statemcp/mcpx" {
+                StatusCode::UNAUTHORIZED
+            } else {
+                StatusCode::NOT_FOUND
+            },
+            "{uri}"
+        );
     }
     let response = app
         .oneshot(
@@ -258,7 +266,7 @@ async fn authenticated_http_sessions_execute_and_share_persistent_state() {
             .as_array()
             .unwrap()
             .len(),
-        30
+        34
     );
     let created = tool(&app, &session, "execute", json!({"script":"mcp('namespace.create', { 'name': 'http'})\nmcp('fs.write', { 'namespace': 'http', 'path': '/saved', 'text': 'persisted'})\n42"}), Some("secret-token")).await;
     assert_eq!(created["isError"], false);
@@ -405,6 +413,30 @@ async fn http_without_bearer_is_optional_and_protocol_headers_are_checked() {
 
 struct SlowBackend;
 impl state_core::RuntimeBackend for SlowBackend {
+    fn invoke_http(
+        &self,
+        _: &str,
+        _: &state_runtime::ModuleSources,
+        _: &str,
+        _: state_contract::http::HttpRequest,
+        _: &state_runtime::Limits,
+        _: &mut state_runtime::HostCallback<'_>,
+    ) -> std::result::Result<state_runtime::HttpRunResult, state_runtime::RuntimeError> {
+        Err(state_runtime::RuntimeError::new(
+            state_contract::ErrorCode::PythonError,
+            "test backend HTTP failure",
+        ))
+    }
+    fn validate_http(
+        &self,
+        source: &str,
+        modules: &state_runtime::ModuleSources,
+        symbol: &str,
+        limits: &state_runtime::Limits,
+    ) -> std::result::Result<(), state_runtime::RuntimeError> {
+        self.validate_module(source, modules, symbol, limits)
+    }
+
     fn execute(
         &self,
         _: &str,
@@ -477,7 +509,7 @@ async fn synchronous_invocation_does_not_block_async_http_requests() {
             .as_array()
             .unwrap()
             .len(),
-        30
+        34
     );
     assert!(
         start.elapsed() < Duration::from_millis(200),
@@ -599,8 +631,8 @@ async fn http_sessions_share_state_across_protocol_versions() {
     let app = app(fixture.state_async().await.unwrap(), Some("sdk-token"));
     let first = HttpClient::new(app.clone(), "2025-06-18").await;
     let second = HttpClient::new(app, "2025-03-26").await;
-    assert_eq!(first.list_tools().await.len(), 30);
-    assert_eq!(second.list_tools().await.len(), 30);
+    assert_eq!(first.list_tools().await.len(), 34);
+    assert_eq!(second.list_tools().await.len(), 34);
     http_tool(&first, "namespace.create", json!({"name":"shared"})).await;
     http_tool(
         &first,
@@ -661,5 +693,207 @@ async fn tools_list_includes_required_cache_fields_for_current_protocol() {
     assert_eq!(result["result"]["ttlMs"], 0);
     assert_eq!(result["result"]["cacheScope"], "public");
     assert_eq!(result["result"]["resultType"], "complete");
-    assert_eq!(result["result"]["tools"].as_array().unwrap().len(), 30);
+    assert_eq!(result["result"]["tools"].as_array().unwrap().len(), 34);
+}
+
+#[tokio::test]
+async fn namespace_http_publication_urls_methods_and_binary_static()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = Fixture::new();
+    let app = app(directory.state_async().await?, Some("secret"));
+    let session = initialize(&app, Some("secret")).await;
+    tool(
+        &app,
+        &session,
+        "namespace.create",
+        json!({"name":"web"}),
+        Some("secret"),
+    )
+    .await;
+    tool(&app,&session,"fs.write",json!({"namespace":"web","path":"/web.py","text":"def handle(request):\n    return request.body, 201, [('X-Method',request.method),('Set-Cookie','a=1'),('Set-Cookie','b=2')]"}),Some("secret")).await;
+    let published=tool_value(&tool(&app,&session,"api.publish",json!({"namespace":"web","name":"echo","path":"/echo","target":{"kind":"function","file":"/web.py","symbol":"handle"}}),Some("secret")).await);
+    assert_eq!(published["urls"], json!(["http://127.0.0.1:8000/web/echo"]));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("CUSTOM")
+                .uri("/web/echo")
+                .header("host", "127.0.0.1:8000")
+                .header("authorization", "Bearer secret")
+                .body(Body::from(vec![0, 255, 1]))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-method")
+            .and_then(|v| v.to_str().ok()),
+        Some("CUSTOM")
+    );
+    assert_eq!(response.headers().get_all("set-cookie").iter().count(), 2);
+    assert_eq!(
+        to_bytes(response.into_body(), 1024).await?.as_ref(),
+        [0, 255, 1]
+    );
+    for method in ["GET", "POST", "HEAD", "OPTIONS", "CUSTOM"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri("/web/echo")
+                    .header("host", "127.0.0.1:8000")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    tool(
+        &app,
+        &session,
+        "fs.write",
+        json!({"namespace":"web","path":"/public/index.html","text":"<h1>web</h1>"}),
+        Some("secret"),
+    )
+    .await;
+    tool(
+        &app,
+        &session,
+        "fs.write",
+        json!({"namespace":"web","path":"/public/data.bin","base64":"AP8="}),
+        Some("secret"),
+    )
+    .await;
+    let site=tool_value(&tool(&app,&session,"api.publish",json!({"namespace":"web","name":"site","path":"/site/{*path}","target":{"kind":"static","directory":"/public","index":"index.html"}}),Some("secret")).await);
+    assert_eq!(site["urls"], json!(["http://127.0.0.1:8000/web/site/"]));
+    let req = |method, path| {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .header("host", "127.0.0.1:8000")
+            .header("authorization", "Bearer secret")
+            .body(Body::empty())
+    };
+    let redirect = app.clone().oneshot(req("GET", "/web/site")?).await?;
+    assert_eq!(redirect.status(), StatusCode::PERMANENT_REDIRECT);
+    let response = app.clone().oneshot(req("GET", "/web/site/")?).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let etag = response
+        .headers()
+        .get("etag")
+        .cloned()
+        .ok_or("missing etag")?;
+    assert_eq!(
+        to_bytes(response.into_body(), 1024).await?.as_ref(),
+        b"<h1>web</h1>"
+    );
+    let mut conditional = req("GET", "/web/site/")?;
+    conditional.headers_mut().insert("if-none-match", etag);
+    assert_eq!(
+        app.clone().oneshot(conditional).await?.status(),
+        StatusCode::NOT_MODIFIED
+    );
+    let head = app
+        .clone()
+        .oneshot(req("HEAD", "/web/site/data.bin")?)
+        .await?;
+    assert_eq!(head.status(), StatusCode::OK);
+    assert_eq!(
+        head.headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok()),
+        Some("2")
+    );
+    assert!(to_bytes(head.into_body(), 1024).await?.is_empty());
+    let get = app
+        .clone()
+        .oneshot(req("GET", "/web/site/data.bin")?)
+        .await?;
+    assert_eq!(to_bytes(get.into_body(), 1024).await?.as_ref(), [0, 255]);
+    assert_eq!(
+        app.clone()
+            .oneshot(req("GET", "/web/site/%2e%2e/web.py")?)
+            .await?
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(req("GET", "/web/site/missing")?)
+            .await?
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn prefixed_namespace_paths_keep_trailing_slashes_and_body_caps()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = Fixture::new();
+    let controller = directory.state_async().await?;
+    tokio::task::spawn_blocking({let c=controller.clone();move ||->state_core::Result<()> {
+        c.create_namespace(serde_json::from_value(json!({"name":"web"})).map_err(|e|state_core::Error::new(state_core::ErrorCode::InvalidArgument,e.to_string()))?)?;
+        c.write_file(serde_json::from_value(json!({"namespace":"web","path":"/web.py","text":"def handle(request):\n    write_text('/ran','yes')\n    return {'path':request.path, 'url':request.url}"})).map_err(|e|state_core::Error::new(state_core::ErrorCode::InvalidArgument,e.to_string()))?)?;
+        c.publish_api(serde_json::from_value(json!({"namespace":"web","name":"path","path":"/path/","methods":["POST"],"target":{"kind":"function","file":"/web.py","symbol":"handle"}})).map_err(|e|state_core::Error::new(state_core::ErrorCode::InvalidArgument,e.to_string()))?)?;Ok(())
+    }}).await??;
+    let app = router(
+        controller.clone(),
+        HttpOptions::new("127.0.0.1:8000".parse()?, None)?.with_prefix("/prefix".parse()?),
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/prefix/web/path/")
+                .header("host", "127.0.0.1:8000")
+                .body(Body::from(vec![0; 1024 * 1024 + 1]))?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    tokio::task::spawn_blocking(move || {
+        assert!(
+            controller
+                .read_file(
+                    serde_json::from_value(json!({"namespace":"web","path":"/ran"})).map_err(
+                        |e| state_core::Error::new(
+                            state_core::ErrorCode::InvalidArgument,
+                            e.to_string()
+                        )
+                    )?
+                )
+                .is_err()
+        );
+        Ok::<_, state_core::Error>(())
+    })
+    .await??;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/prefix/web/path/")
+                .header("host", "127.0.0.1:8000")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&to_bytes(response.into_body(), 4096).await?)?;
+    assert_eq!(body["path"], "/prefix/web/path/");
+    assert_eq!(body["url"], "http://127.0.0.1:8000/prefix/web/path/");
+    assert_eq!(
+        app.oneshot(
+            Request::builder()
+                .uri("/prefix/web/path")
+                .header("host", "127.0.0.1:8000")
+                .body(Body::empty())?
+        )
+        .await?
+        .status(),
+        StatusCode::NOT_FOUND
+    );
+    Ok(())
 }

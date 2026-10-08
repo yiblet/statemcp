@@ -2784,6 +2784,7 @@ dependencies = [
 name = "state-contract"
 version = "0.1.0"
 dependencies = [
+ "http",
  "schemars",
  "serde",
  "serde_json",
@@ -2827,6 +2828,20 @@ name = "state-fs"
 version = "0.1.0"
 
 [[package]]
+name = "state-http"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "state-contract",
+ "state-core",
+ "state-domain",
+ "state-fs",
+ "state-store",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "state-migrations"
 version = "0.1.0"
 dependencies = [
@@ -2845,6 +2860,8 @@ dependencies = [
  "serde",
  "serde_json",
  "state-contract",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -2875,13 +2892,13 @@ dependencies = [
  "state-core",
  "state-domain",
  "state-fs",
+ "state-http",
  "state-runtime",
  "state-store",
  "subtle",
  "tempfile",
  "tokio",
  "tower",
- "tower-http",
  "tracing",
  "tracing-subscriber",
 ]

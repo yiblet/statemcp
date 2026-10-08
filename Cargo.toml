@@ -8,13 +8,13 @@ license = "MIT"
 
 [dependencies]
 axum = "0.8"
-tower-http = { version = "0.6", features = ["normalize-path"] }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "time", "macros"] }
 subtle = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 state-core = { path = "crates/state-core" }
+state-http = { path = "crates/state-http" }
 state-domain = { path = "crates/state-domain" }
 state-contract = { path = "crates/state-contract" }
 state-runtime = { path = "crates/state-runtime" }

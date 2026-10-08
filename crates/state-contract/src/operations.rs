@@ -30,6 +30,7 @@ macro_rules! wire_enum {
 }
 
 wire_enum!(Tool {
+    Api => "api",
     Namespace => "namespace",
     File => "fs",
     Database => "db",
@@ -41,6 +42,7 @@ wire_enum!(Tool {
 impl Tool {
     pub fn public_name(self) -> &'static str {
         match self {
+            Self::Api => "api",
             Self::Namespace => "namespace",
             Self::File => "fs",
             Self::Database => "db",
@@ -53,6 +55,7 @@ impl Tool {
     pub fn with_action(self, action: Option<&str>) -> Result<Operation> {
         let action = || action.ok_or_else(|| Error::invalid("action must be a string"));
         Ok(match self {
+            Self::Api => Operation::Api(action()?.parse()?),
             Self::Namespace => Operation::Namespace(
                 action()?
                     .parse()
@@ -79,6 +82,8 @@ impl Tool {
         })
     }
 }
+
+wire_enum!(ApiAction { Publish => "publish", Get => "get", List => "list", Remove => "remove" });
 
 wire_enum!(NamespaceAction {
     Create => "create",
@@ -118,6 +123,7 @@ wire_enum!(FunctionAction {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operation {
+    Api(ApiAction),
     Namespace(NamespaceAction),
     File(FileAction),
     Database(DatabaseAction),
@@ -129,6 +135,7 @@ pub enum Operation {
 impl Operation {
     pub fn tool(self) -> Tool {
         match self {
+            Self::Api(_) => Tool::Api,
             Self::Namespace(_) => Tool::Namespace,
             Self::File(_) => Tool::File,
             Self::Database(_) => Tool::Database,
@@ -140,6 +147,7 @@ impl Operation {
     }
     pub fn action_name(self) -> Option<&'static str> {
         match self {
+            Self::Api(action) => Some(action.as_str()),
             Self::Namespace(action) => Some(action.as_str()),
             Self::File(action) => Some(action.as_str()),
             Self::Database(action) => Some(action.as_str()),
@@ -173,20 +181,23 @@ impl Operation {
     pub fn mutates_resource(self) -> bool {
         matches!(
             self,
-            Self::File(
-                FileAction::Write
-                    | FileAction::Append
-                    | FileAction::Move
-                    | FileAction::Copy
-                    | FileAction::Delete
-            ) | Self::Database(
-                DatabaseAction::Create
-                    | DatabaseAction::Drop
-                    | DatabaseAction::Execute
-                    | DatabaseAction::Migrate
-            ) | Self::Function(
-                FunctionAction::Declare | FunctionAction::Update | FunctionAction::Remove
-            )
+            Self::Api(ApiAction::Publish | ApiAction::Remove)
+                | Self::File(
+                    FileAction::Write
+                        | FileAction::Append
+                        | FileAction::Move
+                        | FileAction::Copy
+                        | FileAction::Delete
+                )
+                | Self::Database(
+                    DatabaseAction::Create
+                        | DatabaseAction::Drop
+                        | DatabaseAction::Execute
+                        | DatabaseAction::Migrate
+                )
+                | Self::Function(
+                    FunctionAction::Declare | FunctionAction::Update | FunctionAction::Remove
+                )
         )
     }
     pub fn publishes_namespace(self) -> bool {

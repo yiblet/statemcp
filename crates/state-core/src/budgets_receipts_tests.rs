@@ -10,6 +10,30 @@ struct ObservingBackend {
     seen: Mutex<Vec<Duration>>,
 }
 impl RuntimeBackend for ObservingBackend {
+    fn invoke_http(
+        &self,
+        _: &str,
+        _: &state_runtime::ModuleSources,
+        _: &str,
+        _: state_contract::http::HttpRequest,
+        _: &state_runtime::Limits,
+        _: &mut state_runtime::HostCallback<'_>,
+    ) -> std::result::Result<state_runtime::HttpRunResult, state_runtime::RuntimeError> {
+        Err(state_runtime::RuntimeError::new(
+            state_contract::ErrorCode::PythonError,
+            "test backend HTTP failure",
+        ))
+    }
+    fn validate_http(
+        &self,
+        source: &str,
+        modules: &state_runtime::ModuleSources,
+        symbol: &str,
+        limits: &state_runtime::Limits,
+    ) -> std::result::Result<(), state_runtime::RuntimeError> {
+        self.validate_module(source, modules, symbol, limits)
+    }
+
     fn execute(
         &self,
         _: &str,
@@ -74,6 +98,30 @@ fn nested_execution_gets_only_remaining_root_wall_budget() {
 
 struct CatchingBackend;
 impl RuntimeBackend for CatchingBackend {
+    fn invoke_http(
+        &self,
+        _: &str,
+        _: &state_runtime::ModuleSources,
+        _: &str,
+        _: state_contract::http::HttpRequest,
+        _: &state_runtime::Limits,
+        _: &mut state_runtime::HostCallback<'_>,
+    ) -> std::result::Result<state_runtime::HttpRunResult, state_runtime::RuntimeError> {
+        Err(state_runtime::RuntimeError::new(
+            state_contract::ErrorCode::PythonError,
+            "test backend HTTP failure",
+        ))
+    }
+    fn validate_http(
+        &self,
+        source: &str,
+        modules: &state_runtime::ModuleSources,
+        symbol: &str,
+        limits: &state_runtime::Limits,
+    ) -> std::result::Result<(), state_runtime::RuntimeError> {
+        self.validate_module(source, modules, symbol, limits)
+    }
+
     fn execute(
         &self,
         _: &str,
@@ -139,6 +187,30 @@ struct RacingBackend {
     release: Mutex<mpsc::Receiver<()>>,
 }
 impl RuntimeBackend for RacingBackend {
+    fn invoke_http(
+        &self,
+        _: &str,
+        _: &state_runtime::ModuleSources,
+        _: &str,
+        _: state_contract::http::HttpRequest,
+        _: &state_runtime::Limits,
+        _: &mut state_runtime::HostCallback<'_>,
+    ) -> std::result::Result<state_runtime::HttpRunResult, state_runtime::RuntimeError> {
+        Err(state_runtime::RuntimeError::new(
+            state_contract::ErrorCode::PythonError,
+            "test backend HTTP failure",
+        ))
+    }
+    fn validate_http(
+        &self,
+        source: &str,
+        modules: &state_runtime::ModuleSources,
+        symbol: &str,
+        limits: &state_runtime::Limits,
+    ) -> std::result::Result<(), state_runtime::RuntimeError> {
+        self.validate_module(source, modules, symbol, limits)
+    }
+
     fn execute(
         &self,
         source: &str,

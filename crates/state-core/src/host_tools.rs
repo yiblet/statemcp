@@ -2,6 +2,7 @@
 use crate::{Error, Result, hosts::Host};
 use serde::Serialize;
 use serde_json::Value;
+use state_contract::http::{ApiGetInput, ApiListInput, ApiPublishInput, ApiRemoveInput};
 use state_contract::{database::*, discovery::*, execution::*, file::*, function::*, namespace::*};
 
 fn encode(value: impl Serialize) -> Result<Value> {
@@ -23,6 +24,10 @@ impl Host<'_> {
             input.resolve_self(namespace);
         }
         let result = match input {
+            HostTool::ApiPublish(input) => encode(self.api.publish(input, self.context)?)?,
+            HostTool::ApiGet(input) => encode(self.api.get(input, self.context)?)?,
+            HostTool::ApiList(input) => encode(self.api.list(input, self.context)?)?,
+            HostTool::ApiRemove(input) => encode(self.api.remove(input, self.context)?)?,
             HostTool::NamespaceCreate(input) => {
                 encode(self.namespaces.create_namespace(input, self.context)?)?
             }
@@ -105,6 +110,10 @@ impl Scope for HostTool {
             }
         }
         match self {
+            Self::ApiPublish(input) => resolve(&mut input.namespace, namespace),
+            Self::ApiGet(input) => resolve(&mut input.namespace, namespace),
+            Self::ApiList(input) => resolve(&mut input.namespace, namespace),
+            Self::ApiRemove(input) => resolve(&mut input.namespace, namespace),
             Self::NamespaceCreate(_) => {}
             Self::NamespaceList(_) => {}
             Self::NamespaceGet(input) => resolve(&mut input.namespace, namespace),
@@ -173,6 +182,10 @@ impl Scope for HostTool {
 /// Tool names are parsed only at external JSON boundaries. Each variant owns its exact input type.
 #[derive(Clone, Debug)]
 enum HostTool {
+    ApiPublish(ApiPublishInput),
+    ApiGet(ApiGetInput),
+    ApiList(ApiListInput),
+    ApiRemove(ApiRemoveInput),
     NamespaceCreate(NamespaceCreateInput),
     NamespaceList(NamespaceListInput),
     NamespaceGet(NamespaceGetInput),
@@ -208,6 +221,26 @@ impl HostTool {
     fn parse(name: &str, arguments: Value) -> Result<Self> {
         Ok(
             match state_contract::operations::Operation::from_public_name(name)? {
+                state_contract::operations::Operation::Api(
+                    state_contract::operations::ApiAction::Publish,
+                ) => Self::ApiPublish(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Api(
+                    state_contract::operations::ApiAction::Get,
+                ) => Self::ApiGet(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Api(
+                    state_contract::operations::ApiAction::List,
+                ) => Self::ApiList(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Api(
+                    state_contract::operations::ApiAction::Remove,
+                ) => Self::ApiRemove(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
                 state_contract::operations::Operation::Namespace(
                     state_contract::operations::NamespaceAction::Create,
                 ) => Self::NamespaceCreate(

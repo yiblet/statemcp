@@ -181,3 +181,64 @@ composition and typed transactional embedding.
 The MCP server receives a shared `BlockingExecutor`; cloned sessions share
 admission and execute synchronous application work off the async workers. Existing
 stores retain their format and require no migration for this service rewrite.
+
+## HTTP APIs and websites
+
+Use `api.publish` through MCP or `statemcp cli api.publish DATA_DIR --json ...`.
+HTTP handlers receive exactly one positional request; routes require no decorators:
+
+```python
+def handle(request):
+    if request.method == "POST":
+        db_execute("app", "INSERT INTO notes(text) VALUES (?)", [request.json["text"]])
+    return {"notes": db_query("app", "SELECT text FROM notes")["rows"]}
+```
+
+```json
+{"namespace":"notes","name":"notes-api","path":"/api/notes","methods":["GET","POST"],"target":{"kind":"function","file":"/web.py","symbol":"handle"}}
+```
+
+Write the Python file and create its databases first. Publication pins the current
+source and imports. Omit `methods` to handle any HTTP method, including extensions.
+Paths accept `{id}` captures and a final `{*path}`; captures are in
+`request.view_args`. Use `api.get`, `api.list`, and `api.remove` to manage routes.
+On HTTP MCP, publication returns actual hosted URL patterns, including server
+prefixes. CLI/stdin publication has no listening endpoint and returns empty URLs;
+use HTTP MCP `api.get` once serving to discover the location.
+
+Mount static namespace files explicitly:
+
+```json
+{"namespace":"notes","name":"site","path":"/{*path}","target":{"kind":"static","directory":"/public","index":"index.html"}}
+```
+
+This serves `/public/index.html` at `/notes/` and its assets beneath that URL.
+Directories redirect to trailing-slash URLs; binary assets, HEAD and ETags work.
+Namespace file updates become visible on the next request. Routes follow namespace
+copy/rename/delete; a stable UUID URL alias is also available.
+
+Start `statemcp http DATA_DIR --bind 127.0.0.1:8000`, then call the API with
+`curl http://127.0.0.1:8000/notes/api/notes`. Existing bearer/host/origin policy covers
+namespace APIs and websites as well as MCP. Handlers have full access to their own
+namespace's files, databases, functions and API declarations, with no per-route
+permission lists. Cross-namespace access is denied.
+
+Request properties include `body`/`data` bytes, `text`, `json`, `headers`, `args`,
+`view_args`, `form`, `files`, `cookies`, `method`, `path`, `full_path`, `url`,
+`base_url`, `host`, `scheme`, and content metadata. Query/form/header mappings
+support indexing, `get`, `getlist`, and `items(multi=True)`. Upload objects expose
+`filename`, `content_type`, and byte `body`. `get_json(force=False, silent=False)`
+and `get_data(as_text=False)` are available. Requests are buffered up to 1 MiB;
+query strings, headers and form field counts have separate bounds.
+
+Return text or bytes; dict/list values produce JSON. Flask tuples `(body,status)`,
+`(body,headers)` and `(body,status,headers)` control status/headers; lists remain JSON.
+`Response(body, status=200, headers=..., content_type=...)` is also available.
+Repeated response headers are retained. This implements ordinary buffered Flask
+return forms; streaming generators and WSGI applications are outside this scope.
+A valid returned error status commits writes. Invalid responses and failed host
+operations roll back every write in the request's shared transaction.
+
+Old stored namespaces need no migration. HTTP routes are optional manifest
+metadata; ordinary function formats and declaration hashes are unchanged. Use the
+current binary when writing route metadata; older binaries do not understand it.

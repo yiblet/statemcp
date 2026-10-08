@@ -15,6 +15,8 @@ use std::{path::Path, sync::Arc};
 /// Operations are synchronous; async callers must use a blocking execution boundary.
 #[derive(Clone)]
 pub struct Controller {
+    api: crate::Api,
+    http: crate::HttpApplication,
     store: Store,
     runtime: Runtime,
     namespaces: NamespaceService,
@@ -27,6 +29,67 @@ pub struct Controller {
     principal: String,
 }
 impl Controller {
+    /// HTTP route declarations for custom use cases.
+    pub fn api(&self) -> &crate::Api {
+        &self.api
+    }
+    /// Publish a route in one root transaction, including its committed namespace revision.
+    pub fn publish_api(
+        &self,
+        input: state_contract::http::ApiPublishInput,
+    ) -> Result<Committed<state_contract::http::ApiPublished>> {
+        self.mutation(&input.namespace.clone(), |context| {
+            self.api.publish(input, context)
+        })
+    }
+    /// Get HTTP route metadata without pinned source.
+    pub fn get_api(
+        &self,
+        input: state_contract::http::ApiGetInput,
+    ) -> Result<state_contract::http::ApiPublished> {
+        self.transaction(|context| self.api.get(input, context))
+            .map(|(r, _)| r)
+    }
+    /// List HTTP route metadata.
+    pub fn list_api(
+        &self,
+        input: state_contract::http::ApiListInput,
+    ) -> Result<Vec<state_contract::http::ApiPublished>> {
+        self.transaction(|context| self.api.list(input, context))
+            .map(|(r, _)| r)
+    }
+    /// Remove a named HTTP route atomically.
+    pub fn remove_api(
+        &self,
+        input: state_contract::http::ApiRemoveInput,
+    ) -> Result<Committed<state_contract::http::ApiRemoved>> {
+        self.mutation(&input.namespace.clone(), |context| {
+            self.api.remove(input, context)
+        })
+    }
+    /// Handle one bounded HTTP request; validates output before root commit.
+    pub fn handle_http(
+        &self,
+        namespace: &str,
+        path: &str,
+        request: state_contract::http::HttpRequest,
+    ) -> Result<state_contract::http::HttpResponse> {
+        let mut context = Context::new(self.store.begin()?, self.limits.clone());
+        let response = self.http.handle(namespace, path, request, &mut context)?;
+        let bytes = response
+            .headers()
+            .iter()
+            .fold(response.body().len(), |size, (name, value)| {
+                size.saturating_add(name.len()).saturating_add(value.len())
+            });
+        if bytes > self.limits.max_result_bytes {
+            return Err(Error::limit("HTTP result byte limit exceeded"));
+        }
+        context.check()?;
+        context.finish()?;
+        Ok(response)
+    }
+
     /// Open an embedded service; does not launch another executable.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self::with_backend(
@@ -41,7 +104,9 @@ impl Controller {
         let namespaces = NamespaceService;
         let functions = Functions::new(Sources::new(Arc::new(files)), runtime.clone());
         let discovery = DiscoveryService::new(functions.clone());
+        let api = crate::Api::new(Sources::new(Arc::new(files)), runtime.clone());
         let execution = Execution::new(
+            api.clone(),
             functions.clone(),
             files,
             databases,
@@ -49,7 +114,10 @@ impl Controller {
             discovery.clone(),
             runtime.clone(),
         );
+        let http = crate::HttpApplication::new(files, execution.clone());
         Self {
+            api,
+            http,
             store,
             runtime,
             namespaces,

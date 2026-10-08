@@ -6,8 +6,9 @@ use cli::{Cli, Command, Storage, ToolCommand};
 use rmcp::{ServiceExt, transport::stdio};
 use state_core::Controller;
 use state_domain::Store;
+use state_http::BlockingExecutor;
 use state_runtime::WorkerConfig;
-use statemcp::{BlockingExecutor, Server, http::HttpOptions};
+use statemcp::{Server, http::HttpOptions};
 use std::{env, process::ExitCode, sync::Arc};
 use tracing_subscriber::EnvFilter;
 

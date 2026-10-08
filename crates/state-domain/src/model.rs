@@ -10,6 +10,8 @@ pub struct Receipt {
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub(crate) struct Manifest {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) routes: BTreeMap<String, state_contract::http::Route>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) description: Option<String>,
     #[serde(default)]

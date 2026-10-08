@@ -7,6 +7,18 @@ use std::sync::OnceLock;
 
 fn tool_description(operation: Operation) -> &'static str {
     match operation {
+        Operation::Api(state_contract::operations::ApiAction::Publish) => {
+            "Publish or replace an HTTP function route or static website mount beneath /namespace/. Handler receives one Request and returns Flask buffered response forms. Omitted methods means all methods for functions. Namespace-wide access and atomic writes; source/imports pinned at publication. Returns hosted URL patterns."
+        }
+        Operation::Api(state_contract::operations::ApiAction::Get) => {
+            "Get one named HTTP route and its hosted URL patterns, without pinned source."
+        }
+        Operation::Api(state_contract::operations::ApiAction::List) => {
+            "List HTTP function routes and static mounts in a namespace with hosted URL patterns."
+        }
+        Operation::Api(state_contract::operations::ApiAction::Remove) => {
+            "Remove a named HTTP route, optionally guarding the namespace revision."
+        }
         Operation::Namespace(crate::NamespaceAction::Create) => {
             "Create an empty namespace with an optional description for files, SQLite databases, and published functions."
         }
@@ -118,6 +130,12 @@ pub(crate) fn typed_tool_definitions(full: bool) -> Vec<ToolDefinition> {
         .chain(FileAction::ALL.iter().copied().map(Operation::File))
         .chain(DatabaseAction::ALL.iter().copied().map(Operation::Database))
         .chain(FunctionAction::ALL.iter().copied().map(Operation::Function))
+        .chain(
+            state_contract::operations::ApiAction::ALL
+                .iter()
+                .copied()
+                .map(Operation::Api),
+        )
         .chain([Operation::Call, Operation::Execute, Operation::Describe])
         .map(|operation| ToolDefinition {
             name: operation.public_name(),

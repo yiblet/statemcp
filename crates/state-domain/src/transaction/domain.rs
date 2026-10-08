@@ -164,7 +164,10 @@ impl Transaction {
             )
         })
     }
-    fn staged_namespace_mut(&mut self, key: &str) -> Result<&mut crate::model::Namespace> {
+    pub(super) fn staged_namespace_mut(
+        &mut self,
+        key: &str,
+    ) -> Result<&mut crate::model::Namespace> {
         self.namespaces.get_mut(key).ok_or_else(|| {
             Error::new(
                 crate::ErrorCode::CorruptStore,
@@ -188,7 +191,11 @@ impl Transaction {
             revision: ns.revision.clone(),
         }
     }
-    fn namespace_for_change(&self, selector: &str, revision: Option<&str>) -> Result<String> {
+    pub(super) fn namespace_for_change(
+        &self,
+        selector: &str,
+        revision: Option<&str>,
+    ) -> Result<String> {
         let key = self.selected(selector)?;
         self.check_revision(&key, revision)?;
         Ok(key)
@@ -793,41 +800,17 @@ impl Transaction {
             sources,
         )
     }
-    #[allow(clippy::too_many_arguments)]
-    fn publish_function(
-        &mut self,
-        namespace: &str,
-        function_name: &str,
+    pub(super) fn verify_sources(
+        &self,
+        key: &str,
         file: &str,
-        symbol: &str,
-        description: Option<&str>,
-        input_schema: Option<&EndpointSchema>,
-        output_schema: Option<&EndpointSchema>,
-        revision: Option<&str>,
-        version: Option<&str>,
-        sources: FunctionSources,
-    ) -> Result<FunctionPublished> {
-        let key = self.namespace_for_change(namespace, revision)?;
-        let function_name = name(function_name)?;
-        let existing = self
-            .staged_namespace(&key)?
-            .manifest
-            .functions
-            .get(&function_name);
-        if let Some(version) = version
-            && existing.map(|record| record.version.as_str()) != Some(version)
-        {
-            return Err(Error::new(
-                crate::ErrorCode::Conflict,
-                "function version does not match",
-            ));
-        }
-        let file = virtual_path(file)?;
+        sources: &FunctionSources,
+    ) -> Result<String> {
         let source_hash = self
-            .staged_namespace(&key)?
+            .staged_namespace(key)?
             .manifest
             .files
-            .get(&file)
+            .get(file)
             .cloned()
             .ok_or_else(|| Error::new(crate::ErrorCode::NotFound, "source file does not exist"))?;
         // Publication consumes exactly the snapshot validated by the runtime.
@@ -836,7 +819,7 @@ impl Transaction {
                 "validated source differs from the transaction snapshot",
             ));
         }
-        let expected_modules = &self.staged_namespace(&key)?.manifest.files;
+        let expected_modules = &self.staged_namespace(key)?.manifest.files;
         let mut module_count = 0usize;
         let mut module_bytes = 0usize;
         for (path, hash_value) in expected_modules {
@@ -874,6 +857,39 @@ impl Transaction {
                 "module source byte limit exceeded",
             ));
         }
+        Ok(source_hash)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn publish_function(
+        &mut self,
+        namespace: &str,
+        function_name: &str,
+        file: &str,
+        symbol: &str,
+        description: Option<&str>,
+        input_schema: Option<&EndpointSchema>,
+        output_schema: Option<&EndpointSchema>,
+        revision: Option<&str>,
+        version: Option<&str>,
+        sources: FunctionSources,
+    ) -> Result<FunctionPublished> {
+        let key = self.namespace_for_change(namespace, revision)?;
+        let function_name = name(function_name)?;
+        let existing = self
+            .staged_namespace(&key)?
+            .manifest
+            .functions
+            .get(&function_name);
+        if let Some(version) = version
+            && existing.map(|record| record.version.as_str()) != Some(version)
+        {
+            return Err(Error::new(
+                crate::ErrorCode::Conflict,
+                "function version does not match",
+            ));
+        }
+        let file = virtual_path(file)?;
+        let source_hash = self.verify_sources(&key, &file, &sources)?;
         if symbol.is_empty() {
             return Err(Error::invalid("symbol must be a nonempty string"));
         }

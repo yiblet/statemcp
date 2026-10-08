@@ -55,6 +55,7 @@ fn encode(value: impl Serialize) -> Result<Value> {
     serde_json::to_value(value).map_err(|e| Error::invalid(e.to_string()))
 }
 pub(crate) struct Host<'a> {
+    pub(crate) api: &'a crate::Api,
     pub(crate) executor: &'a dyn CodeExecutor,
     pub(crate) files: &'a Files,
     pub(crate) databases: &'a Databases,

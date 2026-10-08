@@ -16,6 +16,16 @@ pub fn schema(operation: crate::operations::Operation) -> schemars::Schema {
         schema
     }
     match operation {
+        Operation::Api(crate::operations::ApiAction::Publish) => {
+            generate::<crate::http::ApiPublishInput>()
+        }
+        Operation::Api(crate::operations::ApiAction::Get) => generate::<crate::http::ApiGetInput>(),
+        Operation::Api(crate::operations::ApiAction::List) => {
+            generate::<crate::http::ApiListInput>()
+        }
+        Operation::Api(crate::operations::ApiAction::Remove) => {
+            generate::<crate::http::ApiRemoveInput>()
+        }
         Operation::Namespace(NamespaceAction::Create) => generate::<NamespaceCreateInput>(),
 
         Operation::Namespace(NamespaceAction::List) => generate::<NamespaceListInput>(),
