@@ -106,6 +106,36 @@ assert_result() {
         echo "FAIL: $label (unexpected result: $(result))" >&2
     fi
 }
+# Exercise published endpoints separately from the MCP control plane.
+http_request() {
+    local label=$1 method=$2 path=$3 expected=$4 body=${5:-} status curl_exit=0
+    local endpoint="${url%/mcp}$path"
+    jq -cn --arg method "$method" --arg url "$endpoint" --arg body "$body" \
+        '{type:"http_request",method:$method,url:$url,body:$body}' >> "$output"
+    : > "$work/http-body"
+    : > "$work/http-headers"
+    local -a arguments=(--request "$method")
+    [[ $method != HEAD ]] || arguments=(--head)
+    [[ -z $body ]] || arguments+=(--data-binary "$body")
+    status=$(curl --silent --show-error --connect-timeout 3 --max-time 15 \
+        -D "$work/http-headers" -o "$work/http-body" -w '%{http_code}' \
+        "${arguments[@]}" "$endpoint" 2>"$work/curl-error") || curl_exit=$?
+    jq -cn --arg status "$status" --rawfile body "$work/http-body" \
+        '{type:"http_response",status:$status,body:$body}' >> "$output"
+    count=$((count+1))
+    if [[ $curl_exit != 0 || $status != "$expected" ]]; then
+        failures=$((failures+1))
+        echo "FAIL: $label (expected HTTP $expected, got $status)" >&2
+        cat "$work/curl-error" >&2
+    fi
+}
+assert_http() {
+    local label=$1 predicate=$2
+    if ! jq -e "$predicate" "$work/http-body" >/dev/null; then
+        failures=$((failures+1))
+        echo "FAIL: $label (unexpected HTTP body)" >&2
+    fi
+}
 # MCP session lifecycle and fixed tool discovery.
 rpc initialize initialize '{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl-all","version":"1"}}'
 session=$(awk 'tolower($1)=="mcp-session-id:" {gsub("\r", "", $2); print $2}' "$work/headers")
@@ -181,6 +211,39 @@ tool copy.original db.query '{"namespace":"curl-renamed","database":"app","sql":
 assert_result copy.original '.rows == [[2]]'
 tool copy.fork db.query '{"namespace":"curl-copy","database":"app","sql":"SELECT count(*) FROM notes"}'
 assert_result copy.fork '.rows == [[3]]'
+
+# HTTP route management, Python request/response behavior and live static hosting.
+source=$'def handle(request):\n    if request.method == "POST":\n        write_text("/public/last.txt", request.text)\n    return {"method": request.method, "id": request.view_args["id"], "values": request.args.getlist("tag")}, 201 if request.method == "POST" else 200\n\ndef invalid(request):\n    write_text("/public/rollback.txt", "must not commit")\n    return 42\n'
+tool api.source fs.write "$(jq -cn --arg source "$source" '{namespace:"curl-renamed",path:"/web.py",text:$source}')"
+tool api.publish api.publish '{"namespace":"curl-renamed","name":"item","path":"/items/{id}","target":{"kind":"function","file":"/web.py","symbol":"handle"}}'
+assert_result api.publish '.name == "item" and .path == "/items/{id}" and .target.kind == "function"'
+assert_result api.url ".urls == [$(jq -cn --arg url "${url%/mcp}/curl-renamed/items/{id}" '$url')]"
+tool api.get api.get '{"namespace":"curl-renamed","name":"item"}'
+assert_result api.get '.name == "item" and .target.symbol == "handle"'
+tool api.list api.list '{"namespace":"curl-renamed"}'
+assert_result api.list 'any(.name == "item")'
+http_request api.get GET '/curl-renamed/items/42?tag=first&tag=second' 200
+assert_http api.get '.method == "GET" and .id == "42" and .values == ["first","second"]'
+http_request api.custom CUSTOM '/curl-renamed/items/42' 200
+assert_http api.custom '.method == "CUSTOM"'
+http_request api.post POST '/curl-renamed/items/42' 201 'from HTTP'
+tool api.committed fs.read '{"namespace":"curl-renamed","path":"/public/last.txt"}'
+assert_result api.committed '.text == "from HTTP"'
+tool api.invalid.publish api.publish '{"namespace":"curl-renamed","name":"invalid","path":"/invalid","target":{"kind":"function","file":"/web.py","symbol":"invalid"}}'
+http_request api.invalid GET '/curl-renamed/invalid' 500
+tool api.rollback fs.read '{"namespace":"curl-renamed","path":"/public/rollback.txt"}' NOT_FOUND
+tool api.static.file fs.write '{"namespace":"curl-renamed","path":"/public/index.html","text":"<h1>Hosted from StateMCP</h1>"}'
+tool api.static.publish api.publish '{"namespace":"curl-renamed","name":"site","path":"/site/{*path}","target":{"kind":"static","directory":"/public","index":"index.html"}}'
+http_request api.static.redirect GET '/curl-renamed/site' 308
+http_request api.static.index GET '/curl-renamed/site/' 200
+if [[ $(cat "$work/http-body") != '<h1>Hosted from StateMCP</h1>' ]]; then
+    failures=$((failures+1)); echo 'FAIL: api.static.index (unexpected HTML)' >&2
+fi
+http_request api.static.head HEAD '/curl-renamed/site/index.html' 200
+http_request api.static.method POST '/curl-renamed/site/index.html' 405
+tool api.remove api.remove '{"namespace":"curl-renamed","name":"item"}'
+assert_result api.remove '.removed == true and .name == "item"'
+http_request api.removed GET '/curl-renamed/items/42' 404
 
 # Representative failures (expected errors count as passing requests).
 tool error.not_found fs.read '{"namespace":"curl-renamed","path":"/missing"}' NOT_FOUND
