@@ -150,3 +150,24 @@ failed request parsing terminates the host run rather than permitting partial
 publication. `validate_http` provides Response during initialization with effects
 denied. WorkerConfig offers the same methods through typed worker operations and
 completion variants; ordinary invoke remains the keyword/JSON ABI.
+
+### Prestarted isolated workers
+
+`WorkerConfig::with_pool(N)` prestarts N child processes without loading any
+namespace files. Processes report readiness after arming the allocator. Each
+command builds a fresh interpreter heap, globals, request bindings and module
+state; completed commands can reuse the process. Process memory accounting
+remains active across commands. Worker errors, protocol errors, timeouts and
+host callback failures discard and reap the worker.
+
+The pool bounds idle workers and shares them across configuration clones.
+Nested calls do not wait for their caller's worker: they can start overflow
+processes, which are retained only if idle capacity permits. Memory/frame limits
+must match before an idle worker is reused. Dropping the pool reaps its idle
+children. The watchdog covers each invocation, including blocking host calls.
+
+Enable diagnostic attribution with `RUST_LOG=warn,statemcp::timing=debug`.
+Logs report catalog loading, SQL duration/counts, worker setup, initialization,
+execution and host wait. Execution includes Python value conversion; host wait
+includes IPC and nested invocations, so inclusive timings must not be summed.
+SQL logs identify statements by hash without printing SQL parameters or content.

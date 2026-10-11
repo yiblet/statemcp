@@ -41,6 +41,7 @@ pub fn invoke_http(
     if !repl.has_function(symbol) {
         return Err(invalid_result("HTTP symbol is not callable"));
     }
+    let initialization = session.started.elapsed();
     let mut inputs = NamedValues::new();
     inputs.push("__state_http_request", request);
     let progress = repl
@@ -61,6 +62,7 @@ pub fn invoke_http(
     {
         return Err(limit_error("HTTP output byte limit exceeded"));
     }
+    host.profile(session.profile(initialization))?;
     Ok(HttpRunResult {
         response,
         stdout: session.stdout.text,

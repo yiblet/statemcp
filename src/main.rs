@@ -2,7 +2,7 @@ mod cli;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use cli::{Cli, Command, Storage, ToolCommand};
+use cli::{Cli, Command, RuntimeMode, Storage, ToolCommand};
 use rmcp::{ServiceExt, transport::stdio};
 use state_core::Controller;
 use state_domain::Store;
@@ -16,16 +16,32 @@ use tracing_subscriber::EnvFilter;
 static ALLOCATOR: state_runtime::LimitedAllocator = state_runtime::LimitedAllocator;
 
 fn open_store(storage: &Storage) -> Result<Store> {
-    Store::open_with_history_size(&storage.data_dir, storage.history_size)
-        .with_context(|| format!("cannot open state at {}", storage.data_dir.display()))
+    let store = Store::open_with_history_size(&storage.data_dir, storage.history_size)
+        .with_context(|| format!("cannot open state at {}", storage.data_dir.display()))?;
+    use state_domain::content::{CachingLoader, DirectLoader};
+    Ok(if storage.content_cache_bytes == 0 {
+        store.with_content_loader(DirectLoader)
+    } else {
+        store.with_content_loader(CachingLoader::new(
+            DirectLoader,
+            storage.content_cache_bytes,
+        ))
+    })
 }
 
 fn open_state(storage: &Storage) -> Result<Controller> {
-    let executable = env::current_exe().context("cannot locate the worker executable")?;
-    Ok(Controller::with_backend(
-        open_store(storage)?,
-        Arc::new(WorkerConfig::new(executable)),
-    ))
+    let backend: Arc<dyn state_core::RuntimeBackend> = match storage.runtime {
+        RuntimeMode::Isolated | RuntimeMode::Pooled => {
+            let executable = env::current_exe().context("cannot locate the worker executable")?;
+            let worker = WorkerConfig::new(executable);
+            let worker = match storage.runtime {
+                RuntimeMode::Pooled => worker.with_pool(usize::from(storage.worker_pool_size))?,
+                RuntimeMode::Isolated => worker,
+            };
+            Arc::new(worker)
+        }
+    };
+    Ok(Controller::with_backend(open_store(storage)?, backend))
 }
 
 async fn open_state_for_server(storage: Storage) -> Result<Controller> {
@@ -113,7 +129,8 @@ fn run(command: Command) -> Result<ExitCode> {
         Command::Worker {
             memory_bytes,
             max_frame_bytes,
-        } => state_runtime::worker_main(memory_bytes, max_frame_bytes)
+            persistent,
+        } => state_runtime::worker_main_with_mode(memory_bytes, max_frame_bytes, persistent)
             .context("Monty worker failed")?,
         Command::Maintenance {
             storage,

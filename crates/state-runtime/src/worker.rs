@@ -1,4 +1,4 @@
-//! Disposable same-executable workers. The parent alone owns host capabilities.
+//! Same-executable isolated workers. The parent alone owns host capabilities.
 use crate::{HostCallback, HttpRunResult, Limits, ModuleSources, RunResult, RuntimeError};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
@@ -25,6 +25,7 @@ pub struct WorkerConfig {
     pub max_frame_bytes: usize,
     /// Used when Limits::max_memory is None. Isolated execution is always capped.
     pub default_memory_bytes: usize,
+    pool: Option<Arc<WorkerPool>>,
 }
 impl WorkerConfig {
     pub fn new(executable: impl Into<PathBuf>) -> Self {
@@ -32,7 +33,91 @@ impl WorkerConfig {
             executable: executable.into(),
             max_frame_bytes: 8 * 1024 * 1024,
             default_memory_bytes: 64 * 1024 * 1024,
+            pool: None,
         }
+    }
+    /// Prestart isolated processes without loading any namespace files. Idle
+    /// processes are bounded; nested calls may spawn overflow workers rather
+    /// than wait for a worker owned by their own caller. Every command creates
+    /// fresh interpreter globals and heap. Failures discard the process.
+    pub fn with_pool(mut self, capacity: usize) -> Result<Self, RuntimeError> {
+        if !(1..=32).contains(&capacity) {
+            return Err(protocol("worker pool size must be 1..32"));
+        }
+        let pool = Arc::new(WorkerPool {
+            capacity,
+            idle: Mutex::new(Vec::new()),
+        });
+        for _ in 0..capacity {
+            let worker = self.spawn_worker(self.default_memory_bytes, true)?;
+            pool.put(worker)?;
+        }
+        self.pool = Some(pool);
+        Ok(self)
+    }
+    fn spawn_worker(&self, memory: usize, persistent: bool) -> Result<IdleWorker, RuntimeError> {
+        let mut command = Command::new(&self.executable);
+        command.args([
+            "--worker",
+            &memory.to_string(),
+            &self.max_frame_bytes.to_string(),
+        ]);
+        if persistent {
+            command.arg("--persistent");
+        }
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(io_error)?;
+        let input = match child.stdin.take() {
+            Some(input) => input,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(protocol("worker stdin is missing"));
+            }
+        };
+        let output = match child.stdout.take() {
+            Some(output) => output,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(protocol("worker stdout is missing"));
+            }
+        };
+        let child = Arc::new(Mutex::new(child));
+        if !persistent {
+            return Ok(IdleWorker {
+                child,
+                input,
+                output,
+                memory,
+                frame_limit: self.max_frame_bytes,
+            });
+        }
+        let deadline = Instant::now()
+            .checked_add(std::time::Duration::from_secs(5))
+            .ok_or_else(|| protocol("invalid startup deadline"))?;
+        let guard = WorkerGuard::new_shared(child, output, self.max_frame_bytes, deadline)?;
+        let message = guard
+            .messages
+            .as_ref()
+            .ok_or_else(|| protocol("worker receiver is missing"))?
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|_| guard.failure(protocol("worker did not become ready")))??;
+        if !matches!(message, Message::Ready) {
+            return Err(guard.failure(protocol("unexpected worker startup frame")));
+        }
+        let (child, output) = guard.recycle()?;
+        Ok(IdleWorker {
+            child,
+            input,
+            output,
+            memory,
+            frame_limit: self.max_frame_bytes,
+        })
     }
     pub fn execute(
         &self,
@@ -129,7 +214,7 @@ impl WorkerConfig {
         )
         .map(|_| ())
     }
-    /// Invoke a pinned HTTP handler in a disposable worker with native request/response values.
+    /// Invoke a pinned HTTP handler in an isolated worker with native request/response values.
     pub fn invoke_http(
         &self,
         source: &str,
@@ -224,6 +309,7 @@ impl WorkerConfig {
         // Serialize before spawning so an invalid/oversized request cannot leave a child.
         let request = encode(
             &WorkerCommand {
+                profiling: tracing::enabled!(target: "statemcp::timing", tracing::Level::DEBUG),
                 operation,
                 limits: limits.clone(),
             },
@@ -233,20 +319,20 @@ impl WorkerConfig {
         if Instant::now() >= deadline {
             return Err(limit("execution deadline exceeded"));
         }
-        let mut child = Command::new(&self.executable)
-            .args([
-                "--worker",
-                &memory.to_string(),
-                &self.max_frame_bytes.to_string(),
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(io_error)?;
-        let mut input = child.stdin.take().expect("piped stdin");
-        let output = child.stdout.take().expect("piped stdout");
-        let guard = WorkerGuard::new(child, output, self.max_frame_bytes, deadline)?;
+        let idle = match &self.pool {
+            Some(pool) => pool.take(memory, self.max_frame_bytes)?,
+            None => None,
+        };
+        let IdleWorker {
+            child,
+            mut input,
+            output,
+            ..
+        } = match idle {
+            Some(worker) => worker,
+            None => self.spawn_worker(memory, self.pool.is_some())?,
+        };
+        let guard = WorkerGuard::new_shared(child, output, self.max_frame_bytes, deadline)?;
         if let Err(error) = write_bytes(&mut input, &request) {
             return Err(guard.failure(error));
         }
@@ -261,7 +347,7 @@ impl WorkerConfig {
             let message = match guard
                 .messages
                 .as_ref()
-                .expect("receiver")
+                .ok_or_else(|| protocol("worker receiver is missing"))?
                 .recv_timeout(remaining)
             {
                 Ok(Ok(message)) => message,
@@ -277,6 +363,13 @@ impl WorkerConfig {
                 return Err(limit("execution deadline exceeded"));
             }
             match message {
+                Message::Ready => return Err(protocol("unexpected ready frame during execution")),
+                Message::Profile { profile } => {
+                    tracing::debug!(target: "statemcp::timing", phase = "runtime", symbol = %symbol,
+                        initialization_ms = profile.initialization.as_secs_f64() * 1000.0,
+                        execution_ms = profile.execution.as_secs_f64() * 1000.0,
+                        host_wait_ms = profile.host_wait.as_secs_f64() * 1000.0, "runtime attribution");
+                }
                 Message::HostCall { name, args, kwargs } => {
                     if crate::HostFunction::parse(&name)
                         .is_none_or(|function| matches!(function, crate::HostFunction::Config))
@@ -322,9 +415,19 @@ impl WorkerConfig {
                     tracing::debug!(target: "statemcp::timing", phase = "worker", %symbol,
                         elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
                         encode_ms = encoded.duration_since(started).as_secs_f64() * 1000.0,
-                        spawn_ms = spawned.duration_since(encoded).as_secs_f64() * 1000.0,
+                        setup_ms = spawned.duration_since(encoded).as_secs_f64() * 1000.0,
                         host_ms = host_elapsed.as_secs_f64() * 1000.0,
                         calls, frame_bytes = request.len(), "worker completed");
+                    if let Some(pool) = &self.pool {
+                        let (child, output) = guard.recycle()?;
+                        pool.put(IdleWorker {
+                            child,
+                            input,
+                            output,
+                            memory,
+                            frame_limit: self.max_frame_bytes,
+                        })?;
+                    }
                     return Ok(result);
                 }
                 Message::Error { error } => return Err(error),
@@ -415,6 +518,8 @@ impl Operation {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WorkerCommand {
+    #[serde(default)]
+    profiling: bool,
     operation: Operation,
     limits: Limits,
 }
@@ -427,6 +532,10 @@ enum Completion {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Message {
+    Ready,
+    Profile {
+        profile: crate::ExecutionProfile,
+    },
     ConfigCall,
     HostCall {
         name: String,
@@ -455,6 +564,15 @@ enum HostReply {
 /// Entry point for a fresh, dedicated worker with LimitedAllocator installed.
 /// Never call this inside a long-lived parent: arming the allocator is global.
 pub fn worker_main(memory_bytes: usize, max_frame_bytes: usize) -> Result<(), RuntimeError> {
+    worker_main_with_mode(memory_bytes, max_frame_bytes, false)
+}
+/// Serve fresh invocations in one isolated process when persistent is enabled.
+/// Allocator accounting remains process-wide across requests; scopes are fresh.
+pub fn worker_main_with_mode(
+    memory_bytes: usize,
+    max_frame_bytes: usize,
+    persistent: bool,
+) -> Result<(), RuntimeError> {
     validate_frame_limit(max_frame_bytes)?;
     if memory_bytes == 0 || memory_bytes > usize::MAX - MAX_FRAME_BYTES {
         return Err(RuntimeError::new(
@@ -465,10 +583,18 @@ pub fn worker_main(memory_bytes: usize, max_frame_bytes: usize) -> Result<(), Ru
     crate::arm_worker_memory_limit(memory_bytes)?;
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
-    let mut request: WorkerCommand = read_frame(&mut input, max_frame_bytes)?;
-    // The command-line ceiling is authoritative, including for malformed clients.
-    request.limits.max_memory = Some(memory_bytes);
-    serve_command(request, &mut input, &mut output, max_frame_bytes)
+    if persistent {
+        write_frame(&mut output, &Message::Ready, max_frame_bytes)?;
+    }
+    loop {
+        let mut request: WorkerCommand = read_frame(&mut input, max_frame_bytes)?;
+        // The process ceiling is authoritative, even for malformed clients.
+        request.limits.max_memory = Some(memory_bytes);
+        serve_command(request, &mut input, &mut output, max_frame_bytes)?;
+        if !persistent {
+            return Ok(());
+        }
+    }
 }
 
 // Translate only at the worker's external framed I/O boundary.
@@ -476,8 +602,19 @@ struct FramedHost<'a, R, W> {
     input: &'a mut R,
     output: &'a mut W,
     max_frame_bytes: usize,
+    profiling: bool,
 }
 impl<R: Read, W: Write> crate::HostServices for FramedHost<'_, R, W> {
+    fn profile(&mut self, profile: crate::ExecutionProfile) -> Result<(), RuntimeError> {
+        if self.profiling {
+            write_frame(
+                self.output,
+                &Message::Profile { profile },
+                self.max_frame_bytes,
+            )?;
+        }
+        Ok(())
+    }
     fn config(&mut self) -> Result<state_contract::execution::PublicConfig, RuntimeError> {
         write_frame(self.output, &Message::ConfigCall, self.max_frame_bytes)?;
         match read_frame(self.input, self.max_frame_bytes)? {
@@ -516,6 +653,7 @@ fn serve_command(
     max_frame_bytes: usize,
 ) -> Result<(), RuntimeError> {
     let mut host = FramedHost {
+        profiling: request.profiling,
         input,
         output,
         max_frame_bytes,
@@ -615,22 +753,79 @@ impl WorkerProcess for Child {
     }
 }
 
-struct WorkerGuard<P: WorkerProcess = Child> {
+#[derive(Debug)]
+struct IdleWorker {
+    child: Arc<Mutex<Child>>,
+    input: std::process::ChildStdin,
+    output: std::process::ChildStdout,
+    memory: usize,
+    frame_limit: usize,
+}
+#[derive(Debug)]
+struct WorkerPool {
+    capacity: usize,
+    idle: Mutex<Vec<IdleWorker>>,
+}
+impl WorkerPool {
+    fn take(&self, memory: usize, frame_limit: usize) -> Result<Option<IdleWorker>, RuntimeError> {
+        let mut idle = self
+            .idle
+            .lock()
+            .map_err(|_| protocol("worker pool lock is poisoned"))?;
+        Ok(idle
+            .iter()
+            .position(|worker| worker.memory == memory && worker.frame_limit == frame_limit)
+            .map(|index| idle.swap_remove(index)))
+    }
+    fn put(&self, worker: IdleWorker) -> Result<(), RuntimeError> {
+        let mut idle = match self.idle.lock() {
+            Ok(idle) => idle,
+            Err(_) => {
+                reap(&worker.child);
+                return Err(protocol("worker pool lock is poisoned"));
+            }
+        };
+        if idle.len() < self.capacity {
+            idle.push(worker);
+        } else {
+            reap(&worker.child);
+        }
+        Ok(())
+    }
+}
+impl Drop for WorkerPool {
+    fn drop(&mut self) {
+        // Cleanup retains ownership even after poisoning: every child must be reaped.
+        let idle = match self.idle.get_mut() {
+            Ok(idle) => idle,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        for worker in idle.drain(..) {
+            reap(&worker.child);
+        }
+    }
+}
+
+struct WorkerGuard<P: WorkerProcess = Child, R = std::process::ChildStdout> {
     child: Arc<Mutex<P>>,
     expired: Arc<AtomicBool>,
     cancel: Option<mpsc::Sender<()>>,
     watchdog: Option<JoinHandle<()>>,
-    reader: Option<JoinHandle<()>>,
+    reader: Option<JoinHandle<R>>,
+    recycled: bool,
     messages: Option<mpsc::Receiver<Result<Message, RuntimeError>>>,
 }
-impl<P: WorkerProcess> WorkerGuard<P> {
-    fn new(
-        child: P,
-        mut output: impl Read + Send + 'static,
+impl<P: WorkerProcess, R: Read + Send + 'static> WorkerGuard<P, R> {
+    #[cfg(test)]
+    fn new(child: P, output: R, max: usize, deadline: Instant) -> Result<Self, RuntimeError> {
+        Self::new_shared(Arc::new(Mutex::new(child)), output, max, deadline)
+    }
+    fn new_shared(
+        child: Arc<Mutex<P>>,
+        mut output: R,
         max: usize,
         deadline: Instant,
     ) -> Result<Self, RuntimeError> {
-        let child = Arc::new(Mutex::new(child));
         let expired = Arc::new(AtomicBool::new(false));
         let (cancel, cancelled) = mpsc::channel();
         // Guard exists before thread creation, so spawn failures also reap.
@@ -640,6 +835,7 @@ impl<P: WorkerProcess> WorkerGuard<P> {
             cancel: Some(cancel),
             watchdog: None,
             reader: None,
+            recycled: false,
             messages: None,
         };
         let process = guard.child.clone();
@@ -666,16 +862,42 @@ impl<P: WorkerProcess> WorkerGuard<P> {
                 .spawn(move || {
                     loop {
                         let frame = read_frame(&mut output, max);
-                        let done =
-                            !matches!(&frame, Ok(Message::HostCall { .. } | Message::ConfigCall));
+                        let done = !matches!(
+                            &frame,
+                            Ok(Message::HostCall { .. }
+                                | Message::ConfigCall
+                                | Message::Profile { .. })
+                        );
                         if send.send(frame).is_err() || done {
                             break;
                         }
                     }
+                    output
                 })
                 .map_err(io_error)?,
         );
         Ok(guard)
+    }
+    fn recycle(mut self) -> Result<(Arc<Mutex<P>>, R), RuntimeError> {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(());
+        }
+        if let Some(watchdog) = self.watchdog.take() {
+            watchdog
+                .join()
+                .map_err(|_| protocol("worker watchdog panicked"))?;
+        }
+        if self.expired.load(Ordering::Acquire) {
+            return Err(limit("execution deadline exceeded"));
+        }
+        let output = self
+            .reader
+            .take()
+            .ok_or_else(|| protocol("worker reader is missing"))?
+            .join()
+            .map_err(|_| protocol("worker reader panicked"))?;
+        self.recycled = true;
+        Ok((Arc::clone(&self.child), output))
     }
     fn failure(&self, original: RuntimeError) -> RuntimeError {
         let status = reap(&self.child);
@@ -688,10 +910,12 @@ impl<P: WorkerProcess> WorkerGuard<P> {
         }
     }
 }
-impl<P: WorkerProcess> Drop for WorkerGuard<P> {
+impl<P: WorkerProcess, R> Drop for WorkerGuard<P, R> {
     fn drop(&mut self) {
         drop(self.messages.take());
-        reap(&self.child);
+        if !self.recycled {
+            reap(&self.child);
+        }
         if let Some(cancel) = self.cancel.take() {
             let _ = cancel.send(());
         }
@@ -849,6 +1073,92 @@ mod tests {
             state,
         )
     }
+
+    #[test]
+    #[ignore = "requires STATEMCP_TEST_BINARY pointing to a built statemcp executable"]
+    fn pooled_processes_keep_fresh_scopes_replace_failures_and_allow_nested_calls()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let binary = std::env::var("STATEMCP_TEST_BINARY")?;
+        let config = WorkerConfig::new(binary).with_pool(1)?;
+        let pool = config.pool.as_ref().ok_or("missing pool")?;
+        let process_id = || -> Result<u32, Box<dyn std::error::Error>> {
+            let idle = pool.idle.lock().map_err(|_| "pool poisoned")?;
+            let worker = idle.first().ok_or("pool empty")?;
+            Ok(worker.child.lock().map_err(|_| "process poisoned")?.id())
+        };
+        let first_id = process_id()?;
+        let mut deny =
+            |_: &str, _: Vec<Value>, _: Map<String, Value>| Err(protocol("unexpected host call"));
+        for _ in 0..3 {
+            let result = config.invoke(
+                "values=[]\ndef fresh():\n    values.append(1)\n    return len(values)",
+                "fresh",
+                Map::new(),
+                &Limits::default(),
+                &mut deny,
+            )?;
+            assert_eq!(result.value, Value::from(1));
+            assert_eq!(process_id()?, first_id);
+        }
+        let mut nested = |_: &str, _: Vec<Value>, _: Map<String, Value>| {
+            config
+                .execute(
+                    "40 + 2",
+                    Value::Null,
+                    &Limits::default(),
+                    &mut |_: &str, _: Vec<Value>, _: Map<String, Value>| {
+                        Err(protocol("unexpected nested host call"))
+                    },
+                )
+                .map(|result| result.value)
+        };
+        assert_eq!(
+            config
+                .execute(
+                    "call('n', 'f', {})",
+                    Value::Null,
+                    &Limits::default(),
+                    &mut nested
+                )?
+                .value,
+            Value::from(42)
+        );
+        assert_eq!(pool.idle.lock().map_err(|_| "pool poisoned")?.len(), 1);
+        let failed_id = process_id()?;
+        let mut limits = Limits::default();
+        limits.max_duration = std::time::Duration::from_millis(50);
+        assert_eq!(
+            config
+                .execute("while True:\n    pass", Value::Null, &limits, &mut deny)
+                .err()
+                .map(|error| error.code),
+            Some(crate::ErrorCode::LimitExceeded)
+        );
+        assert!(pool.idle.lock().map_err(|_| "pool poisoned")?.is_empty());
+        assert_eq!(
+            config
+                .execute("42", Value::Null, &Limits::default(), &mut deny)?
+                .value,
+            Value::from(42)
+        );
+        assert_ne!(process_id()?, failed_id);
+        let mut memory_limits = Limits::default();
+        memory_limits.max_memory = Some(8 * 1024 * 1024);
+        assert_eq!(
+            config
+                .execute("'x' * 20000000", Value::Null, &memory_limits, &mut deny)
+                .err()
+                .map(|error| error.code),
+            Some(crate::ErrorCode::LimitExceeded)
+        );
+        assert_eq!(
+            config
+                .execute("42", Value::Null, &Limits::default(), &mut deny)?
+                .value,
+            Value::from(42)
+        );
+        Ok(())
+    }
     #[test]
     fn watchdog_reaps_without_dispatch_or_callback_progress()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -905,6 +1215,7 @@ mod tests {
 
     fn command(source: &str) -> WorkerCommand {
         WorkerCommand {
+            profiling: false,
             operation: Operation::Execute {
                 source: source.into(),
                 inputs: Value::Null,
@@ -946,6 +1257,7 @@ mod tests {
         ];
         for (operation, expected, stdout) in operations {
             let request = WorkerCommand {
+                profiling: false,
                 operation,
                 limits: Limits::default(),
             };
@@ -978,7 +1290,7 @@ mod tests {
             body: vec![0, 255, 10],
             view_args: Default::default(),
         };
-        let command=WorkerCommand{operation:Operation::InvokeHttp{source:"def handle(request):\n    return request.body, 202, [('X-Method',request.method)]".into(),symbol:"handle".into(),modules:ModuleSources::default(),request},limits:Limits::default()};
+        let command=WorkerCommand{profiling: false,operation:Operation::InvokeHttp{source:"def handle(request):\n    return request.body, 202, [('X-Method',request.method)]".into(),symbol:"handle".into(),modules:ModuleSources::default(),request},limits:Limits::default()};
         let mut encoded = Vec::new();
         write_frame(&mut encoded, &command, 4096)?;
         let decoded = read_frame(&mut encoded.as_slice(), 4096)?;

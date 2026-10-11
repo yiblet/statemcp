@@ -23,6 +23,15 @@ pub struct Cli {
     pub command: Command,
 }
 
+/// Execution isolation chosen once at the application boundary.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum RuntimeMode {
+    /// Fresh subprocesses with hard memory and termination boundaries
+    Isolated,
+    /// Prestarted reusable processes with fresh scopes and hard process limits
+    Pooled,
+}
+
 #[derive(Args)]
 pub struct Storage {
     /// Managed state directory (required; there is no default)
@@ -31,6 +40,15 @@ pub struct Storage {
     /// Revisions retained per namespace, including current state (at least 1)
     #[arg(long, default_value_t = state_domain::HistorySize::default())]
     pub history_size: state_domain::HistorySize,
+    /// Maximum committed content bytes cached in memory; 0 reads directly
+    #[arg(long, default_value_t = 32 * 1024 * 1024)]
+    pub content_cache_bytes: usize,
+    /// Isolated Python execution: disposable or prestarted reusable workers
+    #[arg(long, value_enum, default_value_t = RuntimeMode::Isolated)]
+    pub runtime: RuntimeMode,
+    /// Prestarted processes for --runtime pooled (nested calls can use overflow)
+    #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u8).range(1..=32))]
+    pub worker_pool_size: u8,
 }
 
 // Parsed once at startup; keep the subcommand arguments inline.
@@ -42,6 +60,8 @@ pub enum Command {
     Worker {
         memory_bytes: usize,
         max_frame_bytes: usize,
+        #[arg(long)]
+        persistent: bool,
     },
     /// Serve MCP over standard input/output
     #[command(

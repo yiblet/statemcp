@@ -322,3 +322,23 @@ stream with backpressure rather than buffering an entire archive.
 `--public-url` controls transfer and API/site URLs. Python scripts, functions, and
 handlers can read `config().public_url` (origin or `None`) and `config().prefix`.
 HTTP transfer tools are called directly through MCP, rather than Python `mcp()`.
+
+### Content loading and worker reuse
+
+Content loads on demand through a composable loader; the default bounded cache
+retains 32 MiB of committed file/source payload. Set `--content-cache-bytes N`,
+or use `0` for direct verified reads. Catalog metadata checks its generation
+under the existing root lock and stays coherent across processes.
+
+The default runtime still uses disposable isolated processes. Opt into
+prestarted reusable isolated processes without loading namespace files:
+
+```sh
+statemcp http ./state --runtime pooled --worker-pool-size 4
+```
+
+Both modes use fresh interpreter scopes and enforce process memory limits.
+Pooled mode reuses successful processes and discards failed or timed-out ones;
+nested calls can create overflow workers rather than deadlock on a fixed pool.
+No single-process storage assumption is needed. See the domain and runtime
+crate guides for the loader interface and pool lifecycle.

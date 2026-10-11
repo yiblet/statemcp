@@ -28,6 +28,7 @@ pub use http::{HttpRunResult, invoke_http, validate_http};
 mod worker;
 pub use worker::{
     WorkerConfig, execute_isolated, invoke_isolated, validate_module_isolated, worker_main,
+    worker_main_with_mode,
 };
 
 /// Immutable namespace Python files supplied to one fresh interpreter session.
@@ -65,9 +66,23 @@ pub const HOST_FUNCTIONS: &[&str] = &[
     "write_text",
 ];
 
+/// Wall-clock attribution within an isolated runtime. Execution excludes
+/// initialization and time suspended awaiting host replies, but includes Python
+/// execution and conversion between Python values and the host protocol.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExecutionProfile {
+    pub initialization: std::time::Duration,
+    pub execution: std::time::Duration,
+    pub host_wait: std::time::Duration,
+}
 /// Per-invocation host capabilities. Configuration retains its known shape;
 /// arbitrary tool data uses the JSON callback boundary.
 pub trait HostServices {
+    /// Receive optional diagnostics; this must not execute state operations.
+    fn profile(&mut self, _profile: ExecutionProfile) -> Result<(), RuntimeError> {
+        Ok(())
+    }
+
     /// Read public configuration without credentials or state effects.
     /// Errors terminate execution rather than becoming catchable Python exceptions.
     fn config(&mut self) -> Result<state_contract::execution::PublicConfig, RuntimeError>;
@@ -341,6 +356,7 @@ pub fn invoke_with_modules(
 ) -> Result<RunResult, RuntimeError> {
     let mut session = Session::new(source, limits)?;
     let repl = session.module(source, symbol, modules)?;
+    let initialization = session.started.elapsed();
     let mut inputs = NamedValues::new();
     inputs.push(
         "__state_arguments",
@@ -352,6 +368,7 @@ pub fn invoke_with_modules(
         .feed_start(&source, inputs, session.print())
         .map_err(repl_error)?;
     let (_, value) = session.drive(progress, Some(host))?;
+    host.profile(session.profile(initialization))?;
     session.finish(value)
 }
 
@@ -399,6 +416,7 @@ impl PrintWriterCallback for BoundedOutput {
 struct Session<'a> {
     limits: &'a Limits,
     started: Instant,
+    host_wait: std::time::Duration,
     stdout: BoundedOutput,
     calls: usize,
     http: Option<http::Bindings>,
@@ -418,6 +436,7 @@ impl<'a> Session<'a> {
         Ok(Self {
             limits,
             started: Instant::now(),
+            host_wait: std::time::Duration::ZERO,
             stdout: BoundedOutput {
                 text: String::new(),
                 max: limits.max_output_bytes,
@@ -428,6 +447,17 @@ impl<'a> Session<'a> {
         })
     }
 
+    fn profile(&self, initialization: std::time::Duration) -> ExecutionProfile {
+        ExecutionProfile {
+            initialization,
+            execution: self
+                .started
+                .elapsed()
+                .saturating_sub(initialization)
+                .saturating_sub(self.host_wait),
+            host_wait: self.host_wait,
+        }
+    }
     fn repl(&self) -> MontyRepl {
         let limits = ResourceLimits {
             max_feed_duration: Some(self.limits.max_duration),
@@ -583,7 +613,9 @@ impl<'a> Session<'a> {
                                     "config takes no arguments",
                                 ));
                             }
+                            let waiting = Instant::now();
                             let config = host.config()?;
+                            self.host_wait += waiting.elapsed();
                             self.check_deadline()?;
                             // Bound the known record before converting it directly to Python.
                             check_json_size(&config, self.limits.max_output_bytes)?;
@@ -603,7 +635,9 @@ impl<'a> Session<'a> {
                         | HostFunction::DbInspect
                         | HostFunction::ReadText
                         | HostFunction::WriteText => {
+                            let waiting = Instant::now();
                             let result = host.call(function.name(), args, kwargs)?;
+                            self.host_wait += waiting.elapsed();
                             self.check_deadline()?;
                             self.to_monty(&result)?
                         }
