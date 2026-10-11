@@ -15,6 +15,17 @@ Return compact acknowledgments and inspect selected files or paginated records.
 Let browsers load pages, assets, and data through HTTP routes rather than putting
 them into MCP results. Keep list APIs paginated and HTML fragments focused.
 
+## Avoid N+1 state calls
+
+HTTP handlers share a fixed operation count limit with every nested function
+and state call. As a result, all endpoints should aim for a fixed number of queries
+per request, independent of the number of records processed or returned.
+Batch SQL reads and aggregates, reuse fetched data, and
+paginate results rather than issuing queries or function calls per record.
+Exceeding the budget rolls back the request and returns `LIMIT_EXCEEDED` as HTTP
+504, even when execution is fast. See `statemcp://guides/python` for the budget
+contract and `describe` for the current `limits.root_calls`.
+
 ## Let the browser load dependencies from CDNs
 
 When a browser library or stylesheet helps, reference its CDN URL directly with

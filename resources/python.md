@@ -71,6 +71,21 @@ parameters accept JSON scalars, `{"$base64": "..."}` for blobs, and
 use `db.migrate` for an ordered batch of schema migrations. Do not issue manual
 transaction control statements: StateMCP owns the transaction.
 
+## Shared operation budget
+
+Each root request has a fixed operation count limit, shared by all nested
+functions and scripts. Each SQL query, file operation, and published-function call
+consumes that budget; nested calls do not reset it. `describe` reports the current
+limit as `limits.root_calls`. This counts StateMCP operations, not rows or work
+performed inside SQLite.
+
+As a result, all endpoints should aim for a fixed number of queries per request,
+independent of the number of records processed or returned. Avoid N+1 queries
+and per-record state calls. Fetch related data and aggregates
+in batched SQL, reuse results, and paginate bounded responses. Leave room for
+the caller's other operations. Exceeding the budget produces `LIMIT_EXCEEDED`
+and rolls back the entire request, even if individual calls are fast.
+
 ## Namespace authority and nested calls
 
 Published functions and HTTP handlers have full access to their own namespace's
