@@ -117,8 +117,19 @@ file, not a historical snapshot or concurrency token. `staged` reports writes in
 the current invocation. Namespace revisions change for database writes even when
 the backing file identity stays fixed.
 
-Maintenance removes obsolete metadata and unreferenced virtual-file objects and
-retains the newest requested number of receipts. Deleted resource databases are
+Every publication retains the latest seven revisions per live namespace by default,
+including current state. `--history-size N` configures a positive count for all
+commands; maintenance applies the same setting. Deleted namespaces retain one
+empty tombstone and release their entire history. Retained revisions own references
+to SHA-256 addressed file bytes, pinned function sources, and route modules. Shared
+bytes are stored once, with transactional reference counts; removing the final
+reference collects the object in that same publication. SQLite reuses freed pages.
+
+A new startup migration converts existing catalogs to this format and removes
+obsolete history and orphan objects. Function versions and protocol representations
+remain unchanged. Historical namespace metadata does not snapshot mutable databases.
+
+Maintenance also retains the newest requested number of receipts. Deleted resource databases are
 removed in their original atomic invocation; there are no orphan snapshots or
 staging directories to collect. The legacy maintenance report fields for those
 kinds remain zero. Maintenance is explicit; expired idempotency keys may execute

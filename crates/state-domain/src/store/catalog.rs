@@ -1,4 +1,8 @@
 //! Catalog metadata reads and logical publication within an overlay invocation.
+use super::{
+    records::StoredManifest,
+    retention::{self, HistorySize},
+};
 use crate::{Error, Receipt, Result, identity::id, model::Namespace};
 use rusqlite::{Connection, OptionalExtension, params};
 use state_contract::publication::CommitMetadata;
@@ -36,12 +40,14 @@ pub(crate) fn load(conn: &Connection) -> Result<(i64, BTreeMap<String, Namespace
                     name,
                     revision,
                     deleted,
-                    manifest: serde_json::from_str(&manifest).map_err(|source| {
-                        Error::new(
-                            crate::ErrorCode::CorruptStore,
-                            format!("invalid namespace manifest: {source}"),
-                        )
-                    })?,
+                    manifest: serde_json::from_str::<StoredManifest>(&manifest)
+                        .map_err(|source| {
+                            Error::new(
+                                crate::ErrorCode::CorruptStore,
+                                format!("invalid namespace manifest: {source}"),
+                            )
+                        })?
+                        .resolve(&tx)?,
                     dirty: false,
                 },
             );
@@ -75,6 +81,7 @@ pub(crate) fn publish(
     namespaces: &BTreeMap<String, Namespace>,
     objects: &BTreeMap<String, Vec<u8>>,
     pending_receipt: &Option<(String, String, Receipt)>,
+    history_size: HistorySize,
 ) -> Result<CommitOutcome> {
     let changed = namespaces.values().any(|n| n.dirty);
     let tx = conn.unchecked_transaction()?;
@@ -111,7 +118,8 @@ pub(crate) fn publish(
     }
     let mut revisions = BTreeMap::new();
     for ns in namespaces.values().filter(|n| n.dirty) {
-        let manifest = serde_json::to_string(&ns.manifest)?;
+        let stored = StoredManifest::capture(&tx, &ns.manifest)?;
+        let manifest = serde_json::to_string(&stored)?;
         // Mutable database pages may change while manifest file identities stay
         // fixed. Every dirty namespace must invalidate its optimistic revision.
         let revision = id();
@@ -127,6 +135,7 @@ pub(crate) fn publish(
                 manifest
             ],
         )?;
+        stored.record_references(&tx, &revision)?;
         tx.execute("INSERT INTO namespaces(id,name,head_revision,deleted) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,head_revision=excluded.head_revision,deleted=excluded.deleted",params![ns.id,ns.name,revision,ns.deleted])?;
         revisions.insert(ns.id.clone(), revision);
     }
@@ -141,6 +150,7 @@ pub(crate) fn publish(
             ],
         )?;
     }
+    retention::prune(&tx, history_size)?;
     tx.execute(
         "UPDATE catalog_state SET generation=generation+1 WHERE singleton=1",
         [],

@@ -16,7 +16,7 @@ use tracing_subscriber::EnvFilter;
 static ALLOCATOR: state_runtime::LimitedAllocator = state_runtime::LimitedAllocator;
 
 fn open_store(storage: &Storage) -> Result<Store> {
-    Store::open(&storage.data_dir)
+    Store::open_with_history_size(&storage.data_dir, storage.history_size)
         .with_context(|| format!("cannot open state at {}", storage.data_dir.display()))
 }
 

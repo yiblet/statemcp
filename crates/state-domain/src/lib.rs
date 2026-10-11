@@ -10,7 +10,7 @@ mod validation;
 
 pub use error::{Error, Result};
 pub use model::Receipt;
-pub use store::{MaintenanceReport, Store};
+pub use store::{HistorySize, MaintenanceReport, Store};
 pub use transaction::Transaction;
 
 use state_contract::function::FunctionDeclaration;

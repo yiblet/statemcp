@@ -259,6 +259,8 @@ impl Transaction {
         let mut ns = self.staged_namespace(&key)?.clone();
         self.copy_databases(&mut ns.manifest)?;
         ns.id = id();
+        // A copied namespace begins its own history rather than inheriting its source's ancestry.
+        ns.revision.clear();
         ns.name = new_name;
         input.description.apply(&mut ns.manifest.description);
         ns.dirty = true;
@@ -274,6 +276,8 @@ impl Transaction {
                 .delete_database(&super::databases::filename(database)?)?;
         }
         self.staged_namespace_mut(&key)?.deleted = true;
+        // Tombstones own no files or pinned code; prior revisions are pruned at publication.
+        self.staged_namespace_mut(&key)?.manifest = crate::model::Manifest::default();
         self.staged_namespace_mut(&key)?.dirty = true;
         Ok(NamespaceDeleted {
             deleted: true,

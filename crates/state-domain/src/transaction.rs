@@ -20,12 +20,14 @@ pub struct Transaction {
     poisoned: bool,
     changed_databases: BTreeSet<String>,
     receipt: Option<(String, String, Receipt)>,
+    history_size: crate::HistorySize,
 }
 impl Transaction {
     pub(crate) fn new(
         backing: state_store::Transaction,
         generation: i64,
         namespaces: BTreeMap<String, Namespace>,
+        history_size: crate::HistorySize,
     ) -> Self {
         Self {
             backing,
@@ -35,6 +37,7 @@ impl Transaction {
             poisoned: false,
             changed_databases: BTreeSet::new(),
             receipt: None,
+            history_size,
         }
     }
     pub fn set_receipt(
@@ -104,6 +107,7 @@ impl Transaction {
                 &self.namespaces,
                 &self.objects,
                 &self.receipt,
+                self.history_size,
             )?
         };
         if matches!(

@@ -148,7 +148,7 @@ impl DiscoveryService {
                             operation: ToolSelector { tool: "db.create" },
                         },
                         identity: "local owner; embedding principal scopes receipts only",
-                        retention: "history and receipts retained until explicit maintenance; no automatic GC",
+                        retention: "namespace history defaults to the latest 7 revisions (configurable with --history-size); unreferenced content is collected atomically on publication; receipts retained until explicit maintenance",
                         limits: DiscoveryLimits {
                             root_calls: context.limits().runtime.max_calls,
                             root_depth: context.limits().max_depth,

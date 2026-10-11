@@ -140,6 +140,9 @@ impl Store {
         {
             let name = DatabaseName::parse("catalog.sqlite")?;
             let mut catalog = transaction.connect(&name)?;
+            // Migrations may introduce ownership edges and cascading reclamation.
+            // Enable foreign keys before the migration service opens its SQL transaction.
+            catalog.execute_batch("PRAGMA foreign_keys=ON")?;
             service.run_with_fs(&self.root, self.fs.as_ref(), &mut catalog.inner)?;
         }
         transaction.commit()

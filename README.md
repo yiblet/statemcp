@@ -269,7 +269,9 @@ return forms; streaming generators and WSGI applications are outside this scope.
 A valid returned error status commits writes. Invalid responses and failed host
 operations roll back every write in the request's shared transaction.
 
-Old stored namespaces need no migration. HTTP routes are optional manifest
+Existing catalogs migrate automatically to content-addressed source storage.
+Namespace history defaults to seven revisions; use `--history-size N` to configure
+a positive count. Unreferenced content is collected on publication. HTTP routes are optional manifest
 metadata; ordinary function formats and declaration hashes are unchanged. Use the
 current binary when writing route metadata; older binaries do not understand it.
 

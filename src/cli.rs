@@ -28,6 +28,9 @@ pub struct Storage {
     /// Managed state directory (required; there is no default)
     #[arg(value_name = "DATA_DIR")]
     pub data_dir: PathBuf,
+    /// Revisions retained per namespace, including current state (at least 1)
+    #[arg(long, default_value_t = state_domain::HistorySize::default())]
+    pub history_size: state_domain::HistorySize,
 }
 
 // Parsed once at startup; keep the subcommand arguments inline.
