@@ -1,5 +1,6 @@
 //! Namespace, virtual file, function, and SQL domain operations over overlay storage.
 pub use state_contract::ErrorCode;
+pub mod content;
 mod error;
 mod identity;
 mod model;

@@ -1,25 +1,22 @@
 //! Content-addressed virtual file bytes shared with pinned function sources.
 use super::Transaction;
-use crate::{Error, Result, identity::hash};
+use crate::{Error, Result, content::ContentHash};
 impl Transaction {
-    pub(super) fn bytes(&self, hash: &str) -> Result<Vec<u8>> {
+    pub(super) fn bytes(&self, hash: &ContentHash) -> Result<Vec<u8>> {
         if let Some(bytes) = self.objects.get(hash) {
             return Ok(bytes.clone());
         }
-        use rusqlite::OptionalExtension;
         let catalog = self.backing.connect(&crate::store::catalog::name()?)?;
-        catalog
-            .query_row("SELECT bytes FROM objects WHERE hash=?", [hash], |r| {
-                r.get(0)
-            })
-            .optional()?
-            .ok_or_else(|| Error::new(crate::ErrorCode::CorruptStore, "file object is missing"))
+        let bytes = self
+            .loader
+            .load(&crate::content::CatalogContent(&catalog), hash)?;
+        Ok(bytes.to_vec())
     }
-    pub(super) fn put_bytes(&mut self, bytes: Vec<u8>) -> Result<String> {
+    pub(super) fn put_bytes(&mut self, bytes: Vec<u8>) -> Result<ContentHash> {
         if bytes.len() > state_contract::transfer::MAX_UPLOAD_BYTES {
             return Err(Error::limit("virtual file exceeds 10 MiB"));
         }
-        let key = hash(&bytes);
+        let key = ContentHash::of(&bytes);
         self.objects.insert(key.clone(), bytes);
         Ok(key)
     }

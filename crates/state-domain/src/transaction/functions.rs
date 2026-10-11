@@ -9,7 +9,7 @@ impl Transaction {
         namespace: &str,
         function_name: &str,
         expected_version: Option<&str>,
-    ) -> Result<&FunctionDeclaration> {
+    ) -> Result<FunctionDeclaration> {
         let namespace = self.namespace_identity(namespace)?;
         let function_name = name(function_name)?;
         let declaration = self
@@ -18,24 +18,31 @@ impl Transaction {
             .functions
             .get(&function_name);
         if let Some(expected) = expected_version
-            && declaration.map(|record| record.version.as_str()) != Some(expected)
+            && declaration.map(|record| record.version()) != Some(expected)
         {
             return Err(Error::new(
                 crate::ErrorCode::Conflict,
                 "function version does not match",
             ));
         }
-        declaration.ok_or_else(|| Error::new(crate::ErrorCode::NotFound, "function does not exist"))
+        let declaration = declaration
+            .ok_or_else(|| Error::new(crate::ErrorCode::NotFound, "function does not exist"))?;
+        let catalog = self.backing.connect(&crate::store::catalog::name()?)?;
+        declaration.resolve(&mut crate::store::records::SourceResolver::new(
+            &catalog,
+            self.loader.as_ref(),
+        ))
     }
     pub fn function_declarations(
         &self,
         namespace: &str,
-    ) -> Result<impl Iterator<Item = &FunctionDeclaration>> {
+    ) -> Result<impl Iterator<Item = state_contract::function::FunctionSummary>> {
         let namespace = self.namespace_identity(namespace)?;
         Ok(self
             .staged_namespace(namespace)?
             .manifest
             .functions
-            .values())
+            .values()
+            .map(crate::model::FunctionRecord::summary))
     }
 }

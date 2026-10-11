@@ -92,13 +92,9 @@ impl Api {
         context.operation(|context| {
             let namespace = context.namespace(&input.namespace)?;
             let tx = context.transaction();
-            let route = tx
-                .api_routes(namespace.as_str())?
-                .get(&input.name)
-                .ok_or_else(|| {
-                    Error::new(crate::ErrorCode::NotFound, "API route does not exist")
-                })?;
-            Ok(route.metadata(tx.namespace_name(namespace.as_str())?, namespace.as_str()))
+            tx.api_routes(namespace.as_str())?
+                .remove(&input.name)
+                .ok_or_else(|| Error::new(crate::ErrorCode::NotFound, "API route does not exist"))
         })
     }
     /// List metadata for the namespace's named routes.
@@ -106,12 +102,7 @@ impl Api {
         context.operation(|context| {
             let namespace = context.namespace(&input.namespace)?;
             let tx = context.transaction();
-            let name = tx.namespace_name(namespace.as_str())?;
-            Ok(tx
-                .api_routes(namespace.as_str())?
-                .values()
-                .map(|r| r.metadata(name, namespace.as_str()))
-                .collect())
+            Ok(tx.api_routes(namespace.as_str())?.into_values().collect())
         })
     }
     /// Remove a route with an optional namespace revision guard.

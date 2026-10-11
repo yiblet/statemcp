@@ -319,7 +319,7 @@ impl Transaction {
                 path,
                 kind: FileKind::File,
                 size: self.bytes(hash)?.len(),
-                hash: hash.clone(),
+                hash: hash.as_str().to_owned(),
             })
         } else if path == "/"
             || files
@@ -741,18 +741,7 @@ impl Transaction {
     }
     fn list_functions_inner(&self, input: &FunctionListInput) -> Result<Functions> {
         Ok(Functions {
-            functions: self
-                .function_declarations(&input.namespace)?
-                .map(|record| FunctionSummary {
-                    name: record.name.clone(),
-                    file: record.file.clone(),
-                    symbol: record.symbol.clone(),
-                    description: record.description.clone(),
-                    input_schema: record.input_schema.clone(),
-                    output_schema: record.output_schema.clone(),
-                    version: record.version.clone(),
-                })
-                .collect(),
+            functions: self.function_declarations(&input.namespace)?.collect(),
         })
     }
     fn get_function_inner(&self, input: &FunctionGetInput) -> Result<FunctionDeclaration> {
@@ -761,7 +750,6 @@ impl Transaction {
             &input.name,
             input.expected_version.as_deref(),
         )
-        .cloned()
     }
     fn remove_function_inner(&mut self, input: &FunctionRemoveInput) -> Result<FunctionRemoved> {
         let key =
@@ -823,7 +811,7 @@ impl Transaction {
             .cloned()
             .ok_or_else(|| Error::new(crate::ErrorCode::NotFound, "source file does not exist"))?;
         // Publication consumes exactly the snapshot validated by the runtime.
-        if hash(sources.source.as_bytes()) != source_hash {
+        if crate::content::ContentHash::of(sources.source.as_bytes()) != source_hash {
             return Err(Error::invalid(
                 "validated source differs from the transaction snapshot",
             ));
@@ -840,7 +828,7 @@ impl Transaction {
                 .modules
                 .get(path)
                 .ok_or_else(|| Error::invalid("validated module snapshot is incomplete"))?;
-            if hash(module.as_bytes()) != *hash_value {
+            if crate::content::ContentHash::of(module.as_bytes()) != *hash_value {
                 return Err(Error::invalid(
                     "validated module differs from the transaction snapshot",
                 ));
@@ -866,7 +854,7 @@ impl Transaction {
                 "module source byte limit exceeded",
             ));
         }
-        Ok(source_hash)
+        Ok(String::from(source_hash))
     }
     #[allow(clippy::too_many_arguments)]
     fn publish_function(
@@ -890,7 +878,7 @@ impl Transaction {
             .functions
             .get(&function_name);
         if let Some(version) = version
-            && existing.map(|record| record.version.as_str()) != Some(version)
+            && existing.map(|record| record.version()) != Some(version)
         {
             return Err(Error::new(
                 crate::ErrorCode::Conflict,
@@ -923,7 +911,7 @@ impl Transaction {
             published: true,
         };
         let ns = self.staged_namespace_mut(&key)?;
-        ns.manifest.functions.insert(function_name, record);
+        ns.manifest.functions.insert(function_name, record.into());
         ns.dirty = true;
         Ok(result)
     }

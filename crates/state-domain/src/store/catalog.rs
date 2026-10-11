@@ -47,7 +47,7 @@ pub(crate) fn load(conn: &Connection) -> Result<(i64, BTreeMap<String, Namespace
                                 format!("invalid namespace manifest: {source}"),
                             )
                         })?
-                        .resolve(&tx)?,
+                        .into_manifest(),
                     dirty: false,
                 },
             );
@@ -79,7 +79,7 @@ pub(crate) fn publish(
     conn: &Connection,
     generation: i64,
     namespaces: &BTreeMap<String, Namespace>,
-    objects: &BTreeMap<String, Vec<u8>>,
+    objects: &BTreeMap<crate::content::ContentHash, Vec<u8>>,
     pending_receipt: &Option<(String, String, Receipt)>,
     history_size: HistorySize,
     retention_changed: bool,
@@ -114,7 +114,7 @@ pub(crate) fn publish(
     for (hash, bytes) in objects {
         tx.execute(
             "INSERT OR IGNORE INTO objects(hash,bytes) VALUES(?,?)",
-            params![hash, bytes],
+            params![hash.as_str(), bytes],
         )?;
     }
     let mut revisions = BTreeMap::new();

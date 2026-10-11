@@ -17,12 +17,13 @@ pub struct Transaction {
     backing: state_store::Transaction,
     generation: i64,
     namespaces: BTreeMap<String, Namespace>,
-    objects: BTreeMap<String, Vec<u8>>,
+    objects: BTreeMap<crate::content::ContentHash, Vec<u8>>,
     poisoned: bool,
     changed_databases: BTreeSet<String>,
     receipt: Option<(String, String, Receipt)>,
     history_size: crate::HistorySize,
     retention_changed: bool,
+    loader: std::sync::Arc<dyn crate::content::ContentLoader>,
 }
 impl Transaction {
     pub(crate) fn new(
@@ -30,6 +31,7 @@ impl Transaction {
         generation: i64,
         namespaces: BTreeMap<String, Namespace>,
         history_size: crate::HistorySize,
+        loader: std::sync::Arc<dyn crate::content::ContentLoader>,
     ) -> Self {
         Self {
             backing,
@@ -41,6 +43,7 @@ impl Transaction {
             receipt: None,
             history_size,
             retention_changed: false,
+            loader,
         }
     }
     pub fn set_receipt(

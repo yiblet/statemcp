@@ -21,6 +21,7 @@ impl Transaction {
                 tx.verify_sources(&key, &handler.file, &handler.sources)?;
             }
             for existing in tx.staged_namespace(&key)?.manifest.routes.values() {
+                let existing = existing.metadata("", "");
                 if existing.name != route_name
                     && route.path.ambiguous(&existing.path)
                     && (route.methods.is_empty()
@@ -35,18 +36,39 @@ impl Transaction {
             }
             let namespace = tx.staged_namespace_mut(&key)?;
             let metadata = route.metadata(&namespace.name, &namespace.id);
-            namespace.manifest.routes.insert(route_name, route);
+            namespace.manifest.routes.insert(route_name, route.into());
             namespace.dirty = true;
             Ok(metadata)
         })
     }
-    /// Borrow pinned routes from the supplied transaction snapshot.
+    /// List route metadata without loading any handler source objects.
     pub fn api_routes(
         &self,
         namespace: &str,
-    ) -> Result<&std::collections::BTreeMap<String, Route>> {
+    ) -> Result<std::collections::BTreeMap<String, ApiPublished>> {
         let key = self.namespace_identity(namespace)?;
-        Ok(&self.staged_namespace(key)?.manifest.routes)
+        let ns = self.staged_namespace(key)?;
+        Ok(ns
+            .manifest
+            .routes
+            .iter()
+            .map(|(name, route)| (name.clone(), route.metadata(&ns.name, &ns.id)))
+            .collect())
+    }
+    /// Load only the selected route's pinned handler and module content.
+    pub fn api_route(&self, namespace: &str, name: &str) -> Result<Route> {
+        let key = self.namespace_identity(namespace)?;
+        let record = self
+            .staged_namespace(key)?
+            .manifest
+            .routes
+            .get(name)
+            .ok_or_else(|| Error::new(crate::ErrorCode::NotFound, "API route does not exist"))?;
+        let catalog = self.backing.connect(&crate::store::catalog::name()?)?;
+        record.resolve(&mut crate::store::records::SourceResolver::new(
+            &catalog,
+            self.loader.as_ref(),
+        ))
     }
     /// Remove a named route under the same namespace revision guard as other primitives.
     pub fn remove_api(&mut self, input: &ApiRemoveInput) -> Result<()> {

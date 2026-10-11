@@ -146,8 +146,7 @@ impl Functions {
         // Running code must own a snapshot: callbacks may replace its declaration and sources.
         Ok(context
             .transaction()
-            .function_declaration(id.as_str(), function, expected_version)?
-            .clone())
+            .function_declaration(id.as_str(), function, expected_version)?)
     }
 }
 

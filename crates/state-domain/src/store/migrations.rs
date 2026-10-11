@@ -200,12 +200,13 @@ mod tests {
             version: "preserved-version".into(),
         };
         let mut manifest = Manifest::default();
-        manifest
-            .files
-            .insert("/api.py".into(), hash(source.as_bytes()));
+        manifest.files.insert(
+            "/api.py".into(),
+            crate::content::ContentHash::of(source.as_bytes()),
+        );
         manifest
             .functions
-            .insert("answer".into(), declaration.clone());
+            .insert("answer".into(), declaration.clone().into());
         manifest.routes.insert(
             "answer".into(),
             Route {
@@ -220,7 +221,8 @@ mod tests {
                         modules,
                     },
                 }),
-            },
+            }
+            .into(),
         );
         let original = serde_json::to_value(&manifest)?;
         conn.execute(
@@ -289,7 +291,10 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let mut conn = legacy()?;
         let manifest = Manifest {
-            files: BTreeMap::from([("/missing".into(), hash(b"missing"))]),
+            files: BTreeMap::from([(
+                "/missing".into(),
+                crate::content::ContentHash::of(b"missing"),
+            )]),
             ..Manifest::default()
         };
         conn.execute(

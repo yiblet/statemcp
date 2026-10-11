@@ -38,7 +38,14 @@ impl HttpApplication {
             let selected = matches
                 .iter()
                 .find(|(route, _)| route.methods.contains(method))
-                .or_else(|| matches.iter().find(|(route, _)| route.accepts(method)));
+                .or_else(|| {
+                    matches.iter().find(|(route, _)| {
+                        route.methods.is_empty()
+                            || route.methods.contains(method)
+                            || (method.as_str() == "HEAD"
+                                && route.methods.iter().any(|m| m.as_str() == "GET"))
+                    })
+                });
             let (route, captures) = match selected {
                 Some((route, captures)) => ((*route).clone(), captures.clone()),
                 None if matches.is_empty() => return response(404, vec![], b"Not Found".to_vec()),
@@ -67,6 +74,9 @@ impl HttpApplication {
                     );
                 }
             };
+            let route = context
+                .transaction()
+                .api_route(namespace.as_str(), &route.name)?;
             request.view_args = captures;
             match route.target {
                 RouteTarget::Function(handler) => self

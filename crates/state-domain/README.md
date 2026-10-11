@@ -152,3 +152,25 @@ host files, bind sockets, or launch processes.
 ```sh
 cargo test -p state-domain
 ```
+
+## Lazy content loading
+
+Catalog snapshots retain typed content addresses. Reading route/function
+metadata does not fetch Python source; invoking a route or function resolves
+only that publication's pinned source bundle. Static files resolve their live
+file entry and fetch content on demand. The compact file index remains part of
+the namespace manifest; file bytes and expanded Python source are not loaded
+when beginning an invocation.
+
+`content::ContentSource` is the transaction-scoped storage port.
+`content::ContentLoader` verifies and returns immutable bytes by `ContentHash`.
+`DirectLoader` reads and verifies on every request. `CachingLoader<L>` decorates
+any loader with a bounded FIFO cache; oversized content bypasses retention and
+errors are never cached. `Store::with_content_loader` injects either policy.
+The default cache retains at most 32 MiB of payload bytes, plus index overhead.
+Active readers may retain evicted buffers until their invocation finishes.
+
+Pending writes stay in the transaction and bypass the shared content cache.
+The catalog metadata cache checks its generation while holding the existing
+root lock, so publications by another process invalidate it. No solo mode is
+needed, and locking, recovery, retention, and reference counting remain active.

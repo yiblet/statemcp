@@ -28,6 +28,60 @@ fn write(store: &Store, namespace: &str, path: &str, text: &str) -> Result<()> {
     tx.commit()?;
     Ok(())
 }
+
+#[test]
+fn lazy_loading_cache_preserves_rollback_and_observes_other_store_publications() -> Result<()> {
+    use crate::content::{CachingLoader, ContentHash, ContentLoader, ContentSource, DirectLoader};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    struct CountReads(Arc<AtomicUsize>);
+    impl ContentLoader for CountReads {
+        fn load(&self, source: &dyn ContentSource, address: &ContentHash) -> Result<Arc<[u8]>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            DirectLoader.load(source, address)
+        }
+    }
+    let reads = Arc::new(AtomicUsize::new(0));
+    let store = repository(7)?
+        .with_content_loader(CachingLoader::new(CountReads(Arc::clone(&reads)), 1024));
+    write(&store, "ns", "/a", "old")?;
+    let input = FsReadInput {
+        namespace: "ns".into(),
+        path: "/a".into(),
+    };
+    let mut tx = store.begin()?;
+    tx.get_namespace(&NamespaceGetInput {
+        namespace: "ns".into(),
+    })?;
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+    assert!(matches!(tx.read_file(&input)?, FileContents::Text { text, .. } if text == "old"));
+    tx.commit()?;
+    let mut tx = store.begin()?;
+    tx.read_file(&input)?;
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    tx.write_file(&FsWriteInput::Text(FileTextInput {
+        namespace: "ns".into(),
+        path: "/a".into(),
+        text: "unpublished".into(),
+        expected_revision: None,
+    }))?;
+    assert!(
+        matches!(tx.read_file(&input)?, FileContents::Text { text, .. } if text == "unpublished")
+    );
+    drop(tx);
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    let mut tx = store.begin()?;
+    assert!(matches!(tx.read_file(&input)?, FileContents::Text { text, .. } if text == "old"));
+    tx.commit()?;
+    let other = Store::from_storage(store.backing.clone())?;
+    write(&other, "ns", "/a", "new")?;
+    let mut tx = store.begin()?;
+    assert!(matches!(tx.read_file(&input)?, FileContents::Text { text, .. } if text == "new"));
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
+    Ok(())
+}
 fn check_counts(store: &Store) -> Result<(i64, i64)> {
     let tx = store.backing.begin_read()?;
     let db = tx.connect(&DatabaseName::parse("catalog.sqlite")?)?;

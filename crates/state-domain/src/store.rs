@@ -4,19 +4,38 @@ pub(crate) mod catalog;
 mod catalog_tests;
 mod maintenance;
 mod migrations;
-mod records;
+pub(crate) mod records;
 mod retention;
 
+use crate::model::Namespace;
 use crate::{Result, Transaction};
 pub use maintenance::MaintenanceReport;
 pub use retention::HistorySize;
-use std::path::Path;
+use std::{
+    collections::BTreeMap,
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 /// Namespace and resource repository backed by atomic overlay invocations.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Store {
     backing: state_store::Store,
     history_size: HistorySize,
+    snapshot: Arc<Mutex<Option<CatalogSnapshot>>>,
+    loader: Arc<dyn crate::content::ContentLoader>,
+}
+struct CatalogSnapshot {
+    generation: i64,
+    namespaces: BTreeMap<String, Namespace>,
+}
+impl std::fmt::Debug for Store {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Store")
+            .field("backing", &self.backing)
+            .field("history_size", &self.history_size)
+            .finish_non_exhaustive()
+    }
 }
 impl Store {
     /// Open physical storage and initialize the domain catalog.
@@ -44,7 +63,22 @@ impl Store {
         Ok(Self {
             backing,
             history_size,
+            snapshot: Arc::new(Mutex::new(None)),
+            loader: Arc::new(crate::content::CachingLoader::new(
+                crate::content::DirectLoader,
+                32 * 1024 * 1024,
+            )),
         })
+    }
+    /// Select a composable loader for committed file and pinned source content.
+    /// Clones of this store share its loader; transactions retain the loader
+    /// selected when they begin. The default is a 32 MiB content cache.
+    pub fn with_content_loader(
+        mut self,
+        loader: impl crate::content::ContentLoader + 'static,
+    ) -> Self {
+        self.loader = Arc::new(loader);
+        self
     }
     /// Begin one exclusive invocation covering metadata and all resource databases.
     pub fn begin(&self) -> Result<Transaction> {
@@ -54,7 +88,39 @@ impl Store {
         let (generation, namespaces) = {
             let catalog = backing.connect(&catalog::name()?)?;
             catalog.execute_batch("PRAGMA foreign_keys=ON")?;
-            catalog::load(&catalog)?
+            // Root ownership excludes writers while the generation is checked
+            // and the snapshot is used. Other processes publish a new generation,
+            // so caching requires no single-process assumption or extra lock mode.
+            let current: i64 = catalog.query_row(
+                "SELECT generation FROM catalog_state WHERE singleton=1",
+                [],
+                |r| r.get(0),
+            )?;
+            let mut cached = self.snapshot.lock().map_err(|_| {
+                crate::Error::new(
+                    crate::ErrorCode::CorruptStore,
+                    "catalog snapshot lock is poisoned",
+                )
+            })?;
+            if cached
+                .as_ref()
+                .is_none_or(|snapshot| snapshot.generation != current)
+            {
+                let (generation, namespaces) = catalog::load(&catalog)?;
+                *cached = Some(CatalogSnapshot {
+                    generation,
+                    namespaces,
+                });
+            }
+            let snapshot = cached.as_ref().ok_or_else(|| {
+                crate::Error::new(
+                    crate::ErrorCode::CorruptStore,
+                    "catalog snapshot is missing",
+                )
+            })?;
+            // Invocations own a mutable view. Copying it preserves rollback and
+            // prevents unpublished edits from entering the shared snapshot.
+            (snapshot.generation, snapshot.namespaces.clone())
         };
         tracing::debug!(target: "statemcp::timing", phase = "catalog_load",
             lock_ms = locked.duration_since(started).as_secs_f64() * 1000.0,
@@ -65,6 +131,7 @@ impl Store {
             generation,
             namespaces,
             self.history_size,
+            Arc::clone(&self.loader),
         ))
     }
     /// Read an idempotency receipt under shared root ownership.
