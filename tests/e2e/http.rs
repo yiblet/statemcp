@@ -121,8 +121,8 @@ async fn official_http_clients_share_state_across_protocol_versions() -> anyhow:
     };
     let first = common::config().serve(transport()).await.unwrap();
     let second = ClientConfig::default().serve(transport()).await.unwrap();
-    assert_eq!(first.list_all_tools().await.unwrap().len(), 36);
-    assert_eq!(second.list_all_tools().await.unwrap().len(), 36);
+    assert_eq!(first.list_all_tools().await.unwrap().len(), 39);
+    assert_eq!(second.list_all_tools().await.unwrap().len(), 39);
     common::tool(&first, "namespace.create", json!({"name":"shared"})).await;
     common::tool(
         &first,

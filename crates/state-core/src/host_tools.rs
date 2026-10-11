@@ -43,6 +43,15 @@ impl Host<'_> {
             HostTool::NamespaceCopy(input) => {
                 encode(self.namespaces.copy_namespace(input, self.context)?)?
             }
+            HostTool::NamespaceHistory(input) => {
+                encode(self.namespaces.namespace_history(input, self.context)?)?
+            }
+            HostTool::NamespacePin(input) => {
+                encode(self.namespaces.pin_revision(input, self.context)?)?
+            }
+            HostTool::NamespaceUnpin(input) => {
+                encode(self.namespaces.unpin_revision(input, self.context)?)?
+            }
             HostTool::NamespaceDelete(input) => {
                 encode(self.namespaces.delete_namespace(input, self.context)?)?
             }
@@ -120,6 +129,10 @@ impl Scope for HostTool {
             Self::NamespaceUpdate(input) => resolve(&mut input.namespace, namespace),
             Self::NamespaceCopy(input) => resolve(&mut input.namespace, namespace),
             Self::NamespaceDelete(input) => resolve(&mut input.namespace, namespace),
+            Self::NamespaceHistory(input) => resolve(&mut input.namespace, namespace),
+            Self::NamespacePin(input) => resolve(&mut input.namespace, namespace),
+            Self::NamespaceUnpin(input) => resolve(&mut input.namespace, namespace),
+
             Self::FsRead(input) => resolve(&mut input.namespace, namespace),
             Self::FsStat(input) => resolve(&mut input.namespace, namespace),
             Self::FsList(input) => resolve(&mut input.namespace, namespace),
@@ -192,6 +205,10 @@ enum HostTool {
     NamespaceUpdate(NamespaceUpdateInput),
     NamespaceCopy(NamespaceCopyInput),
     NamespaceDelete(NamespaceDeleteInput),
+    NamespaceHistory(NamespaceGetInput),
+    NamespacePin(NamespacePinInput),
+    NamespaceUnpin(NamespaceRevisionInput),
+
     FsRead(FsReadInput),
     FsStat(FsStatInput),
     FsList(FsListInput),
@@ -264,6 +281,21 @@ impl HostTool {
                 state_contract::operations::Operation::Namespace(
                     state_contract::operations::NamespaceAction::Copy,
                 ) => Self::NamespaceCopy(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Namespace(
+                    state_contract::operations::NamespaceAction::History,
+                ) => Self::NamespaceHistory(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Namespace(
+                    state_contract::operations::NamespaceAction::Pin,
+                ) => Self::NamespacePin(
+                    serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
+                ),
+                state_contract::operations::Operation::Namespace(
+                    state_contract::operations::NamespaceAction::Unpin,
+                ) => Self::NamespaceUnpin(
                     serde_json::from_value(arguments).map_err(|e| Error::invalid(e.to_string()))?,
                 ),
                 state_contract::operations::Operation::Namespace(

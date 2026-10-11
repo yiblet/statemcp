@@ -1,6 +1,6 @@
 # state-core
 
-Application controllers and typed feature services behind StateMCP’s 34 tools.
+Application controllers and typed feature services behind StateMCP’s 37 tools.
 Controllers coordinate root transactions, result validation and receipts.
 Namespaces, Files, Databases, Functions, Execution and DiscoveryService receive
 contract types and an explicitly borrowed Context. No Python installation is needed.

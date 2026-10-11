@@ -6,6 +6,7 @@ mod functions;
 mod http;
 mod namespaces;
 mod objects;
+mod revisions;
 
 use crate::{Error, Receipt, Result, model::Namespace, sql};
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,6 +22,7 @@ pub struct Transaction {
     changed_databases: BTreeSet<String>,
     receipt: Option<(String, String, Receipt)>,
     history_size: crate::HistorySize,
+    retention_changed: bool,
 }
 impl Transaction {
     pub(crate) fn new(
@@ -38,6 +40,7 @@ impl Transaction {
             changed_databases: BTreeSet::new(),
             receipt: None,
             history_size,
+            retention_changed: false,
         }
     }
     pub fn set_receipt(
@@ -89,7 +92,7 @@ impl Transaction {
             ));
         }
         let changed = self.namespaces.values().any(|n| n.dirty);
-        if !changed && self.receipt.is_none() {
+        if !changed && !self.retention_changed && self.receipt.is_none() {
             return Ok(state_contract::publication::CommitOutcome::Published(
                 state_contract::publication::CommitMetadata {
                     generation: self.generation,
@@ -108,6 +111,7 @@ impl Transaction {
                 &self.objects,
                 &self.receipt,
                 self.history_size,
+                self.retention_changed,
             )?
         };
         if matches!(

@@ -208,6 +208,36 @@ impl Server {
         self.run_blocking(move |state| state.delete_namespace(inputs))
             .await
     }
+
+    /// List retained revisions newest first, including named pins.
+    #[tool(name = "namespace.history")]
+    async fn namespace_history(
+        &self,
+        Parameters(inputs): Parameters<NamespaceGetInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run_blocking(move |state| state.namespace_history(inputs))
+            .await
+    }
+
+    /// Pin a retained namespace revision with an optional unique name. At most seven pins; unpin one before adding an eighth.
+    #[tool(name = "namespace.pin")]
+    async fn namespace_pin(
+        &self,
+        Parameters(inputs): Parameters<NamespacePinInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run_blocking(move |state| state.pin_revision(inputs))
+            .await
+    }
+
+    /// Unpin a retained revision. Content outside recent history is collected at commit.
+    #[tool(name = "namespace.unpin")]
+    async fn namespace_unpin(
+        &self,
+        Parameters(inputs): Parameters<NamespaceRevisionInput>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run_blocking(move |state| state.unpin_revision(inputs))
+            .await
+    }
     /// Read a virtual file as UTF-8 text or base64 for binary data.
     #[tool(name = "fs.read")]
     async fn fs_read(

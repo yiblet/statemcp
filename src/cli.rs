@@ -149,6 +149,21 @@ pub enum ToolCommand {
     )]
     NamespaceCopy(CliNamespaceCopy),
     #[command(
+        name = "namespace.history",
+        about = "List retained revisions newest first, including named pins."
+    )]
+    NamespaceHistory(CliNamespaceHistory),
+    #[command(
+        name = "namespace.pin",
+        about = "Pin a retained namespace revision with an optional unique name. At most seven pins; unpin one before adding an eighth."
+    )]
+    NamespacePin(CliNamespacePin),
+    #[command(
+        name = "namespace.unpin",
+        about = "Unpin a retained revision. Content outside recent history is collected at commit."
+    )]
+    NamespaceUnpin(CliNamespaceUnpin),
+    #[command(
         name = "namespace.delete",
         about = "Delete a namespace and its contents; its name remains reserved",
         after_help = "Example:\n  statemcp cli namespace.delete ./state --namespace sandbox\n\nArguments may be supplied as flags or in --json; do not supply the same field twice. JSON inputs accept inline JSON, @FILE or - for stdin. Results are printed as JSON.\nRequired fields (flags/positionals or --json): namespace."
@@ -403,6 +418,60 @@ pub struct CliNamespaceCopy {
     #[arg(long)]
     #[serde(skip_serializing_if = "Option::is_none")]
     namespace: Option<String>,
+}
+#[derive(Args, Serialize)]
+pub struct CliNamespaceHistory {
+    #[command(flatten)]
+    #[serde(skip)]
+    storage: Storage,
+    /// Arguments as JSON, @FILE or - for stdin
+    #[arg(long)]
+    #[serde(skip)]
+    json: Option<String>,
+    /// Namespace name or stable UUID
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    namespace: Option<String>,
+}
+#[derive(Args, Serialize)]
+pub struct CliNamespacePin {
+    #[command(flatten)]
+    #[serde(skip)]
+    storage: Storage,
+    /// Arguments as JSON, @FILE or - for stdin
+    #[arg(long)]
+    #[serde(skip)]
+    json: Option<String>,
+    /// Namespace name or stable UUID
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    namespace: Option<String>,
+    /// Retained revision UUID (see namespace.history)
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revision: Option<String>,
+    /// Optional unique name for the pin
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+#[derive(Args, Serialize)]
+pub struct CliNamespaceUnpin {
+    #[command(flatten)]
+    #[serde(skip)]
+    storage: Storage,
+    /// Arguments as JSON, @FILE or - for stdin
+    #[arg(long)]
+    #[serde(skip)]
+    json: Option<String>,
+    /// Namespace name or stable UUID
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    namespace: Option<String>,
+    /// Retained revision UUID (see namespace.history)
+    #[arg(long)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revision: Option<String>,
 }
 #[derive(Args, Serialize)]
 pub struct CliNamespaceDelete {
@@ -1041,6 +1110,10 @@ impl ToolCommand {
             Self::NamespaceUpdate(args) => &args.storage,
             Self::NamespaceCopy(args) => &args.storage,
             Self::NamespaceDelete(args) => &args.storage,
+            Self::NamespaceHistory(args) => &args.storage,
+            Self::NamespacePin(args) => &args.storage,
+            Self::NamespaceUnpin(args) => &args.storage,
+
             Self::FsRead(args) => &args.storage,
             Self::FsStat(args) => &args.storage,
             Self::FsList(args) => &args.storage,
@@ -1102,6 +1175,18 @@ impl ToolCommand {
                 args,
             )?)),
             Self::NamespaceCopy(args) => Ok(PreparedCommand::NamespaceCopy(input::parse(
+                args.json.as_deref(),
+                args,
+            )?)),
+            Self::NamespaceHistory(args) => Ok(PreparedCommand::NamespaceHistory(input::parse(
+                args.json.as_deref(),
+                args,
+            )?)),
+            Self::NamespacePin(args) => Ok(PreparedCommand::NamespacePin(input::parse(
+                args.json.as_deref(),
+                args,
+            )?)),
+            Self::NamespaceUnpin(args) => Ok(PreparedCommand::NamespaceUnpin(input::parse(
                 args.json.as_deref(),
                 args,
             )?)),
@@ -1222,6 +1307,10 @@ pub enum PreparedCommand {
     NamespaceUpdate(NamespaceUpdateInput),
     NamespaceCopy(NamespaceCopyInput),
     NamespaceDelete(NamespaceDeleteInput),
+    NamespaceHistory(NamespaceGetInput),
+    NamespacePin(NamespacePinInput),
+    NamespaceUnpin(NamespaceRevisionInput),
+
     FsRead(FsReadInput),
     FsStat(FsStatInput),
     FsList(FsListInput),
@@ -1265,6 +1354,10 @@ impl PreparedCommand {
             Self::NamespaceUpdate(input) => encode(state.update_namespace(input)?),
             Self::NamespaceCopy(input) => encode(state.copy_namespace(input)?),
             Self::NamespaceDelete(input) => encode(state.delete_namespace(input)?),
+            Self::NamespaceHistory(input) => encode(state.namespace_history(input)?),
+            Self::NamespacePin(input) => encode(state.pin_revision(input)?),
+            Self::NamespaceUnpin(input) => encode(state.unpin_revision(input)?),
+
             Self::FsRead(input) => encode(state.read_file(input)?),
             Self::FsStat(input) => encode(state.stat_file(input)?),
             Self::FsList(input) => encode(state.list_files(input)?),

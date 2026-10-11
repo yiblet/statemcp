@@ -37,7 +37,7 @@ and stops it and removes that data on exit. It does not use `test/data`.
 The output file is overwritten on each run.
 
 The requests cover MCP initialization, the initialized notification, ping,
-tool listing, all 34 tools and every advertised action, all discovery modes (including the bundled README),
+tool listing, all 37 tools and every advertised action, all discovery modes (including the bundled README),
 text/binary file writes, namespace copies, endpoint updates, concurrency tokens,
 idempotency replay, namespace isolation, and representative expected errors. This covers the API's
 request types, not every possible argument combination or error. Live tool

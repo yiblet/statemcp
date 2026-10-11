@@ -482,8 +482,8 @@ fn strict_tool_and_host_validation_and_discovery_share_the_same_surface() {
         "execute",
         json!({"script":"mcp('describe')['tools']"}),
     );
-    assert_eq!(result["value"].as_array().unwrap().len(), 34);
-    assert_eq!(crate::tool_definitions().len(), 34);
+    assert_eq!(result["value"].as_array().unwrap().len(), 37);
+    assert_eq!(crate::tool_definitions().len(), 37);
 }
 
 #[test]
@@ -675,7 +675,7 @@ fn schema_instance_data_and_property_names_are_not_reference_keywords() {
 fn discovery_guide_runs_and_acknowledgments_keep_actionable_tokens() {
     let (_dir, state) = service();
     let overview = run(&state, "describe", json!({}));
-    assert_eq!(overview["tools"].as_array().unwrap().len(), 34);
+    assert_eq!(overview["tools"].as_array().unwrap().len(), 37);
     assert!(overview["tools"][0].get("inputSchema").is_none());
     let full = run(&state, "describe", json!({"mode":"full"}));
     assert!(full["tools"][0]["inputSchema"].is_object());

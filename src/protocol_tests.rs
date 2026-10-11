@@ -108,7 +108,7 @@ async fn official_sdk_client_discovers_and_calls_tools() {
         "statemcp"
     );
     let tools = client.list_all_tools().await.unwrap();
-    assert_eq!(tools.len(), 34);
+    assert_eq!(tools.len(), 37);
     for (actual, expected) in tools.iter().zip(tool_definitions()) {
         assert_eq!(actual.name, expected["name"].as_str().unwrap());
         assert_eq!(
@@ -231,7 +231,7 @@ fn schemas_advertise_exact_fixed_surface_and_required_properties() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 34);
+    assert_eq!(names.len(), 37);
     assert!(names.contains(&"db.create"));
     assert!(names.contains(&"db.query"));
     assert!(names.contains(&"namespace.copy"));

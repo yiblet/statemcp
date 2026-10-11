@@ -176,7 +176,7 @@ fn direct_cli_tools_publish_invoke_and_manipulate_state() {
     workspace.ok("db.drop", &["--namespace", "renamed", "--database", "app"]);
     workspace.ok("namespace.delete", &["--namespace", "renamed"]);
     let tools = workspace.ok("describe", &[]);
-    assert_eq!(tools["tools"].as_array().unwrap().len(), 34);
+    assert_eq!(tools["tools"].as_array().unwrap().len(), 37);
 }
 
 #[test]
@@ -250,7 +250,7 @@ fn cli_commands_cover_mcp_tools_and_paths_are_required() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap().to_owned())
         .collect();
-    assert_eq!(groups.len(), 34);
+    assert_eq!(groups.len(), 37);
     for name in &groups {
         let help = Cli::try_parse_from(["statemcp", "cli", name, "--help"])
             .err()
@@ -288,4 +288,36 @@ fn help_version_and_argument_errors() {
     ] {
         assert!(Cli::try_parse_from(std::iter::once("statemcp").chain(arguments)).is_err());
     }
+}
+
+#[test]
+fn cli_named_revision_pins_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+    use state_contract::namespace::*;
+    let workspace = Workspace::new();
+    workspace.run("namespace.create", &["--name", "pins"])?;
+    let info: NamespaceInfo =
+        serde_json::from_str(&workspace.run("namespace.get", &["--namespace", "pins"])?)?;
+    let pinned: RevisionInfo = serde_json::from_str(&workspace.run(
+        "namespace.pin",
+        &[
+            "--namespace",
+            "pins",
+            "--revision",
+            &info.revision,
+            "--name",
+            "release",
+        ],
+    )?)?;
+    assert!(
+        matches!(pinned.retention, RevisionRetention::Pinned { name: Some(name) } if name.as_str() == "release")
+    );
+    let history: NamespaceHistory =
+        serde_json::from_str(&workspace.run("namespace.history", &["--namespace", "pins"])?)?;
+    assert_eq!(history.revisions.len(), 1);
+    let unpinned: RevisionInfo = serde_json::from_str(&workspace.run(
+        "namespace.unpin",
+        &["--namespace", "pins", "--revision", &info.revision],
+    )?)?;
+    assert!(matches!(unpinned.retention, RevisionRetention::Recent));
+    Ok(())
 }

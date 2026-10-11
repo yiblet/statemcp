@@ -55,6 +55,15 @@ impl ToolCalls for crate::Controller {
             "namespace.copy" => encode(self.copy_namespace(parse::<
                 state_contract::namespace::NamespaceCopyInput,
             >(arguments)?)?),
+            "namespace.history" => encode(self.namespace_history(parse::<
+                state_contract::namespace::NamespaceGetInput,
+            >(arguments)?)?),
+            "namespace.pin" => encode(self.pin_revision(parse::<
+                state_contract::namespace::NamespacePinInput,
+            >(arguments)?)?),
+            "namespace.unpin" => encode(self.unpin_revision(parse::<
+                state_contract::namespace::NamespaceRevisionInput,
+            >(arguments)?)?),
             "namespace.delete" => encode(self.delete_namespace(parse::<
                 state_contract::namespace::NamespaceDeleteInput,
             >(arguments)?)?),

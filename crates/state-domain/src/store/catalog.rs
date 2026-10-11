@@ -82,8 +82,9 @@ pub(crate) fn publish(
     objects: &BTreeMap<String, Vec<u8>>,
     pending_receipt: &Option<(String, String, Receipt)>,
     history_size: HistorySize,
+    retention_changed: bool,
 ) -> Result<CommitOutcome> {
-    let changed = namespaces.values().any(|n| n.dirty);
+    let changed = retention_changed || namespaces.values().any(|n| n.dirty);
     let tx = conn.unchecked_transaction()?;
     if let Some((principal, key, desired)) = pending_receipt
         && let Some(existing) = receipt(&tx, principal, key)?
@@ -137,6 +138,10 @@ pub(crate) fn publish(
         )?;
         stored.record_references(&tx, &revision)?;
         tx.execute("INSERT INTO namespaces(id,name,head_revision,deleted) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,head_revision=excluded.head_revision,deleted=excluded.deleted",params![ns.id,ns.name,revision,ns.deleted])?;
+        tx.execute(
+            "INSERT INTO namespace_revisions(namespace_id,revision_id) VALUES(?,?)",
+            params![ns.id, revision],
+        )?;
         revisions.insert(ns.id.clone(), revision);
     }
     if let Some((principal, key, receipt)) = pending_receipt {

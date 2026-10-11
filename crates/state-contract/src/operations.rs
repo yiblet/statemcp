@@ -92,6 +92,9 @@ wire_enum!(NamespaceAction {
     Update => "update",
     Copy => "copy",
     Delete => "delete",
+    History => "history",
+    Pin => "pin",
+    Unpin => "unpin",
 });
 wire_enum!(FileAction {
     Read => "read",

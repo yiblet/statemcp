@@ -119,8 +119,10 @@ the backing file identity stays fixed.
 
 Every publication retains the latest seven revisions per live namespace by default,
 including current state. `--history-size N` configures a positive count for all
-commands; maintenance applies the same setting. Deleted namespaces retain one
-empty tombstone and release their entire history. Retained revisions own references
+commands; maintenance applies the same setting. Each namespace may also retain up to seven pinned revisions, optionally named.
+Pins survive rolling pruning; names are unique within the namespace. Unpinning
+releases older content at commit. Deleted namespaces retain one empty tombstone
+and release their entire history and pins. Copies do not inherit pins. Retained revisions own references
 to SHA-256 addressed file bytes, pinned function sources, and route modules. Shared
 bytes are stored once, with transactional reference counts; removing the final
 reference collects the object in that same publication. SQLite reuses freed pages.

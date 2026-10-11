@@ -288,6 +288,33 @@ impl Controller {
         self.transaction(|root| self.namespaces.delete_namespace(input, root))
             .map(|(result, _)| result)
     }
+
+    /// List retained revisions newest first, including named pins.
+    pub fn namespace_history(
+        &self,
+        input: state_contract::namespace::NamespaceGetInput,
+    ) -> Result<state_contract::namespace::NamespaceHistory> {
+        self.transaction(|root| self.namespaces.namespace_history(input, root))
+            .map(|(result, _)| result)
+    }
+
+    /// Pin a retained namespace revision with an optional unique name. At most seven pins; unpin one before adding an eighth.
+    pub fn pin_revision(
+        &self,
+        input: state_contract::namespace::NamespacePinInput,
+    ) -> Result<state_contract::namespace::RevisionInfo> {
+        self.transaction(|root| self.namespaces.pin_revision(input, root))
+            .map(|(result, _)| result)
+    }
+
+    /// Unpin a retained revision. Content outside recent history is collected at commit.
+    pub fn unpin_revision(
+        &self,
+        input: state_contract::namespace::NamespaceRevisionInput,
+    ) -> Result<state_contract::namespace::RevisionInfo> {
+        self.transaction(|root| self.namespaces.unpin_revision(input, root))
+            .map(|(result, _)| result)
+    }
     /// Read a virtual file as UTF-8 text or base64 for binary data.
     /// Runs in one root transaction; failures roll back all nested effects.
     pub fn read_file(&self, input: state_contract::file::FsReadInput) -> Result<FileContents> {

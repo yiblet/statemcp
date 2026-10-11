@@ -11,7 +11,7 @@ async fn official_sdk_client_launches_binary_over_stdio() {
     command.arg("stdio").arg(&directory.0);
     let transport = TokioChildProcess::new(command).unwrap();
     let client = common::config().serve(transport).await.unwrap();
-    assert_eq!(client.list_all_tools().await.unwrap().len(), 34);
+    assert_eq!(client.list_all_tools().await.unwrap().len(), 37);
     assert_eq!(
         tool(&client, "execute", json!({"script":"40 + 2"})).await["value"],
         42

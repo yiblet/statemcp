@@ -198,3 +198,189 @@ fn deleting_source_files_preserves_published_functions_until_removed() -> Result
     assert_eq!(check_counts(&store)?.1, 0);
     Ok(())
 }
+
+fn head(store: &Store, namespace: &str) -> Result<String> {
+    Ok(store
+        .begin()?
+        .get_namespace(&NamespaceGetInput {
+            namespace: namespace.into(),
+        })?
+        .revision)
+}
+fn pin(store: &Store, revision: &str, name: Option<&str>) -> Result<()> {
+    let mut tx = store.begin()?;
+    tx.pin_revision(&NamespacePinInput {
+        namespace: "ns".into(),
+        revision: revision.into(),
+        name: name.map(|name| PinName::parse(name.into())).transpose()?,
+    })?;
+    tx.commit()?;
+    Ok(())
+}
+#[test]
+fn seven_named_pins_survive_rolling_history_and_unpin_collects_content() -> Result<()> {
+    let store = repository(7)?;
+    let mut pins = Vec::new();
+    for i in 0..7 {
+        write(&store, "ns", "/file", &format!("pinned-{i}"))?;
+        let revision = head(&store, "ns")?;
+        pin(&store, &revision, Some(&format!("release-{i}")))?;
+        pins.push(revision);
+    }
+    for i in 0..20 {
+        write(&store, "ns", "/file", &format!("recent-{i}"))?;
+    }
+    assert_eq!(check_counts(&store)?, (14, 14));
+    let history = store.begin()?.namespace_history(&NamespaceGetInput {
+        namespace: "ns".into(),
+    })?;
+    assert_eq!(history.revisions.len(), 14);
+    assert_eq!(history.revisions.iter().filter(|r| r.current).count(), 1);
+    assert_eq!(
+        history
+            .revisions
+            .iter()
+            .filter(|r| matches!(r.retention, RevisionRetention::Pinned { .. }))
+            .count(),
+        7
+    );
+    let recent = head(&store, "ns")?;
+    let mut tx = store.begin()?;
+    let error = tx.pin_revision(&NamespacePinInput {
+        namespace: "ns".into(),
+        revision: recent,
+        name: None,
+    });
+    assert_eq!(
+        error.err().map(|e| e.code),
+        Some(crate::ErrorCode::LimitExceeded)
+    );
+    assert!(tx.commit().is_err());
+    let old = pins
+        .first()
+        .ok_or_else(|| crate::Error::invalid("test requires a pin"))?;
+    pin(&store, old, None)?;
+    let history = store.begin()?.namespace_history(&NamespaceGetInput {
+        namespace: "ns".into(),
+    })?;
+    assert!(history.revisions.iter().any(|r| r.revision == *old && matches!(&r.retention, RevisionRetention::Pinned { name: Some(name) } if name.as_str() == "release-0")));
+    let mut tx = store.begin()?;
+    tx.unpin_revision(&NamespaceRevisionInput {
+        namespace: "ns".into(),
+        revision: old.clone(),
+    })?;
+    tx.commit()?;
+    assert_eq!(check_counts(&store)?, (13, 13));
+    Ok(())
+}
+#[test]
+fn pins_are_transactional_namespace_owned_and_names_are_unique() -> Result<()> {
+    let store = repository(7)?;
+    write(&store, "ns", "/file", "one")?;
+    let first = head(&store, "ns")?;
+    pin(&store, &first, Some("release"))?;
+    write(&store, "ns", "/file", "two")?;
+    let second = head(&store, "ns")?;
+    let mut tx = store.begin()?;
+    assert_eq!(
+        tx.pin_revision(&NamespacePinInput {
+            namespace: "ns".into(),
+            revision: second.clone(),
+            name: Some(PinName::parse("release".into())?)
+        })
+        .err()
+        .map(|e| e.code),
+        Some(crate::ErrorCode::AlreadyExists)
+    );
+    assert!(tx.commit().is_err());
+    let mut tx = store.begin()?;
+    tx.pin_revision(&NamespacePinInput {
+        namespace: "ns".into(),
+        revision: second.clone(),
+        name: None,
+    })?;
+    assert!(
+        tx.read_file(&FsReadInput {
+            namespace: "missing".into(),
+            path: "/file".into()
+        })
+        .is_err()
+    );
+    assert!(tx.commit().is_err());
+    let history = store.begin()?.namespace_history(&NamespaceGetInput {
+        namespace: "ns".into(),
+    })?;
+    assert!(
+        history
+            .revisions
+            .iter()
+            .any(|r| r.revision == second && matches!(r.retention, RevisionRetention::Recent))
+    );
+    let mut tx = store.begin()?;
+    tx.copy_namespace(&NamespaceCopyInput {
+        namespace: "ns".into(),
+        name: "copy".into(),
+        description: DescriptionChange::Unchanged,
+        expected_revision: None,
+    })?;
+    tx.commit()?;
+    let mut tx = store.begin()?;
+    assert_eq!(
+        tx.pin_revision(&NamespacePinInput {
+            namespace: "copy".into(),
+            revision: first.clone(),
+            name: None
+        })
+        .err()
+        .map(|e| e.code),
+        Some(crate::ErrorCode::NotFound)
+    );
+    assert!(tx.commit().is_err());
+    for i in 0..10 {
+        write(&store, "ns", "/file", &i.to_string())?;
+    }
+    let mut tx = store.begin()?;
+    tx.delete_namespace(&NamespaceDeleteInput {
+        namespace: "ns".into(),
+        expected_revision: None,
+    })?;
+    tx.commit()?;
+    assert_eq!(check_counts(&store)?.1, 1); // The copy owns its latest bytes only.
+    Ok(())
+}
+#[test]
+fn pin_names_are_parsed_at_the_boundary() {
+    assert!(PinName::parse("   ".into()).is_err());
+    assert!(PinName::parse("x".repeat(257)).is_err());
+    assert!(
+        serde_json::from_str::<NamespacePinInput>(r#"{"namespace":"ns","revision":"r","name":""}"#)
+            .is_err()
+    );
+}
+
+#[test]
+fn legacy_shared_ancestry_does_not_expand_another_namespaces_recent_window() -> Result<()> {
+    let store = repository(7)?;
+    for i in 0..10 {
+        write(&store, "ns", "/file", &i.to_string())?;
+    }
+    // Before independent copy ancestry was introduced, copies could share heads.
+    let backing = store.backing.begin()?;
+    {
+        let conn = backing.connect(&catalog::name()?)?;
+        conn.execute("INSERT INTO namespaces(id,name,head_revision,deleted) SELECT 'legacy','legacy',head_revision,0 FROM namespaces WHERE name='ns'", [])?;
+        conn.execute("INSERT INTO namespace_revisions(namespace_id,revision_id) SELECT 'legacy',revision_id FROM namespace_revisions WHERE namespace_id=(SELECT id FROM namespaces WHERE name='ns')", [])?;
+    }
+    backing.commit()?;
+    for i in 10..20 {
+        write(&store, "ns", "/file", &i.to_string())?;
+    }
+    for namespace in ["ns", "legacy"] {
+        let history = store.begin()?.namespace_history(&NamespaceGetInput {
+            namespace: namespace.into(),
+        })?;
+        assert_eq!(history.revisions.len(), 7);
+    }
+    assert_eq!(check_counts(&store)?, (14, 14));
+    Ok(())
+}

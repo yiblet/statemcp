@@ -78,4 +78,90 @@ impl Namespaces {
             Ok(context.transaction().delete_namespace(&input)?)
         })
     }
+    /// List retained revisions newest first, including named pins.
+    pub fn namespace_history(
+        &self,
+        mut input: NamespaceGetInput,
+        context: &mut Context,
+    ) -> Result<NamespaceHistory> {
+        context.operation(|context| {
+            input.namespace = context.namespace(&input.namespace)?.as_str().to_owned();
+            Ok(context.transaction().namespace_history(&input)?)
+        })
+    }
+
+    /// Pin a retained namespace revision with an optional unique name. At most seven pins; unpin one before adding an eighth.
+    pub fn pin_revision(
+        &self,
+        mut input: NamespacePinInput,
+        context: &mut Context,
+    ) -> Result<RevisionInfo> {
+        context.operation(|context| {
+            input.namespace = context.namespace(&input.namespace)?.as_str().to_owned();
+            Ok(context.transaction().pin_revision(&input)?)
+        })
+    }
+
+    /// Unpin a retained revision. Content outside recent history is collected at commit.
+    pub fn unpin_revision(
+        &self,
+        mut input: NamespaceRevisionInput,
+        context: &mut Context,
+    ) -> Result<RevisionInfo> {
+        context.operation(|context| {
+            input.namespace = context.namespace(&input.namespace)?.as_str().to_owned();
+            Ok(context.transaction().unpin_revision(&input)?)
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::test_support::ToolCalls;
+    use serde_json::json;
+    use state_contract::execution::ExecuteInput;
+
+    #[test]
+    fn python_pin_helpers_preserve_names_and_enforce_function_scope()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fs = state_fs::MemoryFs::new();
+        let state = crate::test_support::memory_controller(&fs)?;
+        state.tool("namespace.create", json!({"name":"n"}))?;
+        state.tool("namespace.create", json!({"name":"other"}))?;
+        let current = state
+            .get_namespace(state_contract::namespace::NamespaceGetInput {
+                namespace: "n".into(),
+            })?
+            .revision;
+        let result = state.execute_script(ExecuteInput {
+            namespace: Some("n".into()), inputs: Some(json!({"revision": current})), idempotency_key: None,
+            script: "mcp('namespace.pin', {'namespace': 'n', 'revision': inputs['revision'], 'name': 'release'})".into(),
+        }, None)?;
+        assert_eq!(
+            result.value.get("retention").and_then(|v| v.get("name")),
+            Some(&json!("release"))
+        );
+        state.tool("fs.write", json!({"namespace":"n","path":"/api.py","text":"def endpoint():\n    return mcp('namespace.history', {'namespace': 'other'})\n"}))?;
+        state.tool(
+            "function.declare",
+            json!({"namespace":"n","file":"/api.py","symbol":"endpoint","name":"escape"}),
+        )?;
+        let error = state.tool("call", json!({"namespace":"n","function":"escape"}));
+        assert_eq!(
+            error.err().map(|error| error.code),
+            Some(crate::ErrorCode::PermissionDenied)
+        );
+        state.execute_script(
+            ExecuteInput {
+                namespace: Some("n".into()),
+                inputs: Some(json!({"revision": current})),
+                idempotency_key: None,
+                script:
+                    "mcp('namespace.unpin', {'namespace': 'n', 'revision': inputs['revision']})"
+                        .into(),
+            },
+            None,
+        )?;
+        Ok(())
+    }
 }

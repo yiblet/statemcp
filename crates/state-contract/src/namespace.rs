@@ -113,3 +113,71 @@ impl<'de> Deserialize<'de> for DescriptionChange {
         })
     }
 }
+
+/// Select a retained revision belonging to a namespace.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NamespaceRevisionInput {
+    pub namespace: String,
+    pub revision: String,
+}
+/// One retained metadata revision; database files are not historical snapshots.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RevisionInfo {
+    pub revision: String,
+    pub current: bool,
+    pub retention: RevisionRetention,
+}
+/// Retained revisions, newest first, and the independent pin limit.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NamespaceHistory {
+    pub revisions: Vec<RevisionInfo>,
+    pub pin_limit: u32,
+}
+
+/// Request to protect a retained revision, optionally giving its pin a name.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NamespacePinInput {
+    pub namespace: String,
+    pub revision: String,
+    pub name: Option<PinName>,
+}
+/// A nonempty, bounded name for a revision pin.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "String", into = "String")]
+#[schemars(with = "String")]
+pub struct PinName(String);
+impl PinName {
+    /// Parse a nonblank pin name of at most 256 UTF-8 bytes.
+    pub fn parse(value: String) -> Result<Self, crate::ParseError> {
+        if value.trim().is_empty() || value.len() > 256 {
+            return Err(crate::ParseError::invalid(
+                "pin name must be nonblank and at most 256 bytes",
+            ));
+        }
+        Ok(Self(value))
+    }
+    /// Name as supplied at the boundary.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl TryFrom<String> for PinName {
+    type Error = crate::ParseError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+impl From<PinName> for String {
+    fn from(value: PinName) -> Self {
+        value.0
+    }
+}
+/// Recent revisions are eligible for rolling pruning; pins retain their content.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RevisionRetention {
+    Recent,
+    Pinned { name: Option<PinName> },
+}

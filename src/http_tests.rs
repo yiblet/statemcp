@@ -163,7 +163,7 @@ async fn prefixed_routes_share_sessions_and_health_is_public() {
             .as_array()
             .unwrap()
             .len(),
-        36
+        39
     );
     for uri in ["/health", "/mcp", "/mcp/", "/statemcp/mcpx"] {
         let response = app
@@ -258,7 +258,7 @@ async fn authenticated_http_sessions_execute_and_share_persistent_state() {
             .as_array()
             .unwrap()
             .len(),
-        36
+        39
     );
     let created = tool(&app, &session, "execute", json!({"script":"mcp('namespace.create', { 'name': 'http'})\nmcp('fs.write', { 'namespace': 'http', 'path': '/saved', 'text': 'persisted'})\n42"}), Some("secret-token")).await;
     assert_eq!(created["isError"], false);
@@ -501,7 +501,7 @@ async fn synchronous_invocation_does_not_block_async_http_requests() {
             .as_array()
             .unwrap()
             .len(),
-        36
+        39
     );
     assert!(
         start.elapsed() < Duration::from_millis(200),
@@ -623,8 +623,8 @@ async fn http_sessions_share_state_across_protocol_versions() {
     let app = app(fixture.state_async().await.unwrap(), Some("sdk-token"));
     let first = HttpClient::new(app.clone(), "2025-06-18").await;
     let second = HttpClient::new(app, "2025-03-26").await;
-    assert_eq!(first.list_tools().await.len(), 36);
-    assert_eq!(second.list_tools().await.len(), 36);
+    assert_eq!(first.list_tools().await.len(), 39);
+    assert_eq!(second.list_tools().await.len(), 39);
     http_tool(&first, "namespace.create", json!({"name":"shared"})).await;
     http_tool(
         &first,
@@ -685,7 +685,7 @@ async fn tools_list_includes_required_cache_fields_for_current_protocol() {
     assert_eq!(result["result"]["ttlMs"], 0);
     assert_eq!(result["result"]["cacheScope"], "public");
     assert_eq!(result["result"]["resultType"], "complete");
-    assert_eq!(result["result"]["tools"].as_array().unwrap().len(), 36);
+    assert_eq!(result["result"]["tools"].as_array().unwrap().len(), 39);
 }
 
 #[tokio::test]

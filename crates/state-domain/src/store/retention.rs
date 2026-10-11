@@ -52,7 +52,30 @@ pub(super) struct Pruned {
 
 /// Must execute inside the same catalog transaction as publication or migration.
 pub(super) fn prune(conn: &Connection, history: HistorySize) -> Result<Pruned> {
-    let revisions = prune_revisions(conn, history)?;
+    // A deleted namespace releases pins along with its contents.
+    conn.execute("UPDATE namespace_revisions SET pinned=0,pin_name=NULL WHERE namespace_id IN (SELECT id FROM namespaces WHERE deleted=1)", [])?;
+    // Older catalogs may have copies sharing ancestry. A globally retained
+    // revision must not leave stale membership in another namespace's history.
+    let recent_count = i64::try_from(history.get())
+        .map_err(|_| Error::invalid("history size exceeds SQLite's count range"))?;
+    conn.execute(
+        "WITH RECURSIVE recent(namespace_id,revision_id,remaining) AS (
+            SELECT id,head_revision,CASE WHEN deleted=1 THEN 1 ELSE ? END FROM namespaces
+            UNION ALL
+            SELECT recent.namespace_id,r.parent_id,recent.remaining-1 FROM recent
+            JOIN revisions r ON r.id=recent.revision_id WHERE recent.remaining>1 AND r.parent_id IS NOT NULL
+         ) DELETE FROM namespace_revisions WHERE pinned=0 AND NOT EXISTS(
+            SELECT 1 FROM recent WHERE recent.namespace_id=namespace_revisions.namespace_id AND recent.revision_id=namespace_revisions.revision_id
+         )", [recent_count],
+    )?;
+    let pinned = {
+        let mut statement =
+            conn.prepare("SELECT DISTINCT revision_id FROM namespace_revisions WHERE pinned=1")?;
+        statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<BTreeSet<_>>>()?
+    };
+    let revisions = prune_retained(conn, history, pinned)?;
     // Cascading edge deletion decrements reference counts before zero-reference GC.
     let objects = conn.execute("DELETE FROM objects WHERE ref_count=0", [])?;
     Ok(Pruned { revisions, objects })
@@ -61,6 +84,13 @@ pub(super) fn prune(conn: &Connection, history: HistorySize) -> Result<Pruned> {
 /// Migration prunes legacy history before interning sources, but must preserve
 /// objects until every retained manifest has registered its references.
 pub(super) fn prune_revisions(conn: &Connection, history: HistorySize) -> Result<usize> {
+    prune_retained(conn, history, BTreeSet::new())
+}
+fn prune_retained(
+    conn: &Connection,
+    history: HistorySize,
+    mut retained: BTreeSet<String>,
+) -> Result<usize> {
     let parents: BTreeMap<String, Option<String>> = {
         let mut statement = conn.prepare("SELECT id,parent_id FROM revisions")?;
         statement
@@ -73,7 +103,6 @@ pub(super) fn prune_revisions(conn: &Connection, history: HistorySize) -> Result
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?
     };
-    let mut retained = BTreeSet::new();
     for (head, deleted) in &heads {
         let mut current = Some(head.as_str());
         let mut visited = BTreeSet::new();
@@ -88,7 +117,7 @@ pub(super) fn prune_revisions(conn: &Connection, history: HistorySize) -> Result
             let parent = parents.get(revision).ok_or_else(|| {
                 Error::new(ErrorCode::CorruptStore, "revision ancestor is missing")
             })?;
-            retained.insert(revision);
+            retained.insert(revision.to_owned());
             current = parent.as_deref();
         }
     }

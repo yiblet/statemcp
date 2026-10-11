@@ -156,6 +156,13 @@ tool describe.action describe '{"tool":"db.create"}'
 tool namespace.create namespace.create '{"name":"curl-demo"}'
 tool namespace.list namespace.list '{}'
 tool namespace.get namespace.get '{"namespace":"curl-demo"}'
+revision=$(result | jq -r '.revision')
+tool namespace.history namespace.history '{"namespace":"curl-demo"}'
+tool namespace.pin namespace.pin "$(jq -cn --arg revision "$revision" '{namespace:"curl-demo",revision:$revision,name:"initial"}')"
+assert_result revision.pin '.retention.kind == "pinned" and .retention.name == "initial"'
+tool namespace.unpin namespace.unpin "$(jq -cn --arg revision "$revision" '{namespace:"curl-demo",revision:$revision}')"
+assert_result revision.unpin '.retention.kind == "recent"'
+
 revision=$(jq -r '.result.content[0].text | fromjson | .revision' <<<"$response")
 tool namespace.update namespace.update "$(jq -cn --arg revision "$revision" '{namespace:"curl-demo",name:"curl-renamed",expected_revision:$revision}')"
 assert_result namespace.rename ".revision != \"$revision\""

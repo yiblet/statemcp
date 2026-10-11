@@ -111,7 +111,37 @@ impl Migrator for ContentAddressedCatalog {
         }
         drop(rows);
         drop(statement);
-        retention::prune(conn, self.history_size)?;
+        conn.execute("DELETE FROM objects WHERE ref_count=0", [])?;
+        Ok(())
+    }
+}
+struct PinnedRevisions {
+    migration: Migration,
+}
+impl Migrator for PinnedRevisions {
+    fn migration(&self) -> Migration {
+        self.migration.clone()
+    }
+    fn forward(&self, context: &Context<'_, '_>) -> std::result::Result<(), ForwardError> {
+        context.catalog().execute_batch(
+            "CREATE TABLE namespace_revisions(
+                namespace_id TEXT NOT NULL REFERENCES namespaces(id),
+                revision_id TEXT NOT NULL REFERENCES revisions(id) ON DELETE CASCADE,
+                pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)),
+                pin_name TEXT CHECK(pin_name IS NULL OR pinned=1),
+                PRIMARY KEY(namespace_id,revision_id)
+            );
+            CREATE INDEX namespace_revisions_revision ON namespace_revisions(revision_id);
+            CREATE UNIQUE INDEX namespace_pin_names ON namespace_revisions(namespace_id,pin_name) WHERE pin_name IS NOT NULL;
+            WITH RECURSIVE ancestry(namespace_id,revision_id) AS (
+                SELECT id,head_revision FROM namespaces
+                UNION
+                SELECT a.namespace_id,r.parent_id FROM ancestry a JOIN revisions r ON r.id=a.revision_id WHERE r.parent_id IS NOT NULL
+            ) INSERT INTO namespace_revisions(namespace_id,revision_id) SELECT namespace_id,revision_id FROM ancestry;
+            CREATE TRIGGER namespace_pin_limit BEFORE UPDATE OF pinned ON namespace_revisions
+            WHEN NEW.pinned=1 AND OLD.pinned=0 AND (SELECT count(*) FROM namespace_revisions WHERE namespace_id=NEW.namespace_id AND pinned=1)>=7
+            BEGIN SELECT RAISE(ABORT,'revision pin limit exceeded'); END;"
+        )?;
         Ok(())
     }
 }
@@ -124,6 +154,9 @@ pub(super) fn service(
         Box::new(ContentAddressedCatalog {
             migration: Migration::new("content_addressed_catalog", 2)?,
             history_size,
+        }),
+        Box::new(PinnedRevisions {
+            migration: Migration::new("pinned_namespace_revisions", 3)?,
         }),
     ])
 }

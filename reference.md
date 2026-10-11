@@ -63,6 +63,9 @@ without migration, with null descriptions for existing namespaces.
 | `namespace.update` | `namespace` | `name`, `description`, `expected_revision` |
 | `namespace.copy` | `namespace`, `name` | `description`, `expected_revision` |
 | `namespace.delete` | `namespace` | `expected_revision` |
+| `namespace.history` | `namespace` | — |
+| `namespace.pin` | `namespace`, `revision` | `name` |
+| `namespace.unpin` | `namespace`, `revision` | — |
 | `fs.read` | `namespace`, `path` | — |
 | `fs.stat` | `namespace`, `path` | — |
 | `fs.list` | `namespace` | `path` |
@@ -1649,3 +1652,103 @@ is configured. Authority/Origin checks still apply to token redemption.
 queries, fragments and credentials are rejected. Python `config()` returns an
 attribute object with `.public_url` (origin string or None) and `.prefix` (string).
 It is available during scripts/functions/handlers, with no credentials exposed.
+
+### Revision pins
+
+`namespace.history` lists retained revisions newest first, with `current` and
+`retention` (`{"kind":"recent"}` or `{"kind":"pinned","name":"release"}`).
+`namespace.pin` protects a retained revision, optionally naming the pin. Names are
+unique within a namespace. Repeating a pin without a name preserves its name;
+supplying a name renames it. `namespace.unpin` selects by revision UUID.
+
+Keep the latest seven revisions (configurable with `--history-size`) plus up to
+seven pinned revisions per namespace. Pins within recent history count in both
+sets, so there are at most fourteen distinct revisions with default settings.
+The eighth pin is rejected; existing pins are never automatically evicted.
+Unpinning an older revision collects it and any content with no remaining owners
+at commit. Namespace deletion releases all its pins; copies start without pins.
+These revisions retain metadata and source files, not historical database contents.
+
+### `namespace.history`
+
+List retained revisions newest first, including named pins.
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "namespace": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "namespace"
+  ]
+}
+```
+
+### `namespace.pin`
+
+Pin a retained namespace revision with an optional unique name. At most seven pins; unpin one before adding an eighth.
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "name": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PinName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "namespace": {
+      "type": "string"
+    },
+    "revision": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "namespace",
+    "revision"
+  ],
+  "$defs": {
+    "PinName": {
+      "description": "A nonempty, bounded name for a revision pin.",
+      "type": "string"
+    }
+  }
+}
+```
+
+### `namespace.unpin`
+
+Unpin a retained revision. Content outside recent history is collected at commit.
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "namespace": {
+      "type": "string"
+    },
+    "revision": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "namespace",
+    "revision"
+  ]
+}
+```

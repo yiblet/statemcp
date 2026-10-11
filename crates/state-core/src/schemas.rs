@@ -34,6 +34,15 @@ fn tool_description(operation: Operation) -> &'static str {
         Operation::Namespace(crate::NamespaceAction::Copy) => {
             "Copy a namespace and its contents to a new name. Subsequent changes are independent."
         }
+        Operation::Namespace(crate::NamespaceAction::History) => {
+            "List retained revisions newest first, including named pins."
+        }
+        Operation::Namespace(crate::NamespaceAction::Pin) => {
+            "Pin a retained namespace revision with an optional unique name. At most seven pins; unpin one before adding an eighth."
+        }
+        Operation::Namespace(crate::NamespaceAction::Unpin) => {
+            "Unpin a retained revision. Content outside recent history is collected at commit."
+        }
         Operation::Namespace(crate::NamespaceAction::Delete) => {
             "Delete a namespace and its contents from active use. Its name remains reserved."
         }

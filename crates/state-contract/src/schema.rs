@@ -37,6 +37,9 @@ pub fn schema(operation: crate::operations::Operation) -> schemars::Schema {
         Operation::Namespace(NamespaceAction::Copy) => generate::<NamespaceCopyInput>(),
 
         Operation::Namespace(NamespaceAction::Delete) => generate::<NamespaceDeleteInput>(),
+        Operation::Namespace(NamespaceAction::History) => generate::<NamespaceGetInput>(),
+        Operation::Namespace(NamespaceAction::Pin) => generate::<NamespacePinInput>(),
+        Operation::Namespace(NamespaceAction::Unpin) => generate::<NamespaceRevisionInput>(),
 
         Operation::File(FileAction::Read) => generate::<FsReadInput>(),
 
