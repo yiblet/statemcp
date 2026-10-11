@@ -199,6 +199,7 @@ pub(crate) fn run_typed(
     params: &[SqlCell],
     read_only: bool,
 ) -> Result<state_contract::database::SqlResult> {
+    let started = std::time::Instant::now();
     reset_deadline(conn)?;
     if sql.len() > MAX_RESULT {
         return Err(Error::limit("SQL exceeds 1 MiB"));
@@ -227,6 +228,10 @@ pub(crate) fn run_typed(
         }
         rows.push(cells);
     }
+    tracing::debug!(target: "statemcp::timing", phase = "sql",
+        elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+        rows = rows.len(), statement_hash = %crate::identity::hash(sql.as_bytes()),
+        "SQL completed");
     Ok(state_contract::database::SqlResult {
         columns,
         rows,

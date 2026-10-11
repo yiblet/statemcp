@@ -48,12 +48,18 @@ impl Store {
     }
     /// Begin one exclusive invocation covering metadata and all resource databases.
     pub fn begin(&self) -> Result<Transaction> {
+        let started = std::time::Instant::now();
         let backing = self.backing.begin()?;
+        let locked = std::time::Instant::now();
         let (generation, namespaces) = {
             let catalog = backing.connect(&catalog::name()?)?;
             catalog.execute_batch("PRAGMA foreign_keys=ON")?;
             catalog::load(&catalog)?
         };
+        tracing::debug!(target: "statemcp::timing", phase = "catalog_load",
+            lock_ms = locked.duration_since(started).as_secs_f64() * 1000.0,
+            load_ms = locked.elapsed().as_secs_f64() * 1000.0,
+            namespaces = namespaces.len(), "store opened invocation");
         Ok(Transaction::new(
             backing,
             generation,

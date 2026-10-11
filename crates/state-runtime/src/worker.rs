@@ -191,6 +191,14 @@ impl WorkerConfig {
         limits: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<Completion, RuntimeError> {
+        let started = Instant::now();
+        let symbol = match &operation {
+            Operation::InvokeHttp { symbol, .. }
+            | Operation::Invoke { symbol, .. }
+            | Operation::ValidateHttp { symbol, .. }
+            | Operation::Validate { symbol, .. } => symbol.clone(),
+            Operation::Execute { .. } => "execute".to_owned(),
+        };
         validate_frame_limit(self.max_frame_bytes)?;
         let deadline = Instant::now()
             .checked_add(limits.max_duration)
@@ -221,6 +229,7 @@ impl WorkerConfig {
             },
             self.max_frame_bytes,
         )?;
+        let encoded = Instant::now();
         if Instant::now() >= deadline {
             return Err(limit("execution deadline exceeded"));
         }
@@ -241,6 +250,8 @@ impl WorkerConfig {
         if let Err(error) = write_bytes(&mut input, &request) {
             return Err(guard.failure(error));
         }
+        let spawned = Instant::now();
+        let mut host_elapsed = std::time::Duration::ZERO;
         let mut calls = 0;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -279,7 +290,9 @@ impl WorkerConfig {
                     // The watchdog kills the child even if this callback is blocked.
                     // Rust cannot preempt a borrowed synchronous callback; its owner
                     // must enforce deadlines on blocking DB or external operations.
+                    let callback_started = Instant::now();
                     let result = host.call(&name, args, kwargs)?;
+                    host_elapsed += callback_started.elapsed();
                     if Instant::now() >= deadline {
                         return Err(limit("execution deadline exceeded"));
                     }
@@ -305,7 +318,15 @@ impl WorkerConfig {
                         return Err(guard.failure(error));
                     }
                 }
-                Message::Complete { result } => return Ok(result),
+                Message::Complete { result } => {
+                    tracing::debug!(target: "statemcp::timing", phase = "worker", %symbol,
+                        elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                        encode_ms = encoded.duration_since(started).as_secs_f64() * 1000.0,
+                        spawn_ms = spawned.duration_since(encoded).as_secs_f64() * 1000.0,
+                        host_ms = host_elapsed.as_secs_f64() * 1000.0,
+                        calls, frame_bytes = request.len(), "worker completed");
+                    return Ok(result);
+                }
                 Message::Error { error } => return Err(error),
             }
         }

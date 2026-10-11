@@ -2881,6 +2881,7 @@ dependencies = [
  "state-contract",
  "state-migrations",
  "state-store",
+ "tracing",
  "uuid",
 ]
 
@@ -2928,6 +2929,7 @@ dependencies = [
  "serde",
  "serde_json",
  "state-contract",
+ "tracing",
  "url",
  "uuid",
 ]
