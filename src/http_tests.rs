@@ -163,7 +163,7 @@ async fn prefixed_routes_share_sessions_and_health_is_public() {
             .as_array()
             .unwrap()
             .len(),
-        34
+        36
     );
     for uri in ["/health", "/mcp", "/mcp/", "/statemcp/mcpx"] {
         let response = app
@@ -258,7 +258,7 @@ async fn authenticated_http_sessions_execute_and_share_persistent_state() {
             .as_array()
             .unwrap()
             .len(),
-        34
+        36
     );
     let created = tool(&app, &session, "execute", json!({"script":"mcp('namespace.create', { 'name': 'http'})\nmcp('fs.write', { 'namespace': 'http', 'path': '/saved', 'text': 'persisted'})\n42"}), Some("secret-token")).await;
     assert_eq!(created["isError"], false);
@@ -501,7 +501,7 @@ async fn synchronous_invocation_does_not_block_async_http_requests() {
             .as_array()
             .unwrap()
             .len(),
-        34
+        36
     );
     assert!(
         start.elapsed() < Duration::from_millis(200),
@@ -623,8 +623,8 @@ async fn http_sessions_share_state_across_protocol_versions() {
     let app = app(fixture.state_async().await.unwrap(), Some("sdk-token"));
     let first = HttpClient::new(app.clone(), "2025-06-18").await;
     let second = HttpClient::new(app, "2025-03-26").await;
-    assert_eq!(first.list_tools().await.len(), 34);
-    assert_eq!(second.list_tools().await.len(), 34);
+    assert_eq!(first.list_tools().await.len(), 36);
+    assert_eq!(second.list_tools().await.len(), 36);
     http_tool(&first, "namespace.create", json!({"name":"shared"})).await;
     http_tool(
         &first,
@@ -685,7 +685,7 @@ async fn tools_list_includes_required_cache_fields_for_current_protocol() {
     assert_eq!(result["result"]["ttlMs"], 0);
     assert_eq!(result["result"]["cacheScope"], "public");
     assert_eq!(result["result"]["resultType"], "complete");
-    assert_eq!(result["result"]["tools"].as_array().unwrap().len(), 34);
+    assert_eq!(result["result"]["tools"].as_array().unwrap().len(), 36);
 }
 
 #[tokio::test]
@@ -704,7 +704,7 @@ async fn namespace_http_publication_urls_methods_and_binary_static()
     .await;
     tool(&app,&session,"fs.write",json!({"namespace":"web","path":"/web.py","text":"def handle(request):\n    return request.body, 201, [('X-Method',request.method),('Set-Cookie','a=1'),('Set-Cookie','b=2')]"}),Some("secret")).await;
     let published=tool_value(&tool(&app,&session,"api.publish",json!({"namespace":"web","name":"echo","path":"/echo","target":{"kind":"function","file":"/web.py","symbol":"handle"}}),Some("secret")).await);
-    assert_eq!(published["urls"], json!(["http://127.0.0.1:8000/web/echo"]));
+    assert_eq!(published["urls"], json!(["/web/echo"]));
     let response = app
         .clone()
         .oneshot(
@@ -758,7 +758,7 @@ async fn namespace_http_publication_urls_methods_and_binary_static()
     )
     .await;
     let site=tool_value(&tool(&app,&session,"api.publish",json!({"namespace":"web","name":"site","path":"/site/{*path}","target":{"kind":"static","directory":"/public","index":"index.html"}}),Some("secret")).await);
-    assert_eq!(site["urls"], json!(["http://127.0.0.1:8000/web/site/"]));
+    assert_eq!(site["urls"], json!(["/web/site/"]));
     let req = |method, path| {
         Request::builder()
             .method(method)
@@ -886,5 +886,126 @@ async fn prefixed_namespace_paths_keep_trailing_slashes_and_body_caps()
         .status(),
         StatusCode::NOT_FOUND
     );
+    Ok(())
+}
+
+#[test]
+fn public_url_parses_origin_and_prefix_without_ambiguous_components() -> anyhow::Result<()> {
+    use crate::http::PublicUrl;
+    for (input, origin, prefix) in [
+        (
+            "https://example.com/statemcp/",
+            Some("https://example.com"),
+            "/statemcp",
+        ),
+        (
+            "http://example.com:8080",
+            Some("http://example.com:8080"),
+            "",
+        ),
+        ("/statemcp", None, "/statemcp"),
+        ("/", None, ""),
+    ] {
+        let config = input.parse::<PublicUrl>()?.config();
+        assert_eq!(config.public_url.as_deref(), origin);
+        assert_eq!(config.prefix, prefix);
+    }
+    for invalid in [
+        "https://example.com/a?x=1",
+        "https://example.com/a#b",
+        "https://user:pass@example.com",
+        "ftp://example.com",
+        "example.com",
+        "//example.com",
+        "https://example.com/a/../b",
+        "https://example.com/a%2fb",
+        "/a?b",
+        "/a#b",
+    ] {
+        assert!(invalid.parse::<PublicUrl>().is_err(), "{invalid}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn public_url_drives_api_site_and_http_discovery() -> anyhow::Result<()> {
+    let fixture = Fixture::new();
+    let options = HttpOptions::new("127.0.0.1:8000".parse()?, None)?
+        .with_public_url("https://example.com/prefix".parse()?);
+    let app = router(fixture.state_async().await?, options);
+    let public_request = |message, session: Option<&str>| -> anyhow::Result<Request<Body>> {
+        let mut request = request(message, session, None);
+        *request.uri_mut() = "/prefix/mcp".parse()?;
+        request.headers_mut().insert("host", "example.com".parse()?);
+        request
+            .headers_mut()
+            .insert("origin", "https://example.com".parse()?);
+        Ok(request)
+    };
+    let initialized = app.clone().oneshot(public_request(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"public-test","version":"1"}}}), None)?).await?;
+    assert_eq!(initialized.status(), StatusCode::OK);
+    let session = initialized
+        .headers()
+        .get("mcp-session-id")
+        .ok_or_else(|| anyhow::anyhow!("missing session"))?
+        .to_str()?
+        .to_owned();
+    app.clone()
+        .oneshot(public_request(
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+            Some(&session),
+        )?)
+        .await?;
+    for (name, args, expected) in [
+        ("namespace.create", json!({"name":"web"}), None),
+        (
+            "fs.write",
+            json!({"namespace":"web","path":"/web.py","text":"def handle(request):\n    return config().prefix"}),
+            None,
+        ),
+        (
+            "api.publish",
+            json!({"namespace":"web","name":"api","path":"/api","target":{"kind":"function","file":"/web.py","symbol":"handle"}}),
+            Some("https://example.com/prefix/web/api"),
+        ),
+        (
+            "api.publish",
+            json!({"namespace":"web","name":"site","path":"/site/{*path}","target":{"kind":"static","directory":"/public","index":"index.html"}}),
+            Some("https://example.com/prefix/web/site/"),
+        ),
+    ] {
+        let response = app.clone().oneshot(public_request(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":name,"arguments":args}}), Some(&session))?).await?;
+        let response = response_json(response).await;
+        assert_ne!(response["result"]["isError"], true, "{response}");
+        if let Some(expected) = expected {
+            let result: Value = serde_json::from_str(
+                response["result"]["content"][0]["text"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("missing tool text"))?,
+            )?;
+            assert_eq!(result["urls"], json!([expected]));
+        }
+    }
+    for args in [json!({"mode":"full"}), json!({"tool":"fs.upload"})] {
+        let response = app.clone().oneshot(public_request(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"describe","arguments":args}}), Some(&session))?).await?;
+        let response = response_json(response).await;
+        assert_ne!(response["result"]["isError"], true);
+        let result: Value = serde_json::from_str(
+            response["result"]["content"][0]["text"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("missing description"))?,
+        )?;
+        if args.get("mode").is_some() {
+            assert!(
+                result["tools"]
+                    .as_array()
+                    .ok_or_else(|| anyhow::anyhow!("missing tools"))?
+                    .iter()
+                    .any(|tool| tool["name"] == "fs.upload")
+            );
+        } else {
+            assert_eq!(result["tool"]["name"], "fs.upload");
+        }
+    }
     Ok(())
 }

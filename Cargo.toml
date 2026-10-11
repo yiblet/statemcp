@@ -8,6 +8,7 @@ license = "MIT"
 
 [dependencies]
 axum = "0.8"
+url = "2"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "time", "macros"] }
 subtle = "2"

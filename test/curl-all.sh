@@ -8,7 +8,7 @@ if [[ ${1:-} == --help ]]; then
     exit 0
 fi
 [[ $# -le 1 ]] || { echo "Usage: $0 [OUTPUT.jsonl]" >&2; exit 2; }
-for dependency in curl jq cargo; do
+for dependency in curl jq cargo tar cmp head; do
     command -v "$dependency" >/dev/null || { echo "Missing dependency: $dependency" >&2; exit 2; }
 done
 output=${1:-"$script_dir/curl-results.jsonl"}
@@ -217,7 +217,7 @@ source=$'def handle(request):\n    if request.method == "POST":\n        write_t
 tool api.source fs.write "$(jq -cn --arg source "$source" '{namespace:"curl-renamed",path:"/web.py",text:$source}')"
 tool api.publish api.publish '{"namespace":"curl-renamed","name":"item","path":"/items/{id}","target":{"kind":"function","file":"/web.py","symbol":"handle"}}'
 assert_result api.publish '.name == "item" and .path == "/items/{id}" and .target.kind == "function"'
-assert_result api.url ".urls == [$(jq -cn --arg url "${url%/mcp}/curl-renamed/items/{id}" '$url')]"
+assert_result api.url ".urls == [$(jq -cn --arg url "/curl-renamed/items/{id}" '$url')]"
 tool api.get api.get '{"namespace":"curl-renamed","name":"item"}'
 assert_result api.get '.name == "item" and .target.symbol == "handle"'
 tool api.list api.list '{"namespace":"curl-renamed"}'
@@ -244,6 +244,44 @@ http_request api.static.method POST '/curl-renamed/site/index.html' 405
 tool api.remove api.remove '{"namespace":"curl-renamed","name":"item"}'
 assert_result api.remove '.removed == true and .name == "item"'
 http_request api.removed GET '/curl-renamed/items/42' 404
+
+# Bulk transfers use curl without bearer credentials; destination field names are exact.
+head -c $((9*1024*1024)) /dev/zero > "$work/bulk.bin"
+printf 'uploaded note' > "$work/note.txt"
+tool fs.upload fs.upload '{"namespace":"curl-renamed","files":["bulk/data.bin","bulk/note.txt"]}'
+upload_url="${url%/mcp}$(result | jq -r .url)"
+curl --fail --silent --show-error -F "/bulk/data.bin=@$work/bulk.bin" -F "/bulk/note.txt=@$work/note.txt" "$upload_url" > "$work/upload-result"
+[[ $(curl --silent --output /dev/null --write-out '%{http_code}' -F "/bulk/data.bin=@$work/bulk.bin" "$upload_url") == 401 ]]
+tool fs.download fs.download '{"namespace":"curl-renamed","files":["bulk/*","bulk/*.bin"],"format":"tar"}'
+download_url="${url%/mcp}$(result | jq -r .url)"
+curl --fail --silent --show-error "$download_url" -o "$work/download.tar"
+mkdir "$work/extracted"
+tar -xf "$work/download.tar" -C "$work/extracted"
+cmp "$work/bulk.bin" "$work/extracted/bulk/data.bin"
+cmp "$work/note.txt" "$work/extracted/bulk/note.txt"
+[[ $(curl --silent --output /dev/null --write-out '%{http_code}' "$download_url") == 401 ]]
+for bad_fields in missing extra duplicate; do
+    tool "upload.$bad_fields" fs.upload '{"namespace":"curl-renamed","files":["check/a","check/b"]}'
+    upload_url="${url%/mcp}$(result | jq -r .url)"
+    fields=(-F "/check/a=@$work/note.txt")
+    case "$bad_fields" in
+        extra) fields+=(-F "/check/b=@$work/note.txt" -F "/check/c=@$work/note.txt");;
+        duplicate) fields+=(-F "/check/a=@$work/note.txt" -F "/check/b=@$work/note.txt");;
+    esac
+    [[ $(curl --silent --output /dev/null --write-out '%{http_code}' "${fields[@]}" "$upload_url") == 400 ]]
+    tool "upload.$bad_fields.rollback" fs.read '{"namespace":"curl-renamed","path":"/check/a"}' NOT_FOUND
+done
+head -c $((10*1024*1024)) /dev/zero > "$work/limit.bin"
+tool upload.limit fs.upload '{"namespace":"curl-renamed","files":["bulk/limit.bin"]}'
+upload_url="${url%/mcp}$(result | jq -r .url)"
+curl --fail --silent --show-error -F "/bulk/limit.bin=@$work/limit.bin" "$upload_url" > /dev/null
+printf x >> "$work/limit.bin"
+tool upload.oversize fs.upload '{"namespace":"curl-renamed","files":["bulk/oversize.bin"]}'
+upload_url="${url%/mcp}$(result | jq -r .url)"
+[[ $(curl --silent --output /dev/null --write-out '%{http_code}' -F "/bulk/oversize.bin=@$work/limit.bin" "$upload_url") == 413 ]]
+tool upload.oversize.rollback fs.read '{"namespace":"curl-renamed","path":"/bulk/oversize.bin"}' NOT_FOUND
+tool download.unmatched fs.download '{"namespace":"curl-renamed","files":["absent/*"]}' NOT_FOUND
+tool upload.traversal fs.upload '{"namespace":"curl-renamed","files":["../escape"]}' INVALID_ARGUMENT
 
 # Representative failures (expected errors count as passing requests).
 tool error.not_found fs.read '{"namespace":"curl-renamed","path":"/missing"}' NOT_FOUND

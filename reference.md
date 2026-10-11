@@ -1614,3 +1614,38 @@ in [state-domain](crates/state-domain/README.md).
   ]
 }
 ```
+
+## HTTP-only file transfer tools
+
+These tools are advertised by HTTP MCP only. They are absent from stdio discovery,
+CLI, and Python `mcp()`. They return `{token, url, expires_at, files}` where
+`expires_at` is Unix seconds and `files` contains normalized absolute paths.
+
+| Tool | Required fields | Optional fields |
+| --- | --- | --- |
+| `fs.upload` | `namespace`, `files: [literal path, ...]` | none |
+| `fs.download` | `namespace`, `files: [literal path or glob, ...]` | `format: "tar"` (default) |
+
+Use `describe({"tool":"fs.upload"})` or `describe({"tool":"fs.download"})`
+over HTTP for their exact schemas. Transfer tools appear in HTTP describe catalogs.
+
+`POST /upload?token=...` accepts multipart file fields named exactly by each
+returned path. The original filename is metadata only. The exact authorized set
+must appear once each; malformed or incomplete requests roll back every file.
+Limits: 10 MiB total file bytes, 256 KiB multipart overhead, 256 destinations.
+`GET /download?token=...` streams `application/x-tar` with relative paths and
+folders preserved. Glob selectors expand when issuing a token, while contents
+are read from a single snapshot at redemption. Each selector must match; duplicate
+matches are deduplicated. Only tar is currently supported.
+
+Tokens are unpredictable, single-use, valid for ten minutes, scoped to a stable
+namespace UUID and operation, and discarded on restart. Wrong HTTP methods or
+opposite-direction endpoints do not consume them. Accepted attempts consume them
+even if parsing, storage, or the connection later fails. Reuse/expiry returns 401.
+All URLs include the configured origin and prefix, or only the prefix if no origin
+is configured. Authority/Origin checks still apply to token redemption.
+
+`--public-url` accepts an HTTP(S) URL with optional path, or an absolute path alone;
+queries, fragments and credentials are rejected. Python `config()` returns an
+attribute object with `.public_url` (origin string or None) and `.prefix` (string).
+It is available during scripts/functions/handlers, with no credentials exposed.

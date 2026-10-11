@@ -50,3 +50,10 @@ pub enum ReceiptResult {
     Function(Value),
     Script(ExecutionResult),
 }
+
+/// Public HTTP origin and routing prefix exposed to Python; contains no credentials.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PublicConfig {
+    pub public_url: Option<String>,
+    pub prefix: String,
+}

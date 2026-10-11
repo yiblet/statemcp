@@ -39,8 +39,13 @@ impl Execution {
             runtime,
         }
     }
-    fn host<'a>(&'a self, context: &'a mut Context) -> crate::hosts::Host<'a> {
+    fn host<'a>(
+        &'a self,
+        context: &'a mut Context,
+        namespace: Option<&'a str>,
+    ) -> crate::hosts::Host<'a> {
         crate::hosts::Host {
+            namespace,
             api: &self.api,
             executor: self,
             files: &self.files,
@@ -73,11 +78,7 @@ impl Execution {
                         &handler.symbol,
                         request,
                         &limits,
-                        &mut |name, args, kwargs| {
-                            self.host(context)
-                                .host(name, args, kwargs, Some(namespace.as_str()))
-                                .map_err(Into::into)
-                        },
+                        &mut self.host(context, Some(namespace.as_str())),
                     )
                     .map_err(|error| {
                         if error.code == crate::ErrorCode::InvalidArgument {
@@ -176,11 +177,7 @@ impl Execution {
                     &declaration.symbol,
                     arguments,
                     &limits,
-                    &mut |name, positional, keywords| {
-                        self.host(context)
-                            .host(name, positional, keywords, Some(namespace.as_str()))
-                            .map_err(Into::into)
-                    },
+                    &mut self.host(context, Some(namespace.as_str())),
                 );
                 let result = result?;
                 context.check()?;
@@ -223,16 +220,7 @@ impl Execution {
                 &modules,
                 inputs,
                 &limits,
-                &mut |name, positional, keywords| {
-                    self.host(context)
-                        .host(
-                            name,
-                            positional,
-                            keywords,
-                            namespace.as_ref().map(|id| id.as_str()),
-                        )
-                        .map_err(Into::into)
-                },
+                &mut self.host(context, namespace.as_ref().map(|id| id.as_str())),
             );
             let result = result?;
             context.check()?;

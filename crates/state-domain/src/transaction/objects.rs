@@ -16,8 +16,8 @@ impl Transaction {
             .ok_or_else(|| Error::new(crate::ErrorCode::CorruptStore, "file object is missing"))
     }
     pub(super) fn put_bytes(&mut self, bytes: Vec<u8>) -> Result<String> {
-        if bytes.len() > 8 * 1024 * 1024 {
-            return Err(Error::limit("virtual file exceeds 8 MiB"));
+        if bytes.len() > state_contract::transfer::MAX_UPLOAD_BYTES {
+            return Err(Error::limit("virtual file exceeds 10 MiB"));
         }
         let key = hash(&bytes);
         self.objects.insert(key.clone(), bytes);

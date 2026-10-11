@@ -58,3 +58,51 @@ impl Transaction {
         Ok(sources)
     }
 }
+
+impl Transaction {
+    /// Resolve every file path in the current namespace snapshot without reading contents.
+    pub fn file_paths(
+        &self,
+        namespace: &str,
+    ) -> Result<Vec<state_contract::transfer::TransferPath>> {
+        let id = self.namespace_identity(namespace)?;
+        self.staged_namespace(id)?
+            .manifest
+            .files
+            .keys()
+            .map(|path| state_contract::transfer::TransferPath::parse(path).map_err(Into::into))
+            .collect()
+    }
+    /// Stage raw upload bytes without a base64 round trip. Errors poison publication.
+    pub fn write_file_bytes(
+        &mut self,
+        namespace: &str,
+        path: &state_contract::transfer::TransferPath,
+        bytes: Vec<u8>,
+    ) -> Result<state_contract::file::FileWritten> {
+        self.operation(|tx| {
+            let id = tx.namespace_for_change(namespace, None)?;
+            let files = &tx.staged_namespace(&id)?.manifest.files;
+            if files.keys().any(|other| {
+                other
+                    .strip_prefix(path.as_str())
+                    .is_some_and(|tail| tail.starts_with('/'))
+                    || path
+                        .as_str()
+                        .strip_prefix(other)
+                        .is_some_and(|tail| tail.starts_with('/'))
+            }) {
+                return Err(Error::invalid("file collides with a directory"));
+            }
+            let size = bytes.len();
+            let hash = tx.put_bytes(bytes)?;
+            let ns = tx.staged_namespace_mut(&id)?;
+            ns.manifest.files.insert(path.as_str().to_owned(), hash);
+            ns.dirty = true;
+            Ok(state_contract::file::FileWritten {
+                path: path.as_str().to_owned(),
+                size,
+            })
+        })
+    }
+}

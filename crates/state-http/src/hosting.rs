@@ -29,12 +29,16 @@ impl Hosting {
             prefix: prefix.into(),
         }
     }
-    /// Populate route URL patterns, preferring the current validated MCP request origin.
-    pub fn locate(&self, route: &mut ApiPublished, origin: Option<&RequestOrigin>) {
-        let bases = origin.map_or_else(
-            || self.bases.iter().map(String::as_str).collect::<Vec<_>>(),
-            |o| vec![o.0.as_str()],
-        );
+    /// Configure URL reporting from an explicit public origin and route prefix.
+    pub fn from_config(config: state_contract::execution::PublicConfig) -> Self {
+        Self {
+            bases: vec![config.public_url.unwrap_or_default()],
+            prefix: config.prefix,
+        }
+    }
+    /// Populate route URL patterns using the configured public location.
+    pub fn locate(&self, route: &mut ApiPublished, _origin: Option<&RequestOrigin>) {
+        let bases = self.bases.iter().map(String::as_str);
         let path = if matches!(
             route.target,
             state_contract::http::TargetInput::Static { .. }
@@ -48,7 +52,10 @@ impl Hosting {
         } else {
             route.path.as_str()
         };
-        let namespace = if matches!(route.namespace.as_str(), "." | ".." | "mcp" | "health") {
+        let namespace = if matches!(
+            route.namespace.as_str(),
+            "." | ".." | "mcp" | "health" | "upload" | "download"
+        ) {
             route.namespace_id.as_str()
         } else {
             route.namespace.as_str()

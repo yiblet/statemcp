@@ -59,8 +59,11 @@ pub enum Command {
         #[arg(long, default_value = "127.0.0.1:8000")]
         bind: Vec<SocketAddr>,
         /// Path prefix for all HTTP routes, for example /statemcp
-        #[arg(long, default_value = "")]
+        #[arg(long, default_value = "", conflicts_with = "public_url")]
         http_prefix: statemcp::http::HttpPrefix,
+        /// Public HTTP(S) URL including path, or only an absolute route prefix
+        #[arg(long)]
+        public_url: Option<statemcp::http::PublicUrl>,
         /// Require Authorization: Bearer <value> on MCP requests; API and static routes are public
         #[arg(long, value_name = "TOKEN", value_parser = bearer_token)]
         auth_bearer: Option<String>,

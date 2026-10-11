@@ -42,7 +42,9 @@ fn allocator_child() {
         "items = []\nfor i in range(1000000):\n    items.append(str(i) + 'x' * 100)\nlen(items)",
         serde_json::Value::Null,
         &limits,
-        &mut |_, _, _| panic!("unexpected host call"),
+        &mut |_: &str, _: Vec<serde_json::Value>, _: serde_json::Map<String, serde_json::Value>| {
+            panic!("unexpected host call")
+        },
     )
     .unwrap_err();
     assert_eq!(error.code, state_runtime::ErrorCode::LimitExceeded);

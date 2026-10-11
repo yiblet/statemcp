@@ -44,7 +44,7 @@ fn escaped_callback_arguments_and_results_cannot_bypass_json_byte_budget() {
         "try:\n    mcp('first')\nexcept Exception:\n    pass\nmcp('later')",
         Value::Null,
         &limits,
-        &mut |_, _, _| {
+        &mut |_: &str, _: Vec<Value>, _: serde_json::Map<String, Value>| {
             calls += 1;
             Ok(json!("\0".repeat(30)))
         },
@@ -136,7 +136,7 @@ fn imported_sources_are_bounded_before_spawning_the_worker() {
             Value::Null,
             &modules,
             &limits,
-            &mut |_, _, _| unreachable!(),
+            &mut |_: &str, _: Vec<Value>, _: serde_json::Map<String, Value>| unreachable!(),
         )
         .unwrap_err();
     assert_eq!(error.code, crate::ErrorCode::LimitExceeded);

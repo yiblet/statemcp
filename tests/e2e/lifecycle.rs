@@ -69,7 +69,7 @@ fn watchdog_kills_and_reaps_while_parent_callback_is_running() -> Result<()> {
             max_duration: Duration::from_secs(1),
             ..Limits::default()
         },
-        &mut |_, _, _| {
+        &mut |_: &str, _: Vec<serde_json::Value>, _: serde_json::Map<String, serde_json::Value>| {
             // This callback returns only after /proc confirms the watchdog has
             // reaped the child. Dispatch cannot perform that cleanup for it.
             observation = Some(worker.pid().and_then(wait_for_reap));
@@ -92,7 +92,9 @@ fn host_error_drops_guard_and_reaps_real_worker() -> Result<()> {
         "mcp('stop', {})",
         Value::Null,
         &Limits::default(),
-        &mut |_, _, _| Err(RuntimeError::new(ErrorCode::PermissionDenied, "stop")),
+        &mut |_: &str, _: Vec<serde_json::Value>, _: serde_json::Map<String, serde_json::Value>| {
+            Err(RuntimeError::new(ErrorCode::PermissionDenied, "stop"))
+        },
     );
     assert_eq!(
         result.err().map(|error| error.code),

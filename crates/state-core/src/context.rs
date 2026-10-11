@@ -7,6 +7,7 @@ use std::time::Instant;
 /// One exclusively owned transaction and its execution guarantees.
 /// Services borrow this context; only the root controller may finish it.
 pub struct Context {
+    config: state_contract::execution::PublicConfig,
     transaction: Transaction,
     access: Access,
     limits: CoreLimits,
@@ -19,6 +20,7 @@ pub struct Context {
 impl Context {
     pub(crate) fn new(transaction: Transaction, limits: CoreLimits) -> Self {
         Self {
+            config: Default::default(),
             transaction,
             access: Access::Owner,
             limits,
@@ -28,6 +30,13 @@ impl Context {
             depth: 0,
             stdout_bytes: 0,
         }
+    }
+    pub(crate) fn with_config(mut self, config: state_contract::execution::PublicConfig) -> Self {
+        self.config = config;
+        self
+    }
+    pub(crate) fn config(&self) -> &state_contract::execution::PublicConfig {
+        &self.config
     }
     pub(crate) fn transaction(&mut self) -> &mut Transaction {
         &mut self.transaction

@@ -25,13 +25,16 @@ fn execute_returns_final_value_and_captures_prints() {
 
 #[test]
 fn all_host_callbacks_roundtrip_json_and_keywords() {
-    for name in crate::HOST_FUNCTIONS {
+    for name in crate::HOST_FUNCTIONS
+        .iter()
+        .filter(|name| **name != "config")
+    {
         let mut seen = false;
         let result = execute(
             &format!("{name}(inputs, mode='read')"),
             json!({"a":[1,true,null,"x"]}),
             &Limits::default(),
-            &mut |called, args, kwargs| {
+            &mut |called: &str, args: Vec<Value>, kwargs: serde_json::Map<String, Value>| {
                 assert_eq!(called, *name);
                 assert_eq!(
                     args,
@@ -86,7 +89,7 @@ fn invoked_function_has_callbacks_and_bound_keyword_arguments() {
             .unwrap()
             .clone(),
         &Limits::default(),
-        &mut |name, args, _| {
+        &mut |name: &str, args: Vec<Value>, _: serde_json::Map<String, Value>| {
             assert_eq!(name, "db_query");
             assert_eq!(
                 args,
@@ -106,7 +109,7 @@ fn host_errors_cannot_be_caught_and_followed_by_effects() {
         "try:\n    db_query('app', 'bad')\nexcept Exception:\n    write_text('/x', 'bad')\n42",
         json!({}),
         &Limits::default(),
-        &mut |_, _, _| {
+        &mut |_: &str, _: Vec<Value>, _: serde_json::Map<String, Value>| {
             calls += 1;
             Err(RuntimeError::new(crate::ErrorCode::SqlError, "failed"))
         },
@@ -127,7 +130,7 @@ fn host_call_budget_is_enforced_before_dispatch() {
         "for i in range(3):\n    read_text('/x')",
         Value::Null,
         &limits,
-        &mut |_, _, _| {
+        &mut |_: &str, _: Vec<Value>, _: serde_json::Map<String, Value>| {
             calls += 1;
             Ok(Value::Null)
         },
@@ -266,4 +269,117 @@ fn caught_print_overflow_still_aborts_execution() {
     )
     .unwrap_err();
     assert_eq!(error.code, crate::ErrorCode::LimitExceeded);
+}
+
+struct ConfigHost {
+    reads: usize,
+    config: state_contract::execution::PublicConfig,
+}
+impl crate::HostServices for ConfigHost {
+    fn config(&mut self) -> Result<state_contract::execution::PublicConfig, RuntimeError> {
+        self.reads += 1;
+        Ok(self.config.clone())
+    }
+    fn call(
+        &mut self,
+        _: &str,
+        _: Vec<Value>,
+        _: serde_json::Map<String, Value>,
+    ) -> Result<Value, RuntimeError> {
+        Err(RuntimeError::new(
+            crate::ErrorCode::WorkerFailed,
+            "unexpected JSON callback",
+        ))
+    }
+}
+
+#[test]
+fn config_is_typed_and_preserves_optional_origin_and_literal_strings() -> Result<(), RuntimeError> {
+    for config in [
+        state_contract::execution::PublicConfig::default(),
+        state_contract::execution::PublicConfig {
+            public_url: Some("https://example.com".into()),
+            prefix: "/quoted'\\path".into(),
+        },
+    ] {
+        let expected = json!([config.public_url, config.prefix]);
+        let mut host = ConfigHost { reads: 0, config };
+        let result = execute(
+            "c = config()\n[c.public_url, c.prefix]",
+            Value::Null,
+            &Limits::default(),
+            &mut host,
+        )?;
+        assert_eq!(result.value, expected);
+        assert_eq!(host.reads, 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn config_rejects_arguments_initialization_and_call_limit_before_host_access()
+-> Result<(), RuntimeError> {
+    let mut host = ConfigHost {
+        reads: 0,
+        config: Default::default(),
+    };
+    for source in ["config(1)", "config(prefix='/bad')"] {
+        let error = execute(source, Value::Null, &Limits::default(), &mut host)
+            .err()
+            .ok_or_else(|| {
+                RuntimeError::new(
+                    crate::ErrorCode::WorkerFailed,
+                    "expected argument rejection",
+                )
+            })?;
+        assert_eq!(error.code, crate::ErrorCode::InvalidArgument);
+    }
+    let limits = Limits {
+        max_calls: 0,
+        ..Limits::default()
+    };
+    let error = execute("config()", Value::Null, &limits, &mut host)
+        .err()
+        .ok_or_else(|| RuntimeError::new(crate::ErrorCode::WorkerFailed, "expected call limit"))?;
+    assert_eq!(error.code, crate::ErrorCode::LimitExceeded);
+    let error = invoke(
+        "c = config()\ndef run():\n    return c.prefix",
+        "run",
+        Default::default(),
+        &Limits::default(),
+        &mut host,
+    )
+    .err()
+    .ok_or_else(|| {
+        RuntimeError::new(
+            crate::ErrorCode::WorkerFailed,
+            "expected initialization rejection",
+        )
+    })?;
+    assert_eq!(error.code, crate::ErrorCode::PermissionDenied);
+    assert_eq!(host.reads, 0);
+    Ok(())
+}
+
+#[test]
+fn config_result_obeys_output_limit() -> Result<(), RuntimeError> {
+    let mut host = ConfigHost {
+        reads: 0,
+        config: state_contract::execution::PublicConfig {
+            public_url: None,
+            prefix: "x".repeat(1024),
+        },
+    };
+    let limits = Limits {
+        max_output_bytes: 128,
+        ..Limits::default()
+    };
+    let error = execute("config().prefix", Value::Null, &limits, &mut host)
+        .err()
+        .ok_or_else(|| {
+            RuntimeError::new(crate::ErrorCode::WorkerFailed, "expected output limit")
+        })?;
+    assert_eq!(error.code, crate::ErrorCode::LimitExceeded);
+    assert_eq!(host.reads, 1);
+    Ok(())
 }

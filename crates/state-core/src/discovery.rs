@@ -163,3 +163,12 @@ impl DiscoveryService {
         }
     }
 }
+
+impl Discovery {
+    /// Extend a transport catalog with capabilities available only on that transport.
+    pub fn extend_tools(&mut self, tools: impl IntoIterator<Item = ToolDefinition>) {
+        if let Self::Catalog(catalog) = self {
+            catalog.tools.extend(tools);
+        }
+    }
+}

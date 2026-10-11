@@ -414,6 +414,11 @@ impl Transaction {
                     .map_err(|_| Error::invalid("invalid base64"))?,
             ),
         }
+        if bytes.len() > 8 * 1024 * 1024 {
+            return Err(Error::limit(
+                "fs.write/fs.append file exceeds 8 MiB; use fs.upload",
+            ));
+        }
         let size = bytes.len();
         let hash = self.put_bytes(bytes)?;
         let ns = self.staged_namespace_mut(&key)?;

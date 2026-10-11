@@ -120,7 +120,7 @@ impl WorkerConfig {
                 symbol: symbol.into(),
             },
             limits,
-            &mut |_, _, _| {
+            &mut |_: &str, _: Vec<Value>, _: serde_json::Map<String, Value>| {
                 Err(RuntimeError::new(
                     crate::ErrorCode::PermissionDenied,
                     "module initialization cannot call host functions",
@@ -168,7 +168,9 @@ impl WorkerConfig {
                 modules: modules.clone(),
             },
             limits,
-            &mut |_, _, _| Err(protocol("unexpected initialization callback")),
+            &mut |_: &str, _: Vec<Value>, _: serde_json::Map<String, Value>| {
+                Err(protocol("unexpected initialization callback"))
+            },
         )
         .map(|_| ())
     }
@@ -265,7 +267,9 @@ impl WorkerConfig {
             }
             match message {
                 Message::HostCall { name, args, kwargs } => {
-                    if !crate::HOST_FUNCTIONS.contains(&name.as_str()) {
+                    if crate::HostFunction::parse(&name)
+                        .is_none_or(|function| matches!(function, crate::HostFunction::Config))
+                    {
                         return Err(protocol("unknown worker host function"));
                     }
                     if calls >= limits.max_calls {
@@ -275,7 +279,7 @@ impl WorkerConfig {
                     // The watchdog kills the child even if this callback is blocked.
                     // Rust cannot preempt a borrowed synchronous callback; its owner
                     // must enforce deadlines on blocking DB or external operations.
-                    let result = host(&name, args, kwargs)?;
+                    let result = host.call(&name, args, kwargs)?;
                     if Instant::now() >= deadline {
                         return Err(limit("execution deadline exceeded"));
                     }
@@ -283,6 +287,20 @@ impl WorkerConfig {
                         &HostReply::HostResult { value: result },
                         self.max_frame_bytes,
                     )?;
+                    if let Err(error) = write_bytes(&mut input, &reply) {
+                        return Err(guard.failure(error));
+                    }
+                }
+                Message::ConfigCall => {
+                    if calls >= limits.max_calls {
+                        return Err(limit("host call limit exceeded"));
+                    }
+                    calls += 1;
+                    let config = host.config()?;
+                    if Instant::now() >= deadline {
+                        return Err(limit("execution deadline exceeded"));
+                    }
+                    let reply = encode(&HostReply::ConfigResult { config }, self.max_frame_bytes)?;
                     if let Err(error) = write_bytes(&mut input, &reply) {
                         return Err(guard.failure(error));
                     }
@@ -388,6 +406,7 @@ enum Completion {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum Message {
+    ConfigCall,
     HostCall {
         name: String,
         args: Vec<Value>,
@@ -404,7 +423,12 @@ enum Message {
 #[serde(deny_unknown_fields)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum HostReply {
-    HostResult { value: Value },
+    HostResult {
+        value: Value,
+    },
+    ConfigResult {
+        config: state_contract::execution::PublicConfig,
+    },
 }
 
 /// Entry point for a fresh, dedicated worker with LimitedAllocator installed.
@@ -426,6 +450,42 @@ pub fn worker_main(memory_bytes: usize, max_frame_bytes: usize) -> Result<(), Ru
     serve_command(request, &mut input, &mut output, max_frame_bytes)
 }
 
+// Translate only at the worker's external framed I/O boundary.
+struct FramedHost<'a, R, W> {
+    input: &'a mut R,
+    output: &'a mut W,
+    max_frame_bytes: usize,
+}
+impl<R: Read, W: Write> crate::HostServices for FramedHost<'_, R, W> {
+    fn config(&mut self) -> Result<state_contract::execution::PublicConfig, RuntimeError> {
+        write_frame(self.output, &Message::ConfigCall, self.max_frame_bytes)?;
+        match read_frame(self.input, self.max_frame_bytes)? {
+            HostReply::ConfigResult { config } => Ok(config),
+            HostReply::HostResult { .. } => Err(protocol("expected configuration reply")),
+        }
+    }
+    fn call(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        kwargs: Map<String, Value>,
+    ) -> Result<Value, RuntimeError> {
+        write_frame(
+            self.output,
+            &Message::HostCall {
+                name: name.into(),
+                args,
+                kwargs,
+            },
+            self.max_frame_bytes,
+        )?;
+        match read_frame(self.input, self.max_frame_bytes)? {
+            HostReply::HostResult { value } => Ok(value),
+            HostReply::ConfigResult { .. } => Err(protocol("unexpected configuration reply")),
+        }
+    }
+}
+
 // The shell installs the process-global allocator and chooses the authoritative
 // memory ceiling. This framed session owns no OS handles and can use byte buffers.
 fn serve_command(
@@ -434,18 +494,10 @@ fn serve_command(
     output: &mut impl Write,
     max_frame_bytes: usize,
 ) -> Result<(), RuntimeError> {
-    let mut host = |name: &str, args: Vec<Value>, kwargs: Map<String, Value>| {
-        write_frame(
-            output,
-            &Message::HostCall {
-                name: name.into(),
-                args,
-                kwargs,
-            },
-            max_frame_bytes,
-        )?;
-        let HostReply::HostResult { value } = read_frame(input, max_frame_bytes)?;
-        Ok(value)
+    let mut host = FramedHost {
+        input,
+        output,
+        max_frame_bytes,
     };
     let result = match request.operation {
         Operation::ValidateHttp {
@@ -593,7 +645,8 @@ impl<P: WorkerProcess> WorkerGuard<P> {
                 .spawn(move || {
                     loop {
                         let frame = read_frame(&mut output, max);
-                        let done = !matches!(&frame, Ok(Message::HostCall { .. }));
+                        let done =
+                            !matches!(&frame, Ok(Message::HostCall { .. } | Message::ConfigCall));
                         if send.send(frame).is_err() || done {
                             break;
                         }
@@ -956,6 +1009,68 @@ mod tests {
         }
         Ok(())
     }
+    #[test]
+    fn framed_config_uses_typed_reply_and_rejects_json_reply() -> Result<(), RuntimeError> {
+        for config in [
+            state_contract::execution::PublicConfig::default(),
+            state_contract::execution::PublicConfig {
+                public_url: Some("https://example.com".into()),
+                prefix: "/prefix".into(),
+            },
+        ] {
+            let expected = serde_json::json!([config.public_url, config.prefix]);
+            let mut input = Vec::new();
+            write_frame(&mut input, &HostReply::ConfigResult { config }, 4096)?;
+            let mut output = Vec::new();
+            serve_command(
+                command("c = config()\n[c.public_url, c.prefix]"),
+                &mut input.as_slice(),
+                &mut output,
+                4096,
+            )?;
+            let mut frames = output.as_slice();
+            assert!(matches!(
+                read_frame::<Message>(&mut frames, 4096)?,
+                Message::ConfigCall
+            ));
+            let Message::Complete {
+                result: Completion::Json(result),
+            } = read_frame(&mut frames, 4096)?
+            else {
+                return Err(protocol("expected config completion"));
+            };
+            assert_eq!(result.value, expected);
+            assert!(frames.is_empty());
+        }
+        // A JSON-shaped record cannot masquerade as the typed configuration reply.
+        let mut input = Vec::new();
+        write_frame(
+            &mut input,
+            &HostReply::HostResult {
+                value: serde_json::json!({"public_url":null,"prefix":""}),
+            },
+            4096,
+        )?;
+        let mut output = Vec::new();
+        serve_command(
+            command("try:\n    config()\nexcept Exception:\n    pass\nmcp('later')"),
+            &mut input.as_slice(),
+            &mut output,
+            4096,
+        )?;
+        let mut frames = output.as_slice();
+        assert!(matches!(
+            read_frame::<Message>(&mut frames, 4096)?,
+            Message::ConfigCall
+        ));
+        let Message::Error { error } = read_frame(&mut frames, 4096)? else {
+            return Err(protocol("expected configuration protocol error"));
+        };
+        assert_eq!(error.code, crate::ErrorCode::WorkerFailed);
+        assert!(frames.is_empty());
+        Ok(())
+    }
+
     #[test]
     fn host_results_and_oversized_completion_are_framed() -> Result<(), RuntimeError> {
         let mut input = Vec::new();

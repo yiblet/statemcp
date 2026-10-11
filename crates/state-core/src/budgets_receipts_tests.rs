@@ -45,7 +45,7 @@ impl RuntimeBackend for ObservingBackend {
         self.seen.lock().unwrap().push(limits.max_duration);
         let nested = if self.seen.lock().unwrap().len() == 1 {
             std::thread::sleep(Duration::from_millis(20));
-            host(
+            host.call(
                 "mcp",
                 vec![json!("execute"), json!({"script":"nested"})],
                 Map::new(),
@@ -130,12 +130,12 @@ impl RuntimeBackend for CatchingBackend {
         _: &Limits,
         host: &mut HostCallback<'_>,
     ) -> Result<RunResult, RuntimeError> {
-        host(
+        host.call(
             "mcp",
             vec![json!("namespace.create"), json!({"name":"staged"})],
             Map::new(),
         )?;
-        let _ignored = host("unknown_helper", vec![], Map::new());
+        let _ignored = host.call("unknown_helper", vec![], Map::new());
         Ok(RunResult {
             value: json!("success"),
             stdout: String::new(),

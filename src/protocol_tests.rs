@@ -9,6 +9,91 @@ fn tool_definitions() -> Vec<Value> {
 }
 
 #[tokio::test]
+async fn native_resources_advertise_and_serve_the_matching_authoring_guide() -> anyhow::Result<()> {
+    use rmcp::{
+        model::{ErrorCode, PaginatedRequestParams, ReadResourceRequestParams, ResourceContents},
+        service::ServiceError,
+    };
+
+    let directory = Fixture::new();
+    let client = connect(directory.state_async().await?).await;
+    let info = client
+        .peer_info()
+        .ok_or_else(|| anyhow::anyhow!("Missing server initialization"))?;
+    assert!(info.capabilities.resources.is_some());
+    let instructions = info
+        .instructions
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("Missing resource reading instructions"))?;
+    assert!(instructions.contains(super::resources::API_AND_SITES_URI));
+    assert!(instructions.contains(super::resources::PYTHON_URI));
+    assert!(instructions.contains("resources/read"));
+
+    let listing = client.list_resources(None).await?;
+    assert!(listing.next_cursor.is_none());
+    assert_eq!(listing.resources.len(), 2);
+    assert!(
+        listing
+            .resources
+            .iter()
+            .any(|resource| resource.uri == super::resources::API_AND_SITES_URI)
+    );
+    assert!(
+        listing
+            .resources
+            .iter()
+            .any(|resource| resource.uri == super::resources::PYTHON_URI)
+    );
+    for resource in listing.resources {
+        assert_eq!(resource.mime_type.as_deref(), Some("text/markdown"));
+        assert!(resource.description.is_some());
+        let result = client
+            .read_resource(ReadResourceRequestParams::new(&resource.uri))
+            .await?;
+        assert_eq!(result.contents.len(), 1);
+        for content in result.contents {
+            let ResourceContents::TextResourceContents {
+                uri,
+                mime_type,
+                text,
+                ..
+            } = content
+            else {
+                anyhow::bail!("Authoring guide must be text");
+            };
+            assert_eq!(uri, resource.uri);
+            assert_eq!(mime_type.as_deref(), Some("text/markdown"));
+            let expected = match uri.as_str() {
+                super::resources::API_AND_SITES_URI => {
+                    include_str!("../resources/api-and-sites.md")
+                }
+                super::resources::PYTHON_URI => include_str!("../resources/python.md"),
+                _ => anyhow::bail!("Unexpected authoring guide URI: {uri}"),
+            };
+            assert_eq!(text, expected);
+        }
+    }
+    match client
+        .read_resource(ReadResourceRequestParams::new("statemcp://guides/missing"))
+        .await
+    {
+        Err(ServiceError::McpError(error)) => assert_eq!(error.code, ErrorCode::RESOURCE_NOT_FOUND),
+        result => anyhow::bail!("Unexpected unknown-resource result: {result:?}"),
+    }
+    match client
+        .list_resources(Some(
+            PaginatedRequestParams::default().with_cursor(Some("unknown".into())),
+        ))
+        .await
+    {
+        Err(ServiceError::McpError(error)) => assert_eq!(error.code, ErrorCode::INVALID_PARAMS),
+        result => anyhow::bail!("Unexpected invalid-cursor result: {result:?}"),
+    }
+    client.cancel().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn official_sdk_client_discovers_and_calls_tools() {
     let directory = Fixture::new();
     let client = connect(directory.state_async().await.unwrap()).await;
@@ -296,5 +381,33 @@ async fn invocation_limit_is_shared_by_session_clones_and_recovers()
         common::value(&other_session.run_blocking(|_| Ok(42)).await?),
         42
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn stdio_does_not_discover_or_allow_http_transfer_tools() -> anyhow::Result<()> {
+    let fixture = Fixture::new();
+    let client = connect(fixture.state_async().await?).await;
+    let tools = client.list_all_tools().await?;
+    assert!(
+        !tools
+            .iter()
+            .any(|tool| matches!(tool.name.as_ref(), "fs.upload" | "fs.download"))
+    );
+    assert!(
+        client
+            .call_tool(request("fs.upload", json!({"namespace":"n","files":["a"]})))
+            .await
+            .is_err()
+    );
+    let full = tool(&client, "describe", json!({"mode":"full"})).await;
+    assert!(
+        !full["tools"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("missing tools"))?
+            .iter()
+            .any(|tool| tool["name"] == "fs.upload" || tool["name"] == "fs.download")
+    );
+    client.cancel().await?;
     Ok(())
 }

@@ -13,11 +13,18 @@ the selected callable with object fields as keyword arguments.
 `validate_module(source, symbol, limits)` validates initialization and callable
 existence without invoking it. Module state is discarded after every operation.
 
-`HostCallback` is a synchronous `FnMut(&str, Vec<Value>, Map<String, Value>) ->
-Result<Value, RuntimeError>`. Its seven names are `mcp`, `call`, `db_query`,
-`db_execute`, `db_inspect`, `read_text`, and `write_text`. Monty suspends at each
-call; the host dispatches it and resumes with JSON. Host errors end the Rust run
-immediately; Python cannot catch them and continue making effects. The caller
+`HostCallback` borrows the synchronous `HostServices` contract. Its `config()`
+method returns typed `PublicConfig`; the interpreter converts that record directly
+into the Python attribute object. Configuration uses separate typed messages across
+isolated worker I/O and never passes through a JSON value or tool dispatcher.
+Its `call(name, args, kwargs)` method handles the seven JSON helpers: `mcp`, `call`,
+`db_query`, `db_execute`, `db_inspect`, `read_text`, and `write_text`. Existing
+JSON-only closures implement this contract with configuration access denied;
+annotate their argument types as `&str`, `Vec<Value>`, and `Map<String, Value>`.
+Monty suspends at each call; the host dispatches it and resumes with the result.
+Host errors end the Rust run immediately; Python cannot catch them and continue
+making effects. All host methods, including `config()`, count against call/time
+and result-byte limits and are denied during module initialization. The caller
 must share its transaction and overall depth/call/time budgets across recursive
 runtime invocations. This crate limits one invocation, not the complete tree.
 

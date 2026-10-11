@@ -73,6 +73,7 @@ async fn serve(command: Command) -> Result<()> {
             storage,
             bind,
             http_prefix,
+            public_url,
             auth_bearer,
         } => {
             // Bind every address before opening persistent state or serving requests.
@@ -85,9 +86,15 @@ async fn serve(command: Command) -> Result<()> {
                 addresses.push(listener.local_addr()?);
                 listeners.push(listener);
             }
-            let path = http_prefix.mcp_path();
+
             let options =
                 HttpOptions::for_addresses(&addresses, auth_bearer)?.with_prefix(http_prefix);
+            let options = if let Some(public) = public_url {
+                options.with_public_url(public)
+            } else {
+                options
+            };
+            let path = options.mcp_path();
             let state = open_state_for_server(storage).await?;
             for address in addresses {
                 tracing::info!(url = %format!("http://{address}{path}"), "MCP server listening");

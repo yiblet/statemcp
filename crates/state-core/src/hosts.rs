@@ -55,6 +55,7 @@ fn encode(value: impl Serialize) -> Result<Value> {
     serde_json::to_value(value).map_err(|e| Error::invalid(e.to_string()))
 }
 pub(crate) struct Host<'a> {
+    pub(crate) namespace: Option<&'a str>,
     pub(crate) api: &'a crate::Api,
     pub(crate) executor: &'a dyn CodeExecutor,
     pub(crate) files: &'a Files,
@@ -206,5 +207,34 @@ impl Host<'_> {
         self.context.check()?;
         bounded(&result, self.context.limits().runtime.max_output_bytes)?;
         Ok(result)
+    }
+}
+
+impl state_runtime::HostServices for Host<'_> {
+    fn config(
+        &mut self,
+    ) -> std::result::Result<state_contract::execution::PublicConfig, state_runtime::RuntimeError>
+    {
+        let result = (|| {
+            self.context.check()?;
+            bounded(
+                self.context.config(),
+                self.context.limits().runtime.max_output_bytes,
+            )?;
+            // The runtime and isolated worker need an owned snapshot, independent
+            // of the transaction borrowed by this host adapter.
+            Ok(self.context.config().clone())
+        })();
+        self.context.record(result).map_err(Into::into)
+    }
+
+    fn call(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        kwargs: Map<String, Value>,
+    ) -> std::result::Result<Value, state_runtime::RuntimeError> {
+        self.host(name, args, kwargs, self.namespace)
+            .map_err(Into::into)
     }
 }

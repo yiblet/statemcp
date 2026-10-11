@@ -24,6 +24,7 @@ pub struct HttpOptions {
     origins: Vec<String>,
     hosts: Vec<String>,
     prefix: HttpPrefix,
+    public_url: Option<String>,
 }
 
 /// A normalized path prefix, excluding route syntax and ambiguous path segments.
@@ -53,6 +54,62 @@ impl FromStr for HttpPrefix {
     }
 }
 
+/// External origin and route prefix parsed once at startup.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PublicUrl {
+    origin: Option<String>,
+    prefix: HttpPrefix,
+}
+impl FromStr for PublicUrl {
+    type Err = anyhow::Error;
+    fn from_str(value: &str) -> Result<Self> {
+        if value
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+        {
+            bail!("public URL must not contain whitespace or control characters");
+        }
+        if value.starts_with('/') || value.is_empty() {
+            return Ok(Self {
+                origin: None,
+                prefix: value.parse()?,
+            });
+        }
+        let url = url::Url::parse(value)?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            bail!(
+                "public URL must be HTTP(S) with no credentials, query or fragment, or an absolute path"
+            );
+        }
+        // Parse the supplied path, rather than URL-normalized dot segments.
+        let (_, after_scheme) = value
+            .split_once("://")
+            .ok_or_else(|| anyhow::anyhow!("missing URL scheme"))?;
+        let path = after_scheme
+            .find('/')
+            .map_or("", |index| &after_scheme[index..]);
+        Ok(Self {
+            origin: Some(url.origin().ascii_serialization()),
+            prefix: path.parse()?,
+        })
+    }
+}
+impl PublicUrl {
+    /// Non-secret normalized configuration for runtime introspection.
+    pub fn config(&self) -> state_contract::execution::PublicConfig {
+        state_contract::execution::PublicConfig {
+            public_url: self.origin.clone(),
+            prefix: self.prefix.0.clone(),
+        }
+    }
+}
+
 impl HttpPrefix {
     pub fn mcp_path(&self) -> String {
         format!("{}/mcp", self.0)
@@ -74,6 +131,10 @@ pub fn validate_bearer(token: Option<&str>) -> Result<()> {
     Ok(())
 }
 impl HttpOptions {
+    /// Effective MCP route after public URL/prefix configuration.
+    pub fn mcp_path(&self) -> String {
+        self.prefix.mcp_path()
+    }
     /// Use the actual listening address, including its assigned port when binding port 0.
     pub fn new(address: SocketAddr, bearer: Option<String>) -> Result<Self> {
         Self::for_addresses(&[address], bearer)
@@ -103,9 +164,22 @@ impl HttpOptions {
             origins,
             hosts,
             prefix: HttpPrefix::default(),
+            public_url: None,
         })
     }
 
+    /// Configure public URL reporting, routes, and permitted external authority/origin.
+    pub fn with_public_url(mut self, public: PublicUrl) -> Self {
+        if let Some(origin) = &public.origin {
+            if let Some((_, authority)) = origin.split_once("://") {
+                self.hosts.push(authority.to_owned());
+            }
+            self.origins.push(origin.clone());
+        }
+        self.prefix = public.prefix;
+        self.public_url = public.origin;
+        self
+    }
     pub fn with_prefix(mut self, prefix: HttpPrefix) -> Self {
         self.prefix = prefix;
         self
@@ -118,9 +192,17 @@ struct HealthResponse {
 }
 
 pub fn router(state: Controller, options: HttpOptions) -> Router {
-    let executor = BlockingExecutor::new(state);
-    let hosting = state_http::Hosting::new(&options.hosts, &options.prefix.0);
-    let server = Server::new(executor.clone()).with_hosting(hosting);
+    let config = state_contract::execution::PublicConfig {
+        public_url: options.public_url.clone(),
+        prefix: options.prefix.0.clone(),
+    };
+    let executor = BlockingExecutor::new(state.with_config(config.clone()));
+    let hosting = state_http::Hosting::from_config(config.clone());
+    let transfers = state_http::Transfers::new(executor.clone(), config);
+    let transfer_routes = state_http::transfer_router(transfers.clone());
+    let server = Server::new(executor.clone())
+        .with_hosting(hosting)
+        .with_transfers(transfers);
     let namespace = state_http::namespace_router(executor, &options.prefix.0);
     let service = StreamableHttpService::new(
         move || Ok(server.clone()),
@@ -140,6 +222,7 @@ pub fn router(state: Controller, options: HttpOptions) -> Router {
             get(|| async { Json(HealthResponse { status: "ok" }) }),
         )
         .merge(mcp)
+        .merge(transfer_routes)
         .fallback_service(namespace)
         .layer(middleware::from_fn_with_state(
             options,

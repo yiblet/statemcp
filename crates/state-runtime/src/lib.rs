@@ -1,4 +1,4 @@
-//! Embedded, fresh-scope Monty execution with a narrow JSON host boundary.
+//! Embedded, fresh-scope Monty execution with typed configuration and JSON tool boundaries.
 //!
 //! This library is not a process sandbox. See the crate README for the allocator
 //! integration required for aggregate memory accounting and worker hard limits.
@@ -55,6 +55,7 @@ impl ModuleSources {
 }
 
 pub const HOST_FUNCTIONS: &[&str] = &[
+    "config",
     "mcp",
     "call",
     "db_query",
@@ -64,8 +65,87 @@ pub const HOST_FUNCTIONS: &[&str] = &[
     "write_text",
 ];
 
-pub type HostCallback<'a> =
-    dyn FnMut(&str, Vec<Value>, Map<String, Value>) -> Result<Value, RuntimeError> + 'a;
+/// Per-invocation host capabilities. Configuration retains its known shape;
+/// arbitrary tool data uses the JSON callback boundary.
+pub trait HostServices {
+    /// Read public configuration without credentials or state effects.
+    /// Errors terminate execution rather than becoming catchable Python exceptions.
+    fn config(&mut self) -> Result<state_contract::execution::PublicConfig, RuntimeError>;
+
+    /// Invoke a state helper with decoded Python arguments.
+    /// Errors terminate execution and must prevent transaction publication.
+    fn call(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        kwargs: Map<String, Value>,
+    ) -> Result<Value, RuntimeError>;
+}
+
+// JSON-only embedders have no configuration capability. They cannot accidentally
+// supply configuration through a dynamic callback result.
+impl<F> HostServices for F
+where
+    F: FnMut(&str, Vec<Value>, Map<String, Value>) -> Result<Value, RuntimeError>,
+{
+    fn config(&mut self) -> Result<state_contract::execution::PublicConfig, RuntimeError> {
+        Err(RuntimeError::new(
+            ErrorCode::PermissionDenied,
+            "configuration capability unavailable",
+        ))
+    }
+
+    fn call(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        kwargs: Map<String, Value>,
+    ) -> Result<Value, RuntimeError> {
+        self(name, args, kwargs)
+    }
+}
+
+/// Borrowed host capabilities for one synchronous runtime invocation.
+pub type HostCallback<'a> = dyn HostServices + 'a;
+
+#[derive(Clone, Copy)]
+enum HostFunction {
+    Config,
+    Mcp,
+    Call,
+    DbQuery,
+    DbExecute,
+    DbInspect,
+    ReadText,
+    WriteText,
+}
+impl HostFunction {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "config" => Some(Self::Config),
+            "mcp" => Some(Self::Mcp),
+            "call" => Some(Self::Call),
+            "db_query" => Some(Self::DbQuery),
+            "db_execute" => Some(Self::DbExecute),
+            "db_inspect" => Some(Self::DbInspect),
+            "read_text" => Some(Self::ReadText),
+            "write_text" => Some(Self::WriteText),
+            _ => None,
+        }
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Self::Config => "config",
+            Self::Mcp => "mcp",
+            Self::Call => "call",
+            Self::DbQuery => "db_query",
+            Self::DbExecute => "db_execute",
+            Self::DbInspect => "db_inspect",
+            Self::ReadText => "read_text",
+            Self::WriteText => "write_text",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Limits {
@@ -466,14 +546,11 @@ impl<'a> Session<'a> {
                             "module initialization cannot call host functions",
                         ));
                     };
-                    if !HOST_FUNCTIONS.contains(&call.function_name.as_str())
-                        || call.object_id.is_some()
-                    {
-                        return Err(RuntimeError::new(
-                            crate::ErrorCode::PermissionDenied,
-                            "unknown host function",
-                        ));
-                    }
+                    let function = HostFunction::parse(&call.function_name)
+                        .filter(|_| call.object_id.is_none())
+                        .ok_or_else(|| {
+                            RuntimeError::new(ErrorCode::PermissionDenied, "unknown host function")
+                        })?;
                     if self.calls >= self.limits.max_calls {
                         return Err(limit_error("host call limit exceeded"));
                     }
@@ -498,9 +575,39 @@ impl<'a> Session<'a> {
                     check_json_size(&(&args, &kwargs), self.limits.max_output_bytes)?;
                     // Host errors terminate Rust execution. They are deliberately
                     // never resumed as catchable Python exceptions.
-                    let result = host(&call.function_name, args, kwargs)?;
-                    self.check_deadline()?;
-                    let value = self.to_monty(&result)?;
+                    let value = match function {
+                        HostFunction::Config => {
+                            if !args.is_empty() || !kwargs.is_empty() {
+                                return Err(RuntimeError::new(
+                                    ErrorCode::InvalidArgument,
+                                    "config takes no arguments",
+                                ));
+                            }
+                            let config = host.config()?;
+                            self.check_deadline()?;
+                            // Bound the known record before converting it directly to Python.
+                            check_json_size(&config, self.limits.max_output_bytes)?;
+                            let public_url = config
+                                .public_url
+                                .map_or_else(MontyObject::none, MontyObject::string);
+                            MontyObject::named_tuple(
+                                "Config",
+                                ["public_url", "prefix"],
+                                [public_url, MontyObject::string(config.prefix)],
+                            )
+                        }
+                        HostFunction::Mcp
+                        | HostFunction::Call
+                        | HostFunction::DbQuery
+                        | HostFunction::DbExecute
+                        | HostFunction::DbInspect
+                        | HostFunction::ReadText
+                        | HostFunction::WriteText => {
+                            let result = host.call(function.name(), args, kwargs)?;
+                            self.check_deadline()?;
+                            self.to_monty(&result)?
+                        }
+                    };
                     call.resume(value, self.print()).map_err(repl_error)?
                 }
                 ReplProgress::OsCall(_) => {

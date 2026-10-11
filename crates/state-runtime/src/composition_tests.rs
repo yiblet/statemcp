@@ -21,7 +21,7 @@ fn callbacks_compose_recursive_runtime_invocations() {
         "mcp('fs.read', {'path': '/a'})\ncall('other', 'add', {'x': inputs})",
         json!(7),
         &Limits::default(),
-        &mut |name, args, kwargs| {
+        &mut |name: &str, args: Vec<Value>, kwargs: serde_json::Map<String, Value>| {
             assert!(kwargs.is_empty());
             names.push(name.to_owned());
             match name {
@@ -52,7 +52,7 @@ fn callback_errors_and_panics_leave_next_invocation_healthy() {
         "try:\n    mcp('a', {})\nexcept Exception:\n    mcp('b', {})",
         Value::Null,
         &Limits::default(),
-        &mut |_, _, _| {
+        &mut |_: &str, _: Vec<Value>, _: serde_json::Map<String, Value>| {
             Err(RuntimeError::new(
                 crate::ErrorCode::PermissionDenied,
                 "stop",
@@ -66,7 +66,9 @@ fn callback_errors_and_panics_leave_next_invocation_healthy() {
             "mcp('a', {})",
             Value::Null,
             &Limits::default(),
-            &mut |_, _, _| panic!("cancel callback"),
+            &mut |_: &str, _: Vec<Value>, _: serde_json::Map<String, Value>| {
+                panic!("cancel callback")
+            },
         );
     });
     assert!(caught.is_err());

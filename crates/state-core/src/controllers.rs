@@ -15,6 +15,7 @@ use std::{path::Path, sync::Arc};
 /// Operations are synchronous; async callers must use a blocking execution boundary.
 #[derive(Clone)]
 pub struct Controller {
+    config: PublicConfig,
     api: crate::Api,
     http: crate::HttpApplication,
     store: Store,
@@ -74,7 +75,8 @@ impl Controller {
         path: &str,
         request: state_contract::http::HttpRequest,
     ) -> Result<state_contract::http::HttpResponse> {
-        let mut context = Context::new(self.store.begin()?, self.limits.clone());
+        let mut context =
+            Context::new(self.store.begin()?, self.limits.clone()).with_config(self.config.clone());
         let response = self.http.handle(namespace, path, request, &mut context)?;
         let bytes = response
             .headers()
@@ -116,6 +118,7 @@ impl Controller {
         );
         let http = crate::HttpApplication::new(files, execution.clone());
         Self {
+            config: PublicConfig::default(),
             api,
             http,
             store,
@@ -133,6 +136,11 @@ impl Controller {
     /// Construct controllers around an interchangeable configured runtime backend.
     pub fn with_backend(store: Store, backend: Arc<dyn RuntimeBackend>) -> Self {
         Self::new(store, Runtime::new(backend))
+    }
+    /// Set non-secret public URL metadata supplied to every runtime invocation.
+    pub fn with_config(mut self, config: PublicConfig) -> Self {
+        self.config = config;
+        self
     }
     /// File operations for custom typed use cases opened with `transaction`.
     pub fn files(&self) -> &Files {
@@ -192,7 +200,8 @@ impl Controller {
         &self,
         action: impl FnOnce(&mut Context) -> Result<T>,
     ) -> Result<(T, CommitOutcome)> {
-        let mut root = Context::new(self.store.begin()?, self.limits.clone());
+        let mut root =
+            Context::new(self.store.begin()?, self.limits.clone()).with_config(self.config.clone());
         let result = action(&mut root)?;
         root.check()?;
         crate::bounded(&result, self.limits.max_result_bytes)?;

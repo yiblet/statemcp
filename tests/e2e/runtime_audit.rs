@@ -31,7 +31,9 @@ fn escaped_callback_arguments_and_results_cannot_bypass_json_byte_budget() {
             "try:\n    mcp('first')\nexcept Exception:\n    pass\nmcp('later')",
             Value::Null,
             &limits,
-            &mut |_, _, _| {
+            &mut |_: &str,
+                  _: Vec<serde_json::Value>,
+                  _: serde_json::Map<String, serde_json::Value>| {
                 calls += 1;
                 Ok(json!("\0".repeat(30)))
             },

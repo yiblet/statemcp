@@ -1,5 +1,7 @@
 //! Typed feature services with application controllers and explicitly shared execution context.
 pub use state_contract::ErrorCode;
+mod transfers;
+pub use transfers::DownloadSelection;
 mod api;
 pub use api::Api;
 mod http_application;
@@ -33,7 +35,7 @@ mod schemas;
 mod selectors;
 
 pub use runtime::{EmbeddedBackend, Runtime, RuntimeBackend};
-pub use schemas::tool_definitions;
+pub use schemas::{ToolDefinition, tool_definitions};
 use state_contract::operations::Operation;
 use state_contract::operations::{DatabaseAction, FileAction, FunctionAction, NamespaceAction};
 pub use state_runtime::{Limits, WorkerConfig};

@@ -711,7 +711,9 @@ mod tests {
             &ModuleSources::default(),
             request,
             &Limits::default(),
-            &mut |_, _, _| Err(invalid_result("no host configured")),
+            &mut |_: &str, _: Vec<Value>, _: serde_json::Map<String, Value>| {
+                Err(invalid_result("no host configured"))
+            },
         )
         .map(|r| r.response)
     }

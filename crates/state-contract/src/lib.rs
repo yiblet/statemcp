@@ -68,6 +68,7 @@ pub mod operations;
 mod path;
 pub mod publication;
 pub mod schema;
+pub mod transfer;
 pub use path::{PathComponent, VirtualPath};
 
 /// A malformed contract value, independent of storage or service implementations.

@@ -86,7 +86,9 @@ fn callbacks_and_recursive_workers_have_no_pool_deadlock() {
             "mcp('fs.read', {'path': '/a'})\ncall('other', 'add', {'x': inputs})",
             json!(7),
             &Limits::default(),
-            &mut |name, args, kwargs| {
+            &mut |name: &str,
+                  args: Vec<serde_json::Value>,
+                  kwargs: serde_json::Map<String, serde_json::Value>| {
                 assert!(kwargs.is_empty());
                 names.push(name.to_owned());
                 match name {
@@ -166,7 +168,9 @@ fn callback_errors_and_panics_reap_workers() {
             "try:\n    mcp('a', {})\nexcept Exception:\n    mcp('b', {})",
             Value::Null,
             &Limits::default(),
-            &mut |_, _, _| {
+            &mut |_: &str,
+                  _: Vec<serde_json::Value>,
+                  _: serde_json::Map<String, serde_json::Value>| {
                 Err(RuntimeError::new(
                     state_runtime::ErrorCode::PermissionDenied,
                     "stop",
@@ -180,7 +184,11 @@ fn callback_errors_and_panics_reap_workers() {
             "mcp('a', {})",
             Value::Null,
             &Limits::default(),
-            &mut |_, _, _| panic!("cancel callback"),
+            &mut |_: &str,
+                  _: Vec<serde_json::Value>,
+                  _: serde_json::Map<String, serde_json::Value>| {
+                panic!("cancel callback")
+            },
         );
     });
     assert!(caught.is_err());
@@ -200,7 +208,7 @@ fn callback_time_counts_toward_deadline() {
         "mcp('wait', {})\n42",
         Value::Null,
         &limits,
-        &mut |_, _, _| {
+        &mut |_: &str, _: Vec<serde_json::Value>, _: serde_json::Map<String, serde_json::Value>| {
             called = true;
             std::thread::sleep(Duration::from_millis(250));
             Ok(Value::Null)
@@ -349,4 +357,75 @@ fn workers_preserve_namespace_modules_and_shared_globals() {
             .value,
         41
     );
+}
+
+#[test]
+fn isolated_config_preserves_typed_values_across_repeated_callbacks() -> Result<(), RuntimeError> {
+    struct Host;
+    impl state_runtime::HostServices for Host {
+        fn config(&mut self) -> Result<state_contract::execution::PublicConfig, RuntimeError> {
+            Ok(state_contract::execution::PublicConfig {
+                public_url: Some("https://example.com".into()),
+                prefix: "/prefix".into(),
+            })
+        }
+        fn call(
+            &mut self,
+            _: &str,
+            _: Vec<Value>,
+            _: serde_json::Map<String, Value>,
+        ) -> Result<Value, RuntimeError> {
+            Err(RuntimeError::new(
+                state_runtime::ErrorCode::WorkerFailed,
+                "unexpected JSON callback",
+            ))
+        }
+    }
+    let _serial = super::common::serial();
+    let worker = worker();
+    let mut host = Host;
+    let script = "[config().public_url, config().prefix]";
+    let expected = json!(["https://example.com", "/prefix"]);
+    assert_eq!(
+        worker
+            .execute(script, Value::Null, &Limits::default(), &mut host)?
+            .value,
+        expected
+    );
+    assert_eq!(
+        worker
+            .invoke(
+                &format!("def read():\n    return {script}"),
+                "read",
+                Default::default(),
+                &Limits::default(),
+                &mut host
+            )?
+            .value,
+        expected
+    );
+    let request = state_contract::http::HttpRequest {
+        method: state_contract::http::Method::parse("GET")
+            .map_err(|error| RuntimeError::new(error.code, error.message))?,
+        path: "/prefix/config".into(),
+        query: String::new(),
+        scheme: "https".into(),
+        host: "example.com".into(),
+        headers: Vec::new(),
+        body: Vec::new(),
+        view_args: Default::default(),
+    };
+    let result = worker.invoke_http(
+        &format!("def handle(request):\n    return {script}"),
+        "handle",
+        &Default::default(),
+        request,
+        &Limits::default(),
+        &mut host,
+    )?;
+    let value: Value = serde_json::from_slice(result.response.body()).map_err(|error| {
+        RuntimeError::new(state_runtime::ErrorCode::WorkerFailed, error.to_string())
+    })?;
+    assert_eq!(value, expected);
+    Ok(())
 }
